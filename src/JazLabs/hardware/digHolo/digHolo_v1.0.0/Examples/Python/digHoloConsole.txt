@@ -1,0 +1,45 @@
+<AUTO ALIGN>
+<Parameter estimate>
+Batch Count : 1
+FFT size changed
+	Planning FFT (WoI)	:	1280 x 960	(8:1)
+Fourier plane
+Tilt	0	0.851112,0.937464
+	Planning IFFT (WoI)	:	1280 x 960	(8:1)
+Camera plane
+0	1	BeamCentre	(1.413428e-04	-1.205153e-05)	MFD:4.292440e-04	Defocus:2.808915	TotalPwr:14.212235	MaxV:1218719.750000	Aeff:6.264020e-07
+Focus (ms)	201.868300
+Parameter estimate time (ms)	323.889800
+</Parameter estimate>
+<Parameter tweak>
+FFT size changed
+	Planning FFT (WoI)	:	640 x 640	(8:1)
+	Planning IFFT (WoI)	:	640 x 640	(8:1)
+Group count changed
+HG indices.
+Allocating digHoloHGX/Y, scales etc.
+Allocating digHoloHG
+Referencing pointers
+Allocated basis 1 x 640 x 640 
+Reallocated coefs 1 x 1
+	Goal Metric:	72.069077	IL:72.069077	MDL:-inf	(Hz:7.000742)	dt: [0.142842 s] dErr	340282346638528859811704183484516925440.000000 
+		Pol:0	Tilt:	0.860	0.942	Defocus:	-1.327	Waist:	441.597	Centre:	134.689	-16.377
+	Goal Metric:	72.073875	IL:72.073875	MDL:-inf	(Hz:9.199183)	dt: [0.108705 s] dErr	0.004799 
+		Pol:0	Tilt:	0.861	0.943	Defocus:	-1.413	Waist:	452.936	Centre:	135.675	-17.244
+	Goal Metric:	72.074005	IL:72.074005	MDL:-inf	(Hz:8.380333)	dt: [0.119327 s] dErr	0.000130 
+		Pol:0	Tilt:	0.861	0.943	Defocus:	-1.422	Waist:	455.824	Centre:	135.675	-17.244
+	Goal Metric:	72.074036	IL:72.074036	MDL:-inf	(Hz:8.086382)	dt: [0.123665 s] dErr	0.000031 
+		Pol:0	Tilt:	0.861	0.943	Defocus:	-1.422	Waist:	455.991	Centre:	135.675	-17.244
+	Goal Metric:	72.074036	IL:72.074036	MDL:-inf	(Hz:7.992596)	dt: [0.125116 s] dErr	0.000000 
+		Pol:0	Tilt:	0.861	0.943	Defocus:	-1.422	Waist:	455.991	Centre:	135.675	-17.244
+GOAL:	72.074036	IL:	72.074036
+Completed alignment 0.943904 seconds (1.059429 Hz)
+Summary routines (time, calls)
+FFT        	0.0341	2
+IFFT       	0.5055	92
+ApplyTilt   	0.1076	191
+OverlapModes	0.0379	210
+</Parameter tweak>
+</AUTO ALIGN>
+
+

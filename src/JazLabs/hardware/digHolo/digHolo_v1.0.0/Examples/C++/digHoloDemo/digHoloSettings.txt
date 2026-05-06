@@ -1,0 +1,145 @@
+//This file must be tab-delimited. Also case-sensitive.
+//Every property does not necessarily need to be set.
+
+//MANDATORY PROPERTIES (Program can't work if it doesn't at least know how many frames there are and how big they are).
+//Location of the binary file containing the camera frames. Should be uint16 format.
+FrameBufferFilename	
+//The width/height of the camera frames
+FrameWidth	320
+FrameHeight	256
+//The unique number of camera frames
+BatchCount	45
+
+//RECOMMENDED PROPERTIES (Program can work without them, but the output units will be meaningless if not specified)
+//Physical size of the frame pixels
+FramePixelSize	20e-6
+//The default operating wavelength.
+WavelengthCentre	1565e-9
+
+//POLARISATION
+//How many polarisation components per frame
+PolCount	2
+//Setting a PolLock forces a particular property to be identical for both polarisation components. i.e. if the Reference wave tilt is identical for both polarisations.
+PolLockTilt	0
+PolLockDefocus	0
+//modal decomposition waist radius lock.
+PolLockWaist	1
+
+//FFT/IFFT WINDOW SIZE
+//Size of the FFT window in the camera plane (in pixels)
+fftWindowSizeX	128
+fftWindowSizeY	128
+//Radius of the IFFT window in the Fourier plane (in degrees)
+FourierWindowRadius	0.7
+//Reconstructed field dimensions
+//0: Oversampled (output field array is same dimensions as original FFT window, with field pixels that are the same size as the frame pixels) 
+//1: Minimal (output field array is same dimensions as IFFT window)
+IFFTResolutionMode	1
+
+//CONSOLE/FILE PRINTOUT
+//Print console information to this file
+ConsoleFilename	
+//How verbose to make the print out. 0: off. 1: basic info 2: Detailed 3: Debug
+Verbosity	2
+
+//AVERAGING
+//Multiple frames can be taken per measurement and the reconstructed fields will be averaged together
+BatchAvgCount	1
+//0: Averaged frames are sequential (AAABBBCCC) 1: Averaged frames are interlaced (ABCABCABC)
+BatchAvgMode	0
+
+//OUTPUT FILES
+//Output text summary
+OutputFilenameSummary
+//Binary file containing the mode coefficients for each frame and each polarisation
+OutputFilenameCoefs	coefs.bin
+//Binary file containing the reconstructed fields
+OutputFilenameFields	fields.bin
+//Binary file containing the mode basis fields
+OutputFilenameBasis	
+//Binary file containing the x and y axis (per polarisation component)
+OutputFilenameXaxis	xaxis.bin
+OutputFilenameYaxis	yaxis.bin
+//Binary file containing the Reference wave calibration field
+OutputFilenameRefCalibration	
+//Binary file containing the RGB pixel buffer of the 'Viewport' (see 'Viewport' display mode flag below)
+OutputFilenameViewport	Viewport.bmp
+
+//WAVELENGTH-DEPENDENT PROPERTIES
+//If the frames are from a wavelength sweep, user can specify start/stop wavelengths and the number of linear frequency steps inbetween.
+//BatchCount/WavelengthCount should give you one dimension of your transfer matrix. e.g. Wavelength count matrices, of dimension (BatchCount/WavelengthCount) x (polCount x modeCount)
+WavelengthCount	1
+WavelengthStart	1510e-9
+WavelengthStop	1620e-9
+//Specifies how the wavelength axis is organised in memory for the input and output respectively. 0:Wavelength changes from one frame to the next. 1: Frames corresponding to the same wavelength are adjacent.
+WavelengthOrdering	0	0
+
+//MODAL DECOMPOSITION PROPERTIES
+//Number of degenerate HG mode groups
+BasisGroupCount	9
+//Beam waist parameter
+BasisWaist	200e-6
+//Basis type for the coefficients to be described in. 0:HG 1:LG 2:Custom
+BasisType	0
+//If a custom basis transformation is being applied. The matrix binary file can be specified. BasisType must be 2.
+BasisCustomFilename	
+//The number of input modes in the custom basis (i.e. the HG dimension of the custom matrix)
+BasisCustomModeCountIn	
+//The number of output mode in the custom basis (i.e. the output custom mode dimension of the custom matrix)
+BasisCustomModeCountOut	
+
+//MANUAL ALIGNMENT PROPERTIES
+//Will be overwritten if the AutoAlign routine is run.
+TiltX	0.0	0.0
+TiltY	0.0	0.0
+BeamCentreX	0.0	0.0
+BeamCentreY	0.0	0.0
+Defocus	0.0	0.0
+
+//AUTOALIGN PROPERTIES
+//The beam centres on the camera
+AutoAlignCentre	1
+//The defocus of the reference beam
+AutoAlignDefocus	1
+//The tilt of the reference beam
+AutoAlignTilt	1
+//The waist of the mode basis
+AutoAlignWaist	1
+//Enabling this will cause the Fourier window radius to be automatically set as large as possible for the tilt(x,y)
+AutoAlignFourierWindowRadius	1
+//The tolerance on convergence (dB) of the AutoAlign search which will cause it to terminate (higher means faster but less accurate)
+AutoAlignTol	0.0
+//When calculating properties like MDL, Defines whether the polarisation components should be treated as combined fields (0), or independent components (1). For example, if one polarisation was absent, the MDL would be unaffected for (0) and would be -Inf for (1).
+AutoAlignPolIndependence	0
+//Instead of aligning directly to the transfer matrix (T), the AutoAlign routine can align to TT*. That is, the transfer matrix multiplied by it's conjugate transpose. This is mostly useful for getting measures similar to 'crosstalk' or 'signal to noise', when the measured basis, is not the same as the goal basis. If the matrix is unitary, TT* will be diagonal.
+AutoAlignBasisMulConjTrans	0
+//The type of autoalignment routine to run 0:Full 1:Tweak from existing values 2:Quick estimate
+AutoAlignMode	0
+//The goal parameter to optimise during autoalign 0:IL, 1:MDL 2:diagonal of transfer matrix, etc etc.
+AutoAlignGoalIdx	0
+
+//CALIBRATION
+//Enable (1 = 100% fill factor) or disable (0 = 0%) compensation for the finite fill factor of the camera pixels by removing the sinc envelope in the Fourier plane.
+FillFactorCorrection	1
+//Calibrating out non-uniform amplitude/phase of the Reference wave
+//A file containing either uint16 data of the intensity of the Reference wave, or complex32 data of the Reference wave field.
+RefCalibrationFilename	
+//Calibration out amplitude/phase differences between frames within a batch
+//File that specifies amplitude/phase calibration values that can be applied per polarisation and per batch element. 
+BatchCalibrationFilename	
+BatchCalibrationPolCount	
+BatchCalibrationBatchCount	
+
+//PERFORMANCE AND THREADING
+//Number of CPU threads to employ. Setting to zero will cause a benchmark to run for about 15 seconds that will choose the optimal threadCount
+ThreadCount	
+/FFTW library properties (0:Estimate 1:Measure 2:Patient 3:Exhaustive)
+fftwPlanMode	2
+//Location to read/write FFTW wisdom, if not the default location
+fftwWisdomFilename
+//Specifies which DIGHOLO_VIEWPORT_* display mode to plot (0 = no plot)
+Viewport	1	2	3	4	5	6	7	8	9	10	11	12	13
+//Flag that specifies whether a performance benchmark should be run at the end of the program.
+Benchmark	1
+//Run the debug routine which stress tests the software to identify bugs
+Debug	0
