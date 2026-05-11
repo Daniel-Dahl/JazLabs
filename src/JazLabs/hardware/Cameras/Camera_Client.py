@@ -1,6 +1,4 @@
 import time
-import traceback
-import multiprocessing as mp
 from multiprocessing import shared_memory
 
 import numpy as np
@@ -10,25 +8,42 @@ class CameraClient:
     def __init__(
         self,
         host="127.0.0.1",
-        port=50731,
+        command_port=50731,
+        frame_pub_port=50732,
         timeout_ms=5000,
         client_id="camera_client",
     ):
         self.host = host
-        self.port = int(port)
+        self.command_port = int(command_port)
+        self.frame_pub_port = int(frame_pub_port)
         self.timeout_ms = int(timeout_ms)
         self.client_id = client_id
 
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
+        self.frame_sub_socket = self.context.socket(zmq.SUB)
 
         self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
         self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self.frame_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
 
-        self.socket.connect(f"tcp://{self.host}:{self.port}")
+        self.socket.connect(f"tcp://{self.host}:{self.command_port}")
+        self.frame_sub_socket.connect(f"tcp://{self.host}:{self.frame_pub_port}")
 
         properties = self.GetProperties()
-        self.frame_layout_version = int(properties.get("frame_layout_version", 1))
+        if int(properties["command_port"]) != self.command_port:
+            raise RuntimeError(
+                f"Connected to command port {self.command_port}, "
+                f"but server reports command port {properties['command_port']}"
+            )
+        if int(properties["frame_pub_port"]) != self.frame_pub_port:
+            raise RuntimeError(
+                f"Configured frame_pub_port {self.frame_pub_port}, "
+                f"but server reports frame_pub_port {properties['frame_pub_port']}"
+            )
+
+        self.frame_layout_version = int(properties["frame_layout_version"])
 
         self.frame_shm = shared_memory.SharedMemory(
             name=properties["frame_shared_memory_name"]
@@ -53,6 +68,9 @@ class CameraClient:
             buffer=self.meta_shm.buf,
         )
 
+        self._drain_frame_notifications()
+        self.trigger_mode, self.trigger_source = self.GetTriggerMode()
+
     def SendCommand(self, msg):
         msg["client_id"] = self.client_id
 
@@ -67,6 +85,39 @@ class CameraClient:
             )
 
         return reply.get("result", None)
+
+    def _drain_frame_notifications(self):
+        latest = None
+        while True:
+            try:
+                latest = self.frame_sub_socket.recv_json(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                return latest
+
+    def WaitForFrameNotification(self, LastFrameCounter=None):
+        while True:
+            self.RefreshFrameSharedMemoryIfNeeded()
+
+            if LastFrameCounter is not None and self.GetFrameCounter() != LastFrameCounter:
+                self._drain_frame_notifications()
+                return True
+
+            try:
+                msg = self.frame_sub_socket.recv_json()
+            except zmq.Again:
+                if not self.IsServerAlive():
+                    raise RuntimeError("Camera server is no longer alive")
+                continue
+
+            if msg.get("type") != "new_frame":
+                continue
+
+            if LastFrameCounter is None:
+                return True
+
+            if int(msg.get("frame_counter", -1)) != int(LastFrameCounter):
+                return True
+
     def RefreshFrameSharedMemoryIfNeeded(self):
         current_version = int(self.meta_arr[4])
 
@@ -77,10 +128,7 @@ class CameraClient:
         while int(self.meta_arr[0]) == 1:
             time.sleep(0.0005)
 
-        try:
-            self.frame_shm.close()
-        except Exception:
-            pass
+        self.CloseFrameSharedMemory()
 
         properties = self.GetProperties()
 
@@ -101,6 +149,28 @@ class CameraClient:
         print("Client reattached to resized frame shared memory.")
         print(f"New frame shape: {self.frame_shape}")
 
+    def CloseFrameSharedMemory(self):
+        self.frame_arr = None
+
+        try:
+            if self.frame_shm is not None:
+                self.frame_shm.close()
+        except Exception:
+            pass
+
+        self.frame_shm = None
+
+    def CloseMetaSharedMemory(self):
+        self.meta_arr = None
+
+        try:
+            if self.meta_shm is not None:
+                self.meta_shm.close()
+        except Exception:
+            pass
+
+        self.meta_shm = None
+
     # --------------------------------------------------------
     # Frame reading
     # --------------------------------------------------------
@@ -108,13 +178,16 @@ class CameraClient:
     def GetFrame(self, WaitForNewFrame=False, LastFrameCounter=None):
         self.RefreshFrameSharedMemoryIfNeeded()
 
+        if not WaitForNewFrame and self.IsSoftwareTriggerMode():
+            LastFrameCounter = self.GetFrameCounter()
+            self.SoftwareTrigger()
+            self.WaitForFrameNotification(LastFrameCounter=LastFrameCounter)
+
         if WaitForNewFrame:
             if LastFrameCounter is None:
                 LastFrameCounter = self.GetFrameCounter()
 
-            while self.GetFrameCounter() == LastFrameCounter:
-                self.RefreshFrameSharedMemoryIfNeeded()
-                time.sleep(0.0005)
+            self.WaitForFrameNotification(LastFrameCounter=LastFrameCounter)
 
         while True:
             self.RefreshFrameSharedMemoryIfNeeded()
@@ -198,20 +271,47 @@ class CameraClient:
         })
 
     def GetTriggerMode(self):
-        return self.SendCommand({"cmd": "get_trigger_mode"})
+        result = self.SendCommand({"cmd": "get_trigger_mode"})
+
+        if isinstance(result, (list, tuple)) and len(result) >= 2:
+            self.trigger_mode = result[0]
+            self.trigger_source = result[1]
+
+        return result
+
+    def IsSoftwareTriggerMode(self):
+        return (
+            str(getattr(self, "trigger_mode", "")).lower() == "on"
+            and str(getattr(self, "trigger_source", "")).lower() == "software"
+        )
 
     def SetContinuousMode(self):
-        return self.SendCommand({"cmd": "set_continuous_mode"})
+        result = self.SendCommand({"cmd": "set_continuous_mode"})
+        self.GetTriggerMode()
+        return result
 
     def SetSoftwareTriggerMode(self):
-        return self.SendCommand({"cmd": "set_software_trigger_mode"})
+        result = self.SendCommand({"cmd": "set_software_trigger_mode"})
+        self.GetTriggerMode()
+        return result
+
+    def SoftwareTrigger(self):
+        return self.SendCommand({"cmd": "software_trigger"})
+
+    def FireSoftwareTrigger(self):
+        return self.SoftwareTrigger()
+
+    def GetSoftwareTriggeredFrame(self):
+        return self.GetFrame()
 
     def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
-        return self.SendCommand({
+        result = self.SendCommand({
             "cmd": "set_hardware_trigger_mode",
             "lineNumber": lineNumber,
             "RiseEdgeOrFallEdge": RiseEdgeOrFallEdge,
         })
+        self.GetTriggerMode()
+        return result
 
     def SetExposureTime(self, exposure_time):
         return self.SendCommand({
@@ -282,13 +382,11 @@ class CameraClient:
         return self.SendCommand({"cmd": "get_pixel_format"})
 
     def close(self):
-        try:
-            self.frame_shm.close()
-        except Exception:
-            pass
+        self.CloseFrameSharedMemory()
+        self.CloseMetaSharedMemory()
 
         try:
-            self.meta_shm.close()
+            self.frame_sub_socket.close(0)
         except Exception:
             pass
 

@@ -295,7 +295,8 @@ def AddInfoPanel(
 
 def CameraViewerProcess(
     host="127.0.0.1",
-    port=50731,
+    command_port=50731,
+    frame_pub_port=50732,
     window_name="Camera Viewer",
     initial_scale=1.0,
     wait_for_new_frame=True,
@@ -305,7 +306,12 @@ def CameraViewerProcess(
     roi_move_step=1,
     roi_size_step=1,
 ):
-    cam = CameraClient(host=host, port=port, client_id="opencv_viewer")
+    cam = CameraClient(
+        host=host,
+        command_port=command_port,
+        frame_pub_port=frame_pub_port,
+        client_id="opencv_viewer",
+    )
 
     scale = float(initial_scale)
     use_log_scale = False
@@ -679,7 +685,8 @@ class CameraViewer:
     def __init__(
         self,
         host="127.0.0.1",
-        port=50731,
+        command_port=50731,
+        frame_pub_port=50732,
         window_name="Camera Viewer",
         initial_scale=1.0,
         wait_for_new_frame=True,
@@ -690,7 +697,8 @@ class CameraViewer:
         roi_size_step=1,
     ):
         self.host = host
-        self.port = int(port)
+        self.command_port = int(command_port)
+        self.frame_pub_port = int(frame_pub_port)
         self.window_name = window_name
         self.initial_scale = float(initial_scale)
         self.wait_for_new_frame = wait_for_new_frame
@@ -710,7 +718,8 @@ class CameraViewer:
             target=CameraViewerProcess,
             kwargs={
                 "host": self.host,
-                "port": self.port,
+                "command_port": self.command_port,
+                "frame_pub_port": self.frame_pub_port,
                 "window_name": self.window_name,
                 "initial_scale": self.initial_scale,
                 "wait_for_new_frame": self.wait_for_new_frame,
@@ -742,7 +751,8 @@ if __name__ == "__main__":
 
     viewer = CameraViewer(
         host="127.0.0.1",
-        port=50731,
+        command_port=50731,
+        frame_pub_port=50732,
         initial_scale=1.0,
     )
 

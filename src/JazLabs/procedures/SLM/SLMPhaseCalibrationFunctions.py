@@ -1,4 +1,3 @@
-from Lab_Equipment.Config import config 
 import io
 import matplotlib
 # matplotlib.use('agg')  # turn off interactive backend
@@ -7,7 +6,7 @@ import matplotlib.pyplot as plt
 import scipy
 import scipy.io
 import copy
-import Lab_Equipment.GeneralLibs.ComplexPlotFunction as cmplxplt
+import pwi_inst.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
 from scipy.interpolate import splrep, splev, UnivariateSpline
 # import MyLibs.OpticalOperators as OpticOp
 # import MyLibs.CoupMatrixAndMetricAnalysisFuncitons as MetricCals

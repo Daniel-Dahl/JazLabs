@@ -440,8 +440,7 @@ def ord_if_char(value):
 # End preamble
 # # Daniel NOTE I have the 4 lines bellow. I couldnt work out how to tell the ctypesgen lib where the digHolo lib was so I
 # # I have hard coded it in. I also think it will be able to load the digHolo lib quicker
-# import Lab_Equipment.Config.config as config
-# dll_path = config.WORKING_DIR + "\\Lab_Equipment\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll"
+# dll_path = <repo>\\pwi_inst\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
 # digHolo = ctypes.cdll.LoadLibrary(dll_path)
 # _libs = { "digHolo": digHolo}
 _libs = {}
@@ -866,9 +865,9 @@ add_library_search_dirs([])
 
 # Daniel NOTE I have added these lines so that the digholo dll is visible, I couldnt get ctypesgens to do it.
 #####################################################################
-import Lab_Equipment.Config.config as config
 import os
 import platform
+from pathlib import Path
 # from cffi import FFI  # or wherever LibraryLoader comes from
 # from ctypes import CDLL as LibraryLoader  # for example
 
@@ -877,22 +876,42 @@ def get_digholo_library_path() -> str:
     Return the absolute path to the digHolo shared library on the current OS.
     On Windows we look in 'bin/Win64/digHolo.dll', on Linux in 'bin/Linux/digHolo.so'.
     """
-    base_dir = os.path.join(config.WORKING_DIR, "Lab_Equipment", "digHolo", "digHolo_v1.0.0", "bin")
+    base_dir = Path(__file__).resolve().parent.parent / "digHolo_v1.0.0" / "bin"
     system = platform.system()
     if system == "Windows":
-        return os.path.join(base_dir, "Win64", "digHolo.dll")
+        candidates = [
+            base_dir / "Win64" / "digHolo.dll",
+            base_dir.parent / "src" / "digHolo.dll",
+        ]
     elif system == "Linux":
-        # assuming the .so has the same base name as the .dll
-        return os.path.join(base_dir, "Linux", "libdigholo.so")
+        candidates = [
+            base_dir / "Linux" / "libdigholo.so",
+            base_dir / "Linux" / "digHolo.so",
+        ]
+    elif system == "Darwin":
+        candidates = [
+            base_dir / "MacOS" / "libdigholo.dylib",
+            base_dir / "MacOS" / "digHolo.dylib",
+        ]
     else:
         raise RuntimeError(f"Unsupported platform: {system}")
 
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(
+        "Could not find the digHolo shared library. Checked: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
 dll_path = get_digholo_library_path()
 dll_dir = os.path.dirname(dll_path)
+if hasattr(os, "add_dll_directory"):
+    os.add_dll_directory(dll_dir)
 loader = LibraryLoader()
 _libs = {"digHolo": loader(dll_path)}
 
-# dll_path = config.WORKING_DIR + "\\Lab_Equipment\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll"
+# dll_path = <repo>\\pwi_inst\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
 # dll_dir = os.path.dirname(dll_path)
 # loader = LibraryLoader()
 # _libs = {"digHolo": loader(dll_path)}
@@ -2534,4 +2553,3 @@ except:
 # No inserted files
 
 # No prefix-stripping
-

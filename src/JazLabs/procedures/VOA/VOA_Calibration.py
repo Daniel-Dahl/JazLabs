@@ -1,19 +1,5 @@
-from Lab_Equipment.Config import config
-
-# import tomography.standard as standard
-# import tomography.masks as masks
-
-# Python Libs
-import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import ctypes
-import copy
-from IPython.display import display, clear_output
-import ipywidgets
-import multiprocessing
-import time
-import scipy.io
 
 from scipy import io, integrate, linalg, signal
 from scipy.io import savemat, loadmat
@@ -21,17 +7,14 @@ from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
 # Defult Pploting properties 
 plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
-
-# Power Meter Libs
-import  Lab_Equipment.PowerMeter.PowerMeter_Thorlabs_lib as PMLib
-
-import Lab_Equipment.OpticalPowerAttenuator.OpticalPowerAttenuator as OPALib
+import pwi_inst.utils.camera_utils as cam_utils
 
 
-# Alginment Functions
-# import  Lab_Equipment.AlignmentRoutines.AlignmentFunctions as AlignFunc
-
-def CalibrateOPA(PWRObj:PMLib.PowerMeterObj,OPAObj:OPALib.Thorlabs_VOA,voltageMin=0,voltageMax=5,dvolt=0.001,UseRawCal=False):
+def CalibrateOPA(CamObj,VOAObj,voltageMin=0,voltageMax=5,dvolt=0.001,UseRawCal=False,
+                  ixCamCenter=None,iyCamCenter=None,
+                                    x_half_width=None,
+                                    y_half_width=None):
+    
     voltStepCount=int(((voltageMax-voltageMin)/dvolt)+1)
     voltArr=np.linspace(voltageMin,voltageMax,voltStepCount)
     pwrArr=np.zeros(voltStepCount)
@@ -40,16 +23,17 @@ def CalibrateOPA(PWRObj:PMLib.PowerMeterObj,OPAObj:OPALib.Thorlabs_VOA,voltageMi
     
     for ivolt in range(voltStepCount):
         
-        OPAObj.SetVoltValue(voltArr[ivolt])
-        pwrArr[ivolt]=PWRObj.GetPower()
+        VOAObj.SetVoltage(voltArr[ivolt])
+        frame=CamObj.GetFrame()
+        pwrArr[ivolt] = cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
         print(ivolt,pwrArr[ivolt])
     if(UseRawCal):
-        OPAObj.SetVoltPwrCal(voltArr,pwrArr)
+        VOAObj.SetVoltage(voltArr,pwrArr)
         plt.plot(voltArr,pwrArr)
         return voltArr,pwrArr
     else:
         voltArr,pwrArrFit=VoltVsPowerFit(voltArr,pwrArr)
-        OPAObj.SetVoltPwrCal(voltArr,pwrArr)
+        VOAObj.SetVoltage(voltArr,pwrArr)
         return voltArr,pwrArr,pwrArrFit
         
     

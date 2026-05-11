@@ -2,7 +2,7 @@
 # of the name has a underscore (_) after it to let me and anyone else going through the code to see the differences between Joels
 # C lib and my python wrapper
 import sys
-import Lab_Equipment.Config.config as config
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,9 +16,9 @@ from enum import IntEnum
 # digH_hpy as in header file for python... pretty clever I know (Daniel 2 seconds after writing this comment. Head slap you are a idiot )
 # Ok so I found a lib called ctypesgen that can look at a header file and make a python wrapper that can also include all the error
 # stuff so i have generated the python version of the header file with that. I need to test it to see how it goes.
-import Lab_Equipment.digHolo.digHolo_pylibs.digholoHeader as digH_hpy 
+import pwi_inst.hardware.digHolo.digHolo_pylibs.digholoHeader as digH_hpy 
 
-import  Lab_Equipment.GeneralLibs.ComplexPlotFunction as cmplxplt
+import pwi_inst.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
 
 
 from multiprocessing import Manager
@@ -28,6 +28,18 @@ import scipy.io
 import math
 plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
+
+_DIGHOLO_DIR = Path(__file__).resolve().parent
+_DATA_DIR = _DIGHOLO_DIR / "Data"
+
+
+def _resolve_data_path(filename):
+    path = Path(filename)
+    if path.is_absolute():
+        return path
+    return _DATA_DIR / path
+
+
 class digholoMetrics(IntEnum):
     COUNT = digH_hpy.DIGHOLO_METRIC_COUNT
     IL = digH_hpy.DIGHOLO_METRIC_IL
@@ -78,18 +90,19 @@ class digholoObject():
         self.coefs = np.zeros((1,1))*1j
 
         # if you the user has a custom matrix they want to algin to this will set it up at the begin
-        if TransformMatrixFilename is not None:
-            self.TransformMat=self.loadTransformMatrix()
-        else:
-            if TransformMat is not None:
-                self.TransformMat=TransformMat
-                basisType=2
-            else:
-                basisType=0
+        self.TransformMat = TransformMat
+        self.TransformMatrixFilename = TransformMatrixFilename
+        basisType = 2 if TransformMatrixFilename is not None or TransformMat is not None else 0
 
     
         if digholoProperties is not None:
             self.digholoProperties=digholoProperties
+            self.TransformMatrixFilename = self.digholoProperties.get(
+                "TransformMatrixFilename",
+                TransformMatrixFilename
+            )
+            if self.TransformMatrixFilename is not None or self.TransformMat is not None:
+                self.digholoProperties["basisType"] = 2
         else:
             self.digholoProperties={ "Wavelength": Wavelength,
                 "WavelengthCount": self.WavelengthCount,          
@@ -161,13 +174,15 @@ class digholoObject():
             digH_hpy.digHoloConfigSetFrameDimensions(self.handleIdx,self.FrameWidth,self.FrameHeight)
             self.digholoProperties["PixelSize"]=PixelSize
             self.digholo_SetProps()
+            self._apply_transform_matrix()
             self.digHolo_AutoAlign(IntialCameraFrame)
         elif len(IntialCameraFrame.shape)==3:
-            self.FrameWidth=IntialCameraFrame.shape[-2] 
-            self.FrameHeight=IntialCameraFrame.shape[-1]
+            self.FrameWidth=IntialCameraFrame.shape[-1] 
+            self.FrameHeight=IntialCameraFrame.shape[-2]
             digH_hpy.digHoloConfigSetFrameDimensions(self.handleIdx,self.FrameWidth,self.FrameHeight)
             self.digholoProperties["PixelSize"]=PixelSize
             self.digholo_SetProps()
+            self._apply_transform_matrix()
             self.digHolo_AutoAlign(IntialCameraFrame[0,:,:])
         else:
             print("The IntialCameraFrame that you have passed to the digHolo object is not the correct shape. \
@@ -187,6 +202,12 @@ class digholoObject():
             print("Digholo Object has been destroyed")
         else:
             print("problems destorying digholo Error code: ",error)
+
+    def _apply_transform_matrix(self):
+        if self.TransformMatrixFilename is not None:
+            self.loadTransformMatrix(self.TransformMatrixFilename)
+        elif self.TransformMat is not None:
+            self.digHolo_ConfigSetBasisTypeCustom(self.TransformMat)
             
 
     def digholo_SetProps(self):
@@ -670,19 +691,40 @@ class digholoObject():
         return fourierPlanesWin
     
     def loadTransformMatrix(self,Filename="TransformMatrix.npy"):
-        self.digholoProperties["TransformMatrixFilename"]=Filename
-        FileToLoad=config.WORKING_DIR+"\\Lab_Equipment\\digHolo\\digHolo_pylibs\\Data\\"+Filename
-        self.TransformMat= np.load(FileToLoad)
+        self.digholoProperties["TransformMatrixFilename"]=str(Filename)
+        FileToLoad=_resolve_data_path(Filename)
+        if not FileToLoad.exists():
+            raise FileNotFoundError(f"Transform matrix file not found: {FileToLoad}")
+
+        if FileToLoad.suffix.lower() == ".mat":
+            mat_data = scipy.io.loadmat(str(FileToLoad))
+            matrix_candidates = [
+                value for key, value in mat_data.items()
+                if not key.startswith("__")
+                and isinstance(value, np.ndarray)
+                and value.ndim == 2
+                and np.issubdtype(value.dtype, np.number)
+            ]
+            if not matrix_candidates:
+                raise ValueError(f"No 2D numeric matrix found in transform file: {FileToLoad}")
+            self.TransformMat = matrix_candidates[0]
+        else:
+            self.TransformMat= np.load(str(FileToLoad))
         plt.imshow(cmplxplt.ComplexArrayToRgb(self.TransformMat))
         self.digHolo_ConfigSetBasisTypeCustom(self.TransformMat)
-        
+        return self.TransformMat
     
 
     def SaveBatchFile(self,NewFilePathName,framebuffer,fieldOnly):   
         # get the field in the most memory efficent format
         fieldR,fieldI,fieldScale,x,y= self.digHolo_GetFields16()
         
-        FileSavePath='Data\\'+NewFilePathName+'.mat'
+        FileSavePath = Path(NewFilePathName)
+        if FileSavePath.suffix == "":
+            FileSavePath = FileSavePath.with_suffix(".mat")
+        if not FileSavePath.is_absolute():
+            FileSavePath = _DATA_DIR / FileSavePath
+        FileSavePath.parent.mkdir(parents=True, exist_ok=True)
         if( not fieldOnly):    
             coefs,batchCount,modeCount,polCount=self.digHolo_BasisGetCoefs()           
             polIdx = ((ctypes.c_int))()
@@ -711,7 +753,7 @@ class digholoObject():
             "fieldI": fieldI}
         # I know it is a little weird that I am saving it as a .mat file but this is just so that it is 
         # backwards compatiable with other code I have written that process the batch files
-        scipy.io.savemat(FileSavePath,DataStructure)
+        scipy.io.savemat(str(FileSavePath),DataStructure)
         return 
     def GetCoefAndMetricsForOutput(self):
         

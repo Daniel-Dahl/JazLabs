@@ -1,6 +1,7 @@
 
 import atexit
 import time
+import weakref
 import numpy as np
 
 from .flir_flycapture2_ctypes import (
@@ -36,6 +37,23 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
 
     return int(snapped)
 
+def _debug_file_dump(message):
+    lines = []
+    lines.append(message)
+    # Print to terminal
+    for line in lines:
+        print(line)
+    # Dump to file
+    with open("camera_log.txt", "a") as f:
+        for line in lines:
+            f.write(line + "\n")
+
+
+def _shutdown_camera_ref(camera_ref):
+    camera = camera_ref()
+    if camera is not None:
+        camera.shutdown()
+
 
 class CameraObject:
     """
@@ -66,7 +84,7 @@ class CameraObject:
         for k in range(self.num_cameras):
             print(f"{k}: FLIR camera {k}")
         print(f"Using camera {self.CameraIdx}")
-
+        
         if self.num_cameras <= 0:
             self.shutdown()
             raise RuntimeError("No FLIR cameras detected")
@@ -75,9 +93,11 @@ class CameraObject:
             raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
 
         self.guid = self.fc2.get_camera_from_index(self.context, self.CameraIdx)
+        
         self.fc2.connect(self.context, self.guid)
-
-        self.StartAcquisition()
+        
+        self.StartAcquisition() 
+        
          # turn on embedded frame counter if available, which can be used for diagnostics and dropped frame detection
         try:
             self.frame_counter_available = self.fc2.enable_embedded_frame_counter(self.context, True)
@@ -124,11 +144,10 @@ class CameraObject:
         self.GetPixelFormat()
         self.GetMaxMinFPS_ExposureTime()
         self.SetPixelFormat("mono16")
-        
        
             
 
-        atexit.register(self.shutdown)
+        atexit.register(_shutdown_camera_ref, weakref.ref(self))
 
     def __del__(self):
         self.shutdown()
@@ -159,8 +178,10 @@ class CameraObject:
 
     def StartAcquisition(self):
         if not self._capturing:
+            # _debug_file_dump("StartAcquisition: calling fc2StartCapture")
             self.fc2.start_capture(self.context)
             self._capturing = True
+            # _debug_file_dump("StartAcquisition: fc2StartCapture returned")
 
     def StopAcquisition(self):
         if self._capturing:
@@ -327,7 +348,58 @@ class CameraObject:
         settings, _, _ = self.fc2.get_format7_configuration(self.context)
         return int(settings.pixelFormat)
 
+    def SetPixelFormat(self, pixel_format):
+        if isinstance(pixel_format, str):
+            pixel_format_key = pixel_format.strip().lower()
+            if pixel_format_key == "mono8":
+                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8)
+            elif pixel_format_key == "mono10":
+                # FlyCapture2 does not expose a clean separate mono10 path here,
+                # so keep this mapped onto the common 16-bit mono container.
+                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16)
+            elif pixel_format_key == "mono12":
+                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12)
+            elif pixel_format_key == "mono16":
+                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16)
+            else:
+                raise ValueError("pixel_format must be one of: mono8, mono10, mono12, mono16")
+        elif isinstance(pixel_format, int):
+            fc2_pixel_format = int(pixel_format)
+        else:
+            raise TypeError("pixel_format must be a string or integer")
 
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self.pixel_format_fc2 = self.fc2.set_pixel_format(self.context, fc2_pixel_format)
+
+            if self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8):
+                self.pixel_format = "mono8"
+            elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12):
+                self.pixel_format = "mono12"
+            elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16):
+                self.pixel_format = "mono16"
+            else:
+                self.pixel_format = f"fc2:{self.pixel_format_fc2}"
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+        return self.pixel_format
+
+    def GetPixelFormat(self):
+        self.pixel_format_fc2 = self.fc2.get_pixel_format(self.context)
+
+        if self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8):
+            self.pixel_format = "mono8"
+        elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12):
+            self.pixel_format = "mono12"
+        elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16):
+            self.pixel_format = "mono16"
+        else:
+            self.pixel_format = f"fc2:{self.pixel_format_fc2}"
+
+        return self.pixel_format
 
     def SetROI(self, offset_x=None, offset_y=None, width=None, height=None,snap_values=True, enable=True, mode='nearest'):
         """
@@ -394,6 +466,7 @@ class CameraObject:
             raise RuntimeError("Requested ROI is not valid for this FLIR camera")
 
         packet_size = int(packet_info.recommendedBytesPerPacket)
+        print(packet_size)
         if packet_size <= 0:
             packet_size = int(current_packet_size)
         if packet_size <= 0:
@@ -459,55 +532,4 @@ class CameraObject:
     
     
     
-    def SetPixelFormat(self, pixel_format):
-        if isinstance(pixel_format, str):
-            pixel_format_key = pixel_format.strip().lower()
-            if pixel_format_key == "mono8":
-                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8)
-            elif pixel_format_key == "mono10":
-                # FlyCapture2 does not expose a clean separate mono10 path here,
-                # so keep this mapped onto the common 16-bit mono container.
-                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16)
-            elif pixel_format_key == "mono12":
-                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12)
-            elif pixel_format_key == "mono16":
-                fc2_pixel_format = int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16)
-            else:
-                raise ValueError("pixel_format must be one of: mono8, mono10, mono12, mono16")
-        elif isinstance(pixel_format, int):
-            fc2_pixel_format = int(pixel_format)
-        else:
-            raise TypeError("pixel_format must be a string or integer")
-
-        was_capturing = self._capturing
-        if was_capturing:
-            self.StopAcquisition()
-        try:
-            self.pixel_format_fc2 = self.fc2.set_pixel_format(self.context, fc2_pixel_format)
-
-            if self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8):
-                self.pixel_format = "mono8"
-            elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12):
-                self.pixel_format = "mono12"
-            elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16):
-                self.pixel_format = "mono16"
-            else:
-                self.pixel_format = f"fc2:{self.pixel_format_fc2}"
-        finally:
-            if was_capturing:
-                self.StartAcquisition()
-        return self.pixel_format
-
-    def GetPixelFormat(self):
-        self.pixel_format_fc2 = self.fc2.get_pixel_format(self.context)
-
-        if self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO8):
-            self.pixel_format = "mono8"
-        elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO12):
-            self.pixel_format = "mono12"
-        elif self.pixel_format_fc2 == int(fc2PixelFormat.FC2_PIXEL_FORMAT_MONO16):
-            self.pixel_format = "mono16"
-        else:
-            self.pixel_format = f"fc2:{self.pixel_format_fc2}"
-
-        return self.pixel_format
+    

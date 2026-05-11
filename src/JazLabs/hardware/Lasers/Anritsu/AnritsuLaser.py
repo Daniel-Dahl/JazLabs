@@ -130,25 +130,96 @@ class AnritsuMG963xLaserRS232:
     def set_sweep_mode(self):
         self.write("MSWP")
 
-    def set_wavelength_nm(self, wavelength_nm):
+    
+    def wait_until_wavelength_settled(
+        self,
+        target_nm=None,
+        tolerance_nm=0.001,
+        timeout_s=30,
+        poll_interval_s=0.1,
+    ):
+        """
+        Wait until the laser has finished tuning.
+
+        Uses MOVE? first:
+            0 = wavelength setting terminated
+            1 = wavelength setting currently in progress
+
+        Then optionally checks OUTW? against the target wavelength.
+
+        tolerance_nm=0.001 means 1 pm.
+        """
+        start_time = time.time()
+
+        while True:
+            moving = int(float(self.query("MOVE?")))
+
+            if moving == 0:
+                if target_nm is None:
+                    return True
+
+                current_nm = self.get_wavelength_nm()
+
+                if abs(current_nm - target_nm) <= tolerance_nm:
+                    return True
+
+            if time.time() - start_time > timeout_s:
+                current_nm = self.get_wavelength_nm()
+                raise TimeoutError(
+                    f"Laser wavelength did not settle within {timeout_s} s. "
+                    f"Target={target_nm:.6f} nm, current={current_nm:.6f} nm"
+                )
+
+            time.sleep(poll_interval_s)
+            
+    def set_wavelength_nm(self, wavelength_nm, wait=True, timeout_s=30, poll_interval_s=0.1):
+        if not 1500 <= wavelength_nm <= 1580:
+            raise ValueError("Wavelength must be between 1500 and 1580 nm.")
+
         self.set_cw_mode()
         self.write(f"WCNT {wavelength_nm:.3f}NM")
 
-    def get_wavelength_nm(self):
-        return float(self.query("WCNT?")) * 1e9
+        if wait:
+            self.wait_until_wavelength_settled(
+                target_nm=wavelength_nm,
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+            )
 
-    def get_output_wavelength_nm(self):
+    def get_wavelength_setpoint_nm(self):
+        return float(self.query("WCNT?")) * 1e9
+    
+    def get_min_wavelength_nm(self):
+        return 1500.0
+        # return float(self.query("WMIN?")) * 1e9
+
+
+    def get_max_wavelength_nm(self):
+        return 1580.0
+
+        # return float(self.query("WMAX?")) * 1e9
+
+    def get_wavelength_nm(self):
         return float(self.query("OUTW?")) * 1e9
 
     def set_power_dbm(self, power_dbm):
         self.write("POWU DBM")
         self.write(f"POW {power_dbm:.2f}DBM")
+        
     def set_power_mw(self, power_dbm):
         self.write("POWU MW")
         self.write(f"POW {power_dbm:.2f}MW")
 
     def get_power(self):
         return float(self.query("POW?"))
+    
+    def get_min_power_dbm(self):
+        
+        return float(self.query("PMIN?"))
+
+    
+    def get_max_power(self):
+        return float(self.query("POWM?"))
 
     def laser_on(self):
         self.write("OUTP ON")
