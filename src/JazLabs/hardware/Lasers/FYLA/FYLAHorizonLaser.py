@@ -3,7 +3,7 @@ import serial
 from serial.tools import list_ports
 
 
-class FYLAHorizonLaserObject:
+class LaserObject:
     """
     Python object for controlling a FYLA HORIZON supercontinuum laser
     over USB virtual COM port / RS232 serial communication.

@@ -440,7 +440,7 @@ def ord_if_char(value):
 # End preamble
 # # Daniel NOTE I have the 4 lines bellow. I couldnt work out how to tell the ctypesgen lib where the digHolo lib was so I
 # # I have hard coded it in. I also think it will be able to load the digHolo lib quicker
-# dll_path = <repo>\\pwi_inst\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
+# dll_path = <repo>\\JazLabs\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
 # digHolo = ctypes.cdll.LoadLibrary(dll_path)
 # _libs = { "digHolo": digHolo}
 _libs = {}
@@ -911,7 +911,7 @@ if hasattr(os, "add_dll_directory"):
 loader = LibraryLoader()
 _libs = {"digHolo": loader(dll_path)}
 
-# dll_path = <repo>\\pwi_inst\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
+# dll_path = <repo>\\JazLabs\\hardware\\digHolo\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll
 # dll_dir = os.path.dirname(dll_path)
 # loader = LibraryLoader()
 # _libs = {"digHolo": loader(dll_path)}

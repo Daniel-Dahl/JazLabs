@@ -5,7 +5,7 @@ import pyvisa
 import numpy as np
 import matplotlib.pyplot as plt
 
-class LaserAmp_Keopsys:
+class LaserObject:
     """
     Class to interact with an oscilloscope via VISA commands, providing methods to retrieve and manipulate 
     oscilloscope settings, data, and waveform properties.

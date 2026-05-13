@@ -1,4 +1,4 @@
-
+from Lab_Equipment.Config import config 
 
 # Python Libs
 import cv2
@@ -19,39 +19,48 @@ from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
 plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
 
+#SLM Libs
+import Lab_Equipment.SLM.pyLCOS as pyLCOS
+import Lab_Equipment.ZernikeModule.ZernikeModule as zernMod
 
-import JazLabs.utils.camera_utils as cam_utils
-import JazLabs.hardware.SLM.SLM_ServerLinux as SLM_Serverlib
-import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
-import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
-
-
-
+#Camera Libs
+import Lab_Equipment.Camera.CameraObject as CamForm
 
 
-# def ProcessFramesFromPhaseCal(FrameBuffer,digholoObj:digholoLib.digholoObject, MaskNum,FFTRadiusIn=0.2,wavelength=1550e-9,Nx=256,Ny=256,CampixelSize=30e-6):
-#     digholoObj.digholoProperties["FFTRadius"]=FFTRadiusIn
-#     digholoObj.digholoProperties["fftWindowSizeX"]=Nx
-#     digholoObj.digholoProperties["fftWindowSizeY"]=Ny
-#     digholoObj.digholoProperties["wavelenght"]=wavelength
+#Camera Libs
+import Lab_Equipment.Camera.CameraObject as CamForm
+
+# digiHolo Libs
+import Lab_Equipment.digHolo.digHolo_pylibs.digholoObject as digholoLib
+import Lab_Equipment.PowerMeter.PowerMeter_Thorlabs_lib as pwrMeter_lib
+
+
+import  Lab_Equipment.GeneralLibs.ComplexPlotFunction as cmplxplt
+
+
+def ProcessFramesFromPhaseCal(FrameBuffer,digholoObj:digholoLib.digholoObject, MaskNum,FFTRadiusIn=0.2,wavelength=1550e-9,Nx=256,Ny=256,CampixelSize=30e-6):
+    digholoObj.digholoProperties["FFTRadius"]=FFTRadiusIn
+    digholoObj.digholoProperties["fftWindowSizeX"]=Nx
+    digholoObj.digholoProperties["fftWindowSizeY"]=Ny
+    digholoObj.digholoProperties["wavelenght"]=wavelength
 
 
 
-#     Frame_Initial= copy.deepcopy(FrameBuffer[-1,:,:])
-#     digholoObj.digHolo_AutoAlign(Frame_Initial)
-#     #Display he initial frame
-#     Fullimage ,ViewPortRGB_cam,WindowString=digholoObj.GetViewport_arr(Frame_Initial)
-#     plt.figure()
-#     plt.imshow(Fullimage)
-#     plt.show()
+    Frame_Initial= copy.deepcopy(FrameBuffer[-1,:,:])
+    digholoObj.digHolo_AutoAlign(Frame_Initial)
+    #Display he initial frame
+    Fullimage ,ViewPortRGB_cam,WindowString=digholoObj.GetViewport_arr(Frame_Initial)
+    plt.figure()
+    plt.imshow(Fullimage)
+    plt.show()
     
-#     digholoObj.digHolo_ProcessBatch(FrameBuffer[0:-1,:,:])
-#     Fields=digholoObj.digHolo_GetFields()
+    digholoObj.digHolo_ProcessBatch(FrameBuffer[0:-1,:,:])
+    Fields=digholoObj.digHolo_GetFields()
     
-#     NewFileForBatch="phaseCal_" + str(int(wavelength*1e9)) + "MaskNum"+str(MaskNum)
-#     digholoObj.SaveBatchFile(NewFileForBatch,FrameBuffer[0:-1,:,:],True)
+    NewFileForBatch="phaseCal_" + str(int(wavelength*1e9)) + "MaskNum"+str(MaskNum)
+    digholoObj.SaveBatchFile(NewFileForBatch,FrameBuffer[0:-1,:,:],True)
 
-#     return Fields,WindowString
+    return Fields,WindowString
     
 
 #NOTE when you do a phase calibration you want to start at the 0 gray scale and move up through it. 
@@ -64,9 +73,9 @@ import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
 # the phase cal wrong. you have to start it off at 0 grey level and move it up to 255 as this is the
 # whole point of the calibration. you are a idiot. I am leaving the comment here so you can feel 
 # the shame every time you look at this code.
-def PhaseCalibration(slm:PhaseMaskClass.PhaseMaskObject,channel,CamObj:CamClientlib.CameraClient,Direction="x", imask=0,pol="V",backgroundLevel=0):
+def PhaseCalibration(slm:pyLCOS.LCOS,channel,CamObj:CamForm.GeneralCameraObject,Direction="x", imask=0,pol="V",backgroundLevel=0):
     
-    # CamObj.SetSingleFrameCapMode()
+    CamObj.SetSingleFrameCapMode()
     phaseLevels=256
     masksize=slm.polProps[channel][pol].masksize
     
@@ -76,7 +85,7 @@ def PhaseCalibration(slm:PhaseMaskClass.PhaseMaskObject,channel,CamObj:CamClient
     y_center = slm.AllMaskProperties[channel][pol][imask].center[0]
     x_center = slm.AllMaskProperties[channel][pol][imask].center[1]   
     
-    FrameBuffer = np.zeros((phaseLevels+1, CamObj.frame_shape[0], CamObj.frame_shape[1]), dtype=np.float32)
+    FrameBuffer = np.zeros((phaseLevels+1, CamObj.FrameHeight, CamObj.FrameWidth), dtype=np.float32)
 
     MASK=np.zeros((Nx,Ny),dtype=np.uint8)
     for level in range(phaseLevels):
@@ -104,7 +113,7 @@ def PhaseCalibration(slm:PhaseMaskClass.PhaseMaskObject,channel,CamObj:CamClient
     FrameBuffer[-1,:,:]=CamObj.GetFrame(True)
     
     #Turn continous mode back on for the camera
-    # CamObj.SetContinousFrameCapMode(CamObj.Exposure)
+    CamObj.SetContinousFrameCapMode(CamObj.Exposure)
 
 
     return FrameBuffer
@@ -144,41 +153,9 @@ def periodic_strip_mask_1(mask_shape, strip_width=10, strip_value=1, orientation
 
     return mask
 
-# def PhaseCalibration_BinaryDiffraction_PwrMeter(slm:PhaseMaskClass.PhaseMaskObject,channel,PwrMeter:pwrMeter_lib.PowerMeterObj,
-#                                        Direction="x", imask=0,pol="V",backgroundLevel=0,
-#                                        strip_width=10):
-#     phaseLevels=256
-#     masksize=slm.polProps[channel][pol].masksize
-    
-#     Nx=masksize[0]
-#     Ny=masksize[1]
-    
-#     y_center = slm.AllMaskProperties[channel][pol][imask].center[0]
-#     x_center = slm.AllMaskProperties[channel][pol][imask].center[1]   
-    
-#     PowerValues = np.zeros((phaseLevels+1), dtype=np.float32)
-
-#     mask=np.zeros((Nx,Ny),dtype=np.uint8)
-#     for level in range(0,phaseLevels,1):
-#         print(level, end=' ')
-#         mask=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=level, orientation=Direction)
-            
-#         MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask,backgroundLevel)
-
-#         slm.Write_To_Display(MASKTODisplay_256,channel)
-#         PowerValues[level]=PwrMeter.GetPower()
-        
-#     slm.LCOS_Clean(channel)
-#     PowerValues[-1]=PwrMeter.GetPower()
-
-#     return PowerValues
-def PhaseCalibration_BinaryDiffraction_Cam_zerothOrder(slm:PhaseMaskClass.PhaseMaskObject,channel,Cam:CamClientlib.CameraClient,
-                                       Direction="x", imask=0,pol="H",backgroundLevel=0,
-                                       strip_width=10,camframeAvg=1,
-                                        ixCamCenter=None,iyCamCenter=None,
-                                    x_half_width=None,
-                                    y_half_width=None):
-    # Cam.SetSingleFrameCapMode()
+def PhaseCalibration_BinaryDiffraction_PwrMeter(slm:pyLCOS.LCOS,channel,PwrMeter:pwrMeter_lib.PowerMeterObj,
+                                       Direction="x", imask=0,pol="V",backgroundLevel=0,
+                                       strip_width=10):
     phaseLevels=256
     masksize=slm.polProps[channel][pol].masksize
     
@@ -198,21 +175,47 @@ def PhaseCalibration_BinaryDiffraction_Cam_zerothOrder(slm:PhaseMaskClass.PhaseM
         MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask,backgroundLevel)
 
         slm.Write_To_Display(MASKTODisplay_256,channel)
-        frame=Cam.GetFrame() 
-        PowerValues[level] = cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+        PowerValues[level]=PwrMeter.GetPower()
         
-        # PowerValues[level]=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+    slm.LCOS_Clean(channel)
+    PowerValues[-1]=PwrMeter.GetPower()
+
+    return PowerValues
+def PhaseCalibration_BinaryDiffraction_Cam_zerothOrder(slm:pyLCOS.LCOS,channel,Cam:CamForm.GeneralCameraObject,
+                                       Direction="x", imask=0,pol="H",backgroundLevel=0,
+                                       strip_width=10,camframeAvg=1,
+                                        ixCamCenter=None,iyCamCenter=None,
+                                    x_half_width=None,
+                                    y_half_width=None):
+    Cam.SetSingleFrameCapMode()
+    phaseLevels=256
+    masksize=slm.polProps[channel][pol].masksize
+    
+    Nx=masksize[0]
+    Ny=masksize[1]
+    
+    y_center = slm.AllMaskProperties[channel][pol][imask].center[0]
+    x_center = slm.AllMaskProperties[channel][pol][imask].center[1]   
+    
+    PowerValues = np.zeros((phaseLevels+1), dtype=np.float32)
+
+    mask=np.zeros((Nx,Ny),dtype=np.uint8)
+    for level in range(0,phaseLevels,1):
+        print(level, end=' ')
+        mask=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=level, orientation=Direction)
+            
+        MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask,backgroundLevel)
+
+        slm.Write_To_Display(MASKTODisplay_256,channel)
+        PowerValues[level]=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
     
         
-    slm.Clear_Display(channel)
-    frame=Cam.GetFrame() 
-    PowerValues[-1] = cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-        
-    # PowerValues[-1]=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
-    # Cam.SetContinousFrameCapMode(Cam.Exposure)
+    slm.LCOS_Clean(channel)
+    PowerValues[-1]=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+    Cam.SetContinousFrameCapMode(Cam.Exposure)
     
     return PowerValues
-def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.PhaseMaskObject,channel,Cam:CamClientlib.CameraClient,
+def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:pyLCOS.LCOS,channel,Cam:CamForm.GeneralCameraObject,
                                        Direction="x", imask=0,pol="H",backgroundLevel=0,
                                        strip_width=10,camframeAvg=1,
                                         ixCamCenter0th=None,iyCamCenter0th=None,
@@ -220,7 +223,7 @@ def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.Pha
                                         ixCamCenter_minus1st=None,iyCamCenter_minus1st=None,
                                     x_half_width=None,
                                     y_half_width=None):
-    # Cam.SetSingleFrameCapMode()
+    Cam.SetSingleFrameCapMode()
     phaseLevels=256
     masksize=slm.polProps[channel][pol].masksize
     
@@ -244,26 +247,18 @@ def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.Pha
 
         slm.Write_To_Display(MASKTODisplay_256,channel)
         # _=Cam.GetRelativePower(centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
-        frame=Cam.GetFrame() 
-        PowerValues0th[level] = cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width)
-        PowerValues_plus1st[level]= cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width)
-        PowerValues_minus1st[level]= cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width)
-        
-        # PowerValues0th[level]=Cam.GetRelativePower(centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
-        # PowerValues_plus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
-        # PowerValues_minus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+        PowerValues0th[level]=Cam.GetRelativePower(centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+        PowerValues_plus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+        PowerValues_minus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
         
 
         
-    slm.Clear_Display(channel)
-    frame=Cam.GetFrame() 
-    
-    PowerValues0th[level]=cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width)
-    PowerValues_plus1st[level]=cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width)
-    PowerValues_minus1st[level]=cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width)
+    slm.LCOS_Clean(channel)
+    PowerValues0th[level]=Cam.GetRelativePower(centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+    PowerValues_plus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+    PowerValues_minus1st[level]=Cam.GetRelativePower(centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
     
     
-    # Cam.SetContinousFrameCapMode(Cam.Exposure)
+    Cam.SetContinousFrameCapMode(Cam.Exposure)
     
     return PowerValues0th,PowerValues_plus1st,PowerValues_minus1st
-

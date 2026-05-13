@@ -1,19 +1,28 @@
-from Lab_Equipment.Config import config
-import Lab_Equipment.DAC.DAC_controllerThread as VoltageControllerThread
+
+
+
 import time
 import numpy as np
+from pathlib import Path
 
 
 
-class Thorlabs_VOA():
-    def __init__(self,VoltageController:VoltageControllerThread.Voltage_Controller,CalibrationFileName='VoltagePowerCal',RefreshTime=0.05,boardNumber=0,Channel=1,voltStepCount=256,voltMinLim=0,voltMaxLim=5):
+class VOAObject():
+    def __init__(self,DAType=None,CalibrationFileName='VoltagePowerCal',RefreshTime=0.05,boardNumber=0,Channel=1,voltStepCount=256,voltMinLim=0,voltMaxLim=5):
             super().__init__()
             # InstaCal board number
             self.boardNumber=boardNumber
             self.channel = Channel
             # NOTE this is based on the DAQ NOT the device that is being manipulated
             #self.voltage_range = ULRange.UNI5VOLTS
-            self.VoltageController=VoltageController
+            if DAType == 'mcc_daq':
+                import pwi_inst.hardware.DAQ_Controller.MCC.mcc_daq as DAQLib
+            elif DAType == 'ni_daq':
+                import pwi_inst.hardware.DAQ_Controller.NI.NI_DAQ as DAQLib
+            else:
+                raise ValueError('Unknown DAQ model specified')
+            
+            self.VoltageController=DAQLib.DAQObject(RefreshTime=RefreshTime,deviceNum=boardNumber,ChannelCount=Channel)
             
             
             self.voltStepCount=voltStepCount
@@ -79,10 +88,10 @@ class Thorlabs_VOA():
         voltage=self.PowerToVolts(power)
         if printVoltage==True:
             print(voltage)
-        self.SetVoltValue(voltage)
+        self.SetVoltage(voltage)
         
         
-    def SetVoltValue(self,voltage):
+    def SetVoltage(self,voltage):
 
         if voltage>=self.voltMinLim and voltage<=self.voltMaxLim:
             self.VoltageController.SetVoltage(self.channel,voltage)
@@ -111,17 +120,22 @@ class Thorlabs_VOA():
         # Save to compressed file
         if voltageCalArr is None: 
             voltageCalArrToSave=self.voltagesCals_arr
+        else:
+            voltageCalArrToSave=voltageCalArr
         if powerCalArr is None: 
             powerCalArrToSave=self.powersCals_arr
-        CalibrationFilePath=config.PATH_OPTICAL_PWR_ATTENUATION +"CalibrationFiles\\"+filename
-        np.savez(CalibrationFilePath+'.npz', voltageCalArr=voltageCalArrToSave, powerCalArr=powerCalArrToSave)
+        else:
+            powerCalArrToSave=powerCalArr
+
+        calibration_dir = Path(__file__).resolve().parents[5] / "calibrations" / "VOA"
+        calibration_dir.mkdir(parents=True, exist_ok=True)
+        calibration_file_path = calibration_dir / f"{filename}.npz"
+        np.savez(calibration_file_path, voltageCalArr=voltageCalArrToSave, powerCalArr=powerCalArrToSave)
 
        
     def LoadVoltagePowerCal(self,filename="VoltagePowerCal"):
-        
-        CalibrationFilePath=config.PATH_OPTICAL_PWR_ATTENUATION +"CalibrationFiles\\"+filename+".npz"
-        
-        data = np.load(CalibrationFilePath)
+        calibration_file_path = Path(__file__).resolve().parents[5] / "calibrations" / "VOA" / f"{filename}.npz"
+        data = np.load(calibration_file_path)
         self.voltagesCals_arr = data['voltageCalArr']
         self.powersCals_arr = data['powerCalArr']
         self.SetVoltPwrCal(self.voltagesCals_arr,self.powersCals_arr)

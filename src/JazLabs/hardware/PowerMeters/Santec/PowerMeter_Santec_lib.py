@@ -1,11 +1,10 @@
 import sys
-import Lab_Equipment.Config.config as config
 import pyvisa
 import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-class PowerMeterObj:
+class PowerMeterObject:
     """
     Class to interact with an oscilloscope via VISA commands, providing methods to retrieve and manipulate 
     oscilloscope settings, data, and waveform properties.

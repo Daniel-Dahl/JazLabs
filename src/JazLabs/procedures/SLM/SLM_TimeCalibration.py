@@ -74,9 +74,77 @@ def periodic_strip_mask_1(mask_shape, strip_width=10, strip_value=1, orientation
 
     return mask
 
+def slmRefreshRateCalibration(slmobj_client, phasemaskobj:PhaseMaskClass.PhaseMaskObject,Cam:CamClientlib.CameraClient,channel="Red",
+                              refreshCount=10,refreshRateMin=0,refreshRateMax=100,MeasCount=1,
+                               Direction="vertical", imask=0,pol="H",backgroundLevel=0,strip_value=0.0,
+                                       strip_width=10,
+                                       ixCamCenter=None,iyCamCenter=None,
+                                    x_half_width=None,
+                                    y_half_width=None):
+    
+    mask_NoStrip_MASKTODisplay_256=np.zeros((1024,1024),dtype=np.uint8)
+    MaskCMPLX=slm_masks.binary_stripe_phase(Nx=1024,Ny=1024,stripe_width=strip_width,phase_value=strip_value,orientation=Direction)
+    mask_Strip_MASKTODisplay_256=phasemaskobj.convert_phase_to_uint8( arr=(MaskCMPLX[0,0,:,:]))
+    
+    
+    # plt.subplot(1,2,1)
+    # plt.imshow(frame_NoStrip)
+    # plt.subplot(1,2,2)
+    # plt.imshow(frame_Strip)
+    refreshArr = np.linspace(refreshRateMin,refreshRateMax,refreshCount)*1e-3
+    metricValues=np.zeros((MeasCount,refreshCount))
+    intialpwrTracker=np.zeros((MeasCount,refreshCount))
+    timetotal_slm=0
+    timetotal_cam=0
+    
+    
+    for imeas in range(MeasCount):
+        slmobj_client.SetRefreshRate(100.0e-3)
+        # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
+        slmobj_client.WriteImageToSLM(mask_NoStrip_MASKTODisplay_256)
+        frame_blankslm=Cam.GetFrame() 
+        initalpwr= cam_utils.get_relative_power(frame=frame_blankslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+        
+        slmobj_client.WriteImageToSLM(mask_Strip_MASKTODisplay_256)
+        frame_stripslm=Cam.GetFrame() 
+        initalpwr_strip= cam_utils.get_relative_power(frame=frame_stripslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+        # plt.subplot(1,2,1)
+        # plt.imshow(frame_blankslm)
+        # plt.subplot(1,2,2)
+        # plt.imshow(frame_stripslm)
+        
+        print("Initial Power: "+str(initalpwr_strip/initalpwr ))
+        
+        for irefreshrate in range(refreshCount):
+            slmobj_client.SetRefreshRate(refreshArr[irefreshrate])
+            # Draw a strip profile on the SLM and get a frame
+            slmobj_client.WriteImageToSLM(mask_Strip_MASKTODisplay_256)
+            frame_slmPIStrip=Cam.GetFrame() 
+            pwrAfterTilt=cam_utils.get_relative_power(frame=frame_slmPIStrip,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+            # Draw a Blank profile on the SLM and get a frame
+            slmobj_client.WriteImageToSLM(mask_NoStrip_MASKTODisplay_256,channel)
+            frame_Reblankslm=Cam.GetFrame() 
+            pwrAfterReflat=cam_utils.get_relative_power(frame=frame_Reblankslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+            
+            metricValues[imeas,irefreshrate]=pwrAfterTilt/initalpwr
+            intialpwrTracker[imeas,irefreshrate]=pwrAfterReflat/initalpwr
+            if imeas==0:
+                print(metricValues[imeas,irefreshrate])
+        if imeas==0:
+            plt.plot(refreshArr*1e3,metricValues[imeas,:])
+            
+            print(metricValues[imeas,irefreshrate])
+            
+    print(timetotal_slm/MeasCount)
+    print(timetotal_cam/MeasCount)
+        # print(imeas) 
+    return refreshArr,metricValues,intialpwrTracker
 
 
-def slmRefreshRateCalibration(slm:pyLCOS.LCOS,Cam:CamForm.GeneralCameraObject,channel="Red",
+
+
+
+def slmRefreshRateCalibration_old(slm:pyLCOS.LCOS,Cam:CamForm.GeneralCameraObject,channel="Red",
                               refreshCount=10,refreshRateMin=0,refreshRateMax=100,MeasCount=1,
                                Direction="y", imask=0,pol="H",backgroundLevel=0,strip_value=128,
                                        strip_width=10,

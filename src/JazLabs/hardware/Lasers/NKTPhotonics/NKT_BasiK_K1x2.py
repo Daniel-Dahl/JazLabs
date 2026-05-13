@@ -14,7 +14,7 @@ def deviceGetType(portname, devId):
     result = deviceGetType(portname, devId, _readValue)
     return result, _readValue.value
 
-class Laser_NKT_BasiK_K1x2:
+class LaserObject:
     """
     Class to interact with an oscilloscope via VISA commands, providing methods to retrieve and manipulate 
     oscilloscope settings, data, and waveform properties.

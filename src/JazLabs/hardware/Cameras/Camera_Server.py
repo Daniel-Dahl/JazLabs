@@ -71,11 +71,11 @@ class CameraZMQServer:
         # Camera selection, like the original camera server
         # ----------------------------------------------------
         if self.CameraType == "First Light C-Blue":
-            import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as cameraobj
+            import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as cameraobj
         elif self.CameraType == "First Light C-Red3_2Lite":
-            import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as cameraobj
+            import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as cameraobj
         elif self.CameraType == "FLIR Point Grey":
-            import pwi_inst.hardware.Cameras.FLIRPointGreyCameras.FLIR_PointGrey as cameraobj
+            import JazLabs.hardware.Cameras.FLIRPointGreyCameras.FLIR_PointGrey as cameraobj
         else:
             raise ValueError(f"Unknown CameraType: {self.CameraType}")
 

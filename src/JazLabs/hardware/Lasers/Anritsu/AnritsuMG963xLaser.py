@@ -2,7 +2,7 @@ import time
 import serial
 
 
-class AnritsuMG963xLaserRS232:
+class LaserObject:
     STX = 0x02
     ETX = 0x03
     ACK = 0x06

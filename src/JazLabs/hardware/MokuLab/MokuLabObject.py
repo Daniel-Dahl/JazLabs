@@ -1,4 +1,3 @@
-from Lab_Equipment.Config import config
 import numpy as np
 import time
 import multiprocessing

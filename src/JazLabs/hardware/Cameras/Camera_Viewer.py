@@ -3,7 +3,7 @@ import multiprocessing as mp
 import numpy as np
 import cv2
 
-from pwi_inst.hardware.Cameras.Camera_Client import CameraClient
+from JazLabs.hardware.Cameras.Camera_Client import CameraClient
 
 
 def GetHardwareRangeFromDtype(frame):

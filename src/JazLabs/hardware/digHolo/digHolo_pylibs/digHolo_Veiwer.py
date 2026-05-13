@@ -8,8 +8,8 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
-import pwi_inst.hardware.digHolo.digHolo_pylibs.digholoObject as digholoMod
-from pwi_inst.hardware.Cameras.Camera_Client import CameraClient
+import JazLabs.hardware.digHolo.digHolo_pylibs.digholoObject as digholoMod
+from JazLabs.hardware.Cameras.Camera_Client import CameraClient
 
 
 plt.style.use("dark_background")

@@ -1,5 +1,5 @@
-from Lab_Equipment.Config import config
-import Lab_Equipment.PowerMeter.TLPMX as TLPMX
+
+import JazLabs.hardware.PowerMeters.Thorlabs.TLPMX as TLPMX
 from TLPMX import TLPM_DEFAULT_CHANNEL
 import pyvisa
 # from ThorlabsPM100 import ThorlabsPM100 # go and look at documentation to see the other functions that can be used to change things on the power meter. You need to pip install this
@@ -16,7 +16,7 @@ class DriverSelector(IntEnum):
 #if you install the thorlabs software the drivers are set to TLM drivers (these are the new drivers) the drivers need to be NI-VISA driver.
 #To switch the drivers there is a some software located in C:\Program Files (x86)\Thorlabs\OPM\Tools\DriverSwitcher called Thorlabs.PMDriverSwitcher.exe. You can switch the drivers there.
 #NOTE the USB codes are USB[board]::vendorID::productID::serialNumber::INSTR example 'USB::0x1313::0x8078::P0024994::INSTR'
-class PowerMeterObj:
+class PowerMeterObject:
     def __init__(self, deviceName='',wavelength=925,AvgCount=1,Units="W",driver=DriverSelector.NIVISA):
         # super().__init__()  # Initialize the base class
         self.deviceName=deviceName

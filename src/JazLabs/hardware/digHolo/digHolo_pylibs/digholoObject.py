@@ -16,9 +16,9 @@ from enum import IntEnum
 # digH_hpy as in header file for python... pretty clever I know (Daniel 2 seconds after writing this comment. Head slap you are a idiot )
 # Ok so I found a lib called ctypesgen that can look at a header file and make a python wrapper that can also include all the error
 # stuff so i have generated the python version of the header file with that. I need to test it to see how it goes.
-import pwi_inst.hardware.digHolo.digHolo_pylibs.digholoHeader as digH_hpy 
+import JazLabs.hardware.digHolo.digHolo_pylibs.digholoHeader as digH_hpy 
 
-import pwi_inst.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
+import JazLabs.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
 
 
 from multiprocessing import Manager

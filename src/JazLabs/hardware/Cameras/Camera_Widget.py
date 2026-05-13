@@ -37,7 +37,7 @@ class CameraControlWindow:
         import tkinter as tk
         from tkinter import ttk
 
-        from pwi_inst.hardware.Cameras.Camera_Client import CameraClient
+        from JazLabs.hardware.Cameras.Camera_Client import CameraClient
 
         self.tk = tk
         self.ttk = ttk

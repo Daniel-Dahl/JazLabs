@@ -2,7 +2,7 @@ import pyvisa
 import time
 import re
 
-class LaserObject_JDSUniphaseTunableLaser:
+class LaserObject:
     """
     JDS/Photonetics/EXFO-style tunable laser over GPIB/VISA.
     Adds robust write/read with LF+EOI, serial-poll sync, and verification loops
