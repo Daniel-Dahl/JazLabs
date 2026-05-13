@@ -1,0 +1,28 @@
+<AUTO ALIGN>
+<Parameter estimate>
+Fourier plane
+Tilt	0	0.502772,-0.854733
+Camera plane
+0	1	BeamCentre	(-2.350066e-05	-5.154029e-05)	MFD:1.382012e-04	Defocus:3.457704	TotalPwr:2574.344971	MaxV:15316.403320	Aeff:6.493345e-08
+Focus (ms)	103.388800
+Parameter estimate time (ms)	113.155800
+</Parameter estimate>
+<Parameter tweak>
+	Goal Metric:	81.051720	IL:81.051720	MDL:-inf	(Hz:17.180891)	dt: [0.058204 s] dErr	340282346638528859811704183484516925440.000000 
+		Pol:0	Tilt:	0.484	-0.814	Defocus:	-2.469	Waist:	112.050	Centre:	-14.044	-48.477
+	Goal Metric:	81.087708	IL:81.087708	MDL:-inf	(Hz:17.015426)	dt: [0.058770 s] dErr	0.045776 
+		Pol:0	Tilt:	0.485	-0.810	Defocus:	-1.068	Waist:	101.933	Centre:	-12.778	-48.477
+	Goal Metric:	81.087708	IL:81.087708	MDL:-inf	(Hz:16.926059)	dt: [0.059081 s] dErr	0.000000 
+		Pol:0	Tilt:	0.485	-0.810	Defocus:	-1.068	Waist:	101.933	Centre:	-12.778	-48.477
+GOAL:	81.087708	IL:	81.087708
+Completed alignment 0.289482 seconds (3.454447 Hz)
+WARNING : Fourier window radius (0.400) is too large for specified tilt(x,y). Reduce window radius to maximum of 0.315.
+Summary routines (time, calls)
+FFT        	0.0007	1
+IFFT       	0.1377	55
+ApplyTilt   	0.0315	134
+OverlapModes	0.0074	126
+</Parameter tweak>
+</AUTO ALIGN>
+
+

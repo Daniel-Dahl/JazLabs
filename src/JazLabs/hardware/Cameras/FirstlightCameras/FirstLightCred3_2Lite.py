@@ -173,11 +173,13 @@ class CameraObject:
                 "| TriggerSource:", self.trigger_source,
             )
 
-        return {
-            "AcquisitionMode": self.acquisition_mode,
-            "TriggerMode": self.trigger_mode,
-            "TriggerSource": self.trigger_source,
-        }
+        # return {
+        #     "AcquisitionMode": self.acquisition_mode,
+        #     "TriggerMode": self.trigger_mode,
+        #     "TriggerSource": self.trigger_source,
+        # }
+        return  self.trigger_mode, self.trigger_source,
+
 
     def SetContinuousMode(self):
         """

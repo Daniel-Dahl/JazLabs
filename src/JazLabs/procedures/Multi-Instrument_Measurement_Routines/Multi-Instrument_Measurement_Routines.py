@@ -347,3 +347,31 @@ def LuminosXYSnakeScanGetFrameMetrics(
         "stage_pos_weighted_metric_min": stage_pos_weighted_min,
     }
 
+def ChangeOpticalSwitchGetFrame():
+    # GetBatchOfFrames(self,SLMObjIdx=0,pol='H',CamObjIdx=[0],slmChannel=None,modeCount=None,AvgFrameCount=1,modeIdxArr=None):
+    AvgFrameCount=1  
+    modeCount=6
+    wavelengthCount=40
+    wavelenMin=1520e-9
+    wavelenMax=1600e-9
+    # Laser.set_power_mw(0.5)
+    Wavelengths=np.linspace(wavelenMin,wavelenMax,wavelengthCount)    
+        
+
+    frames_wavelengths_modes=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
+    # frames_wavelengths_modes_superposition=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
+    # frame_wavelength_NoRef=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
+    imodeStart=1
+    iframe=0
+    Cam.CamObject.SetSingleFrameCapMode()
+    for iwave in range(wavelengthCount):
+        Laser.set_wavelength_nm(Wavelengths[iwave]*1e9)
+        time.sleep(2)
+        iframe =0
+        for imode in range(modeCount):
+            ichan=imode+imodeStart
+            OpticalSwitch.set_channel(ichan)
+            for iavg in range(AvgFrameCount):
+                frames_wavelengths_modes[iwave,iframe,:,:]=Cam.CamObject.GetFrame(ConvertToFloat32=True)
+                iframe+=1
+    Cam.CamObject.SetContinousFrameCapMode()
