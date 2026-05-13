@@ -4,8 +4,6 @@ import cv2
 import numpy as np
 import multiprocessing as mp
 from pyMilk.interfacing.isio_shmlib import SHM
-
-
 class SLMLinuxViewer:
     def __init__(
         self,

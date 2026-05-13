@@ -45,7 +45,7 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
     return int(snapped)
 
 class CameraObject:
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=4.5e-6, verbose=False):
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=17.0e-6, verbose=False):
         self.cam_context = FliSdk_V2.Init()
         self._closed = False
         self.verbose = verbose
@@ -74,14 +74,11 @@ class CameraObject:
         
         self.pixelFormat = "mono14"
         self.pixelFormatRaw = "Mono14"
-        commandstr='tint raw'
-        ok, self.ExposureTime = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr) 
+        self.GetExposureTime()
        
         # Start SDK/grabber first
         FliSdk_V2.Start(self.cam_context)
-        # print("test")
         self.SetContinuousMode()
-        # print("test2")
         
 
         atexit.register(self.shutdown)
@@ -115,10 +112,8 @@ class CameraObject:
             raise RuntimeError("Failed to stop acquisition")
         
     def ResetCamera(self):
-        # self.StopAcquisition()
-        FliSdk_V2.Stop(self.cam_context)
-        FliSdk_V2.Start(self.cam_context)
-        # self.StartAcquisition()
+        self.StopAcquisition()
+        self.StartAcquisition()
 
     def ResetBuffer(self):
         FliSdk_V2.ResetBuffer(self.cam_context)
@@ -127,17 +122,9 @@ class CameraObject:
     # buffer
     # ----------------------------
     def SetBufferSizeInNumberOfFrames(self, n_frames):
-        # ok = FliSdk_V2.FliGenicamCamera.ExecuteFeature(self.cam_context, "AcquisitionStop")
-        FliSdk_V2.Stop(self.cam_context)
+        self.StopAcquisition()
         FliSdk_V2.SetBufferSizeInImages(self.cam_context, int(n_frames))
-        FliSdk_V2.Start(self.cam_context)
-
-        # restart acquisition in current mode
-        # if self._get_str("TriggerMode") == "Off":
-            # self.StartAcquisition()
-        # else:
-            # software-triggered mode still needs AcquisitionStart armed
-            # self.StartAcquisition()
+        self.StartAcquisition()
 
     def GetBufferSizeInNumberOfFrames(self):
         buffsize_mb = FliSdk_V2.GetBufferSize(self.cam_context)
@@ -156,13 +143,25 @@ class CameraObject:
     # ----------------------------
     def GetTriggerMode(self):
         commandstr='swsynchro source raw'
-        errorval, self.trigger_source = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
+        errorval, trigger_source_raw = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
         
         commandstr='swsynchro raw'
-        errorval, self.trigger_mode = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
+        errorval, trigger_mode_raw = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
         
         commandstr='extsynchro raw'
         errorval, self.acquisition_mode = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr) 
+        
+        trigger_mode_norm = str(trigger_mode_raw).strip().lower()
+        trigger_source_norm = str(trigger_source_raw).strip().lower()
+        self.trigger_mode = "On" if trigger_mode_norm == "on" else "Off"
+        if self.trigger_mode == "Off":
+            self.trigger_source = "FreeRun"
+        elif trigger_source_norm == "swtrig":
+            self.trigger_source = "Software"
+        elif trigger_source_norm == "external":
+            self.trigger_source = "line 0"
+        else:
+            self.trigger_source = str(trigger_source_raw)
         
         
 
@@ -172,12 +171,6 @@ class CameraObject:
                 "| TriggerMode:", self.trigger_mode,
                 "| TriggerSource:", self.trigger_source,
             )
-
-        # return {
-        #     "AcquisitionMode": self.acquisition_mode,
-        #     "TriggerMode": self.trigger_mode,
-        #     "TriggerSource": self.trigger_source,
-        # }
         return  self.trigger_mode, self.trigger_source,
 
 
@@ -207,7 +200,7 @@ class CameraObject:
     
         self.GetTriggerMode()
         
-    def SetHardwareTriggerMode(self,RiseEdgeOrFallEdge=-1):
+    def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=-1, lineNumber=0):
         commandstr='set swsynchro off'
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
         commandstr='set swsynchro source external'
@@ -349,7 +342,7 @@ class CameraObject:
             raise TypeError("pixel_format must be a string")
 
         pixel_format_key = pixel_format.strip().lower()
-        if pixel_format_key not in ("mono14", "mono16"):
+        if pixel_format_key not in ("mono14",):
             raise NotImplementedError(
                 "FirstLight CRED3-2Lite pixel format cannot be changed in this wrapper. "
                 "Current fixed format is mono14."
@@ -365,7 +358,7 @@ class CameraObject:
         return self.pixelFormat
     
     def SetROI(self, offset_x=None, offset_y=None, width=None, height=None, enable=True,
-               snap_values=False, mode='nearest'):
+               snap_values=True, mode='nearest'):
         """
         Set or disable ROI.
 
@@ -453,7 +446,7 @@ class CameraObject:
         In software trigger mode: send one software trigger, then return latest frame.
         """
 
-        if self.trigger_mode == "on" and self.trigger_source == "swtrig":
+        if self.trigger_mode == "On" and self.trigger_source == "Software":
             errorval = FliSdk_V2.FliCredThree.SoftwareTrig(self.cam_context)
 
         frame = FliSdk_V2.GetRawImageAsNumpyArray(self.cam_context, -1)

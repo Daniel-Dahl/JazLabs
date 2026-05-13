@@ -108,8 +108,12 @@ class MotorisedStageZMQServer:
                         axis = str(msg["axis"])
                         value = float(msg["value"])
                         if self.stage_type == "Luminos":
+                            if axis.upper() not in axis_map:
+                                raise ValueError(f"Invalid Luminos axis '{axis}'. Valid: {list(axis_map.keys())}")
                             stage_obj.Set_Single_Stage_State_abs(axis_map[axis.upper()], value)
                         else:
+                            if axis.upper() not in ("U", "V"):
+                                raise ValueError("Invalid Newport axis. Valid: ['U', 'V']")
                             stage_obj.move_abs(value, axis.upper())
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
@@ -117,8 +121,12 @@ class MotorisedStageZMQServer:
                         axis = str(msg["axis"])
                         value = float(msg["value"])
                         if self.stage_type == "Luminos":
+                            if axis.upper() not in axis_map:
+                                raise ValueError(f"Invalid Luminos axis '{axis}'. Valid: {list(axis_map.keys())}")
                             stage_obj.Set_Single_Stage_State_rel(axis_map[axis.upper()], value)
                         else:
+                            if axis.upper() not in ("U", "V"):
+                                raise ValueError("Invalid Newport axis. Valid: ['U', 'V']")
                             stage_obj.move_rel(value, axis.upper())
                         reply = {"ok": True, "result": None, "client_id": client_id}
 

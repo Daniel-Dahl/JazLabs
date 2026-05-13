@@ -280,9 +280,11 @@ class CameraClient:
         return result
 
     def IsSoftwareTriggerMode(self):
+        mode = str(getattr(self, "trigger_mode", "")).lower()
+        source = str(getattr(self, "trigger_source", "")).lower()
         return (
-            str(getattr(self, "trigger_mode", "")).lower() == "on"
-            and str(getattr(self, "trigger_source", "")).lower() == "software"
+            mode == "on"
+            and source in ("software", "swtrig")
         )
 
     def SetContinuousMode(self):

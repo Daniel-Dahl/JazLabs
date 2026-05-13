@@ -209,10 +209,10 @@ class CameraObject:
         raise NotImplementedError("FlyCapture2 buffer sizing is not implemented in this wrapper.")
 
     def GetBufferSizeInNumberOfFrames(self):
-        return None
+        return -1
 
     def GetNumberOfFramesInBuffer(self):
-        return None
+        return -1
 
     def GetTriggerMode(self):
         trig = self.fc2.get_trigger_mode(self.context)
@@ -249,7 +249,7 @@ class CameraObject:
         self.ResetBuffer()
         return self.GetTriggerMode()
 
-    def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
+    def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=1, lineNumber=0):
         trig = self.fc2.get_trigger_mode(self.context)
         trig.onOff = 1
         trig.source = int(lineNumber)
@@ -511,7 +511,7 @@ class CameraObject:
             metadata = self.fc2.get_image_metadata(self.image)
             self.frame_id = int(metadata.embeddedFrameCounter)
         except Exception:
-            self.frame_id = None
+            self.frame_id = -1
         return self.frame_id
     
     def GetFrame(self):

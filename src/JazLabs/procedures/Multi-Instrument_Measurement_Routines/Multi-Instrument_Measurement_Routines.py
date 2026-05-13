@@ -1,4 +1,5 @@
 import copy
+import time
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -347,31 +348,63 @@ def LuminosXYSnakeScanGetFrameMetrics(
         "stage_pos_weighted_metric_min": stage_pos_weighted_min,
     }
 
-def ChangeOpticalSwitchGetFrame():
-    # GetBatchOfFrames(self,SLMObjIdx=0,pol='H',CamObjIdx=[0],slmChannel=None,modeCount=None,AvgFrameCount=1,modeIdxArr=None):
-    AvgFrameCount=1  
-    modeCount=6
-    wavelengthCount=40
-    wavelenMin=1520e-9
-    wavelenMax=1600e-9
-    # Laser.set_power_mw(0.5)
-    Wavelengths=np.linspace(wavelenMin,wavelenMax,wavelengthCount)    
-        
+def ChangeOpticalSwitchGetFrame(
+    laser: LaserLike,
+    optical_switch,
+    cam_obj: CameraLike,
+    mode_count: int = 6,
+    channel_start: int = 1,
+    avg_frame_count: int = 1,
+    wavelength_count: int = 40,
+    min_wavelength_nm: float = 1520.0,
+    max_wavelength_nm: float = 1600.0,
+    wavelength_settle_time_s: float = 2.0,
+    switch_wait_settle: bool = False,
+    switch_settle_timeout_s: float = 10.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if mode_count < 1 or avg_frame_count < 1 or wavelength_count < 1:
+        raise ValueError("mode_count, avg_frame_count, and wavelength_count must all be >= 1.")
 
-    frames_wavelengths_modes=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
-    # frames_wavelengths_modes_superposition=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
-    # frame_wavelength_NoRef=np.empty((wavelengthCount,modeCount*AvgFrameCount,Cam.CamObject.FrameHeight.value,Cam.CamObject.FrameWidth.value),dtype=np.float32)
-    imodeStart=1
-    iframe=0
-    Cam.CamObject.SetSingleFrameCapMode()
-    for iwave in range(wavelengthCount):
-        Laser.set_wavelength_nm(Wavelengths[iwave]*1e9)
-        time.sleep(2)
-        iframe =0
-        for imode in range(modeCount):
-            ichan=imode+imodeStart
-            OpticalSwitch.set_channel(ichan)
-            for iavg in range(AvgFrameCount):
-                frames_wavelengths_modes[iwave,iframe,:,:]=Cam.CamObject.GetFrame(ConvertToFloat32=True)
-                iframe+=1
-    Cam.CamObject.SetContinousFrameCapMode()
+    wavelengths_nm = np.linspace(min_wavelength_nm, max_wavelength_nm, wavelength_count)
+    channels = np.arange(channel_start, channel_start + mode_count, dtype=int)
+    wavelength_get_values_nm = np.zeros(wavelength_count, dtype=np.float64)
+
+    if hasattr(cam_obj, "SetSoftwareTriggerMode"):
+        cam_obj.SetSoftwareTriggerMode()
+
+    first_frame = _get_camera_frame(cam_obj)
+    ny, nx = first_frame.shape
+    frames_wavelengths_modes = np.empty(
+        (wavelength_count, mode_count * avg_frame_count, ny, nx),
+        dtype=np.float32,
+    )
+
+    try:
+        for iwave, wavelength_nm in enumerate(wavelengths_nm):
+            if hasattr(laser, "set_wavelength_nm"):
+                wavelength_get_values_nm[iwave] = float(laser.set_wavelength_nm(float(wavelength_nm)))
+            else:
+                raise AttributeError("Laser object must implement set_wavelength_nm(...).")
+
+            if wavelength_settle_time_s > 0:
+                time.sleep(wavelength_settle_time_s)
+
+            iframe = 0
+            for ichan in channels:
+                try:
+                    optical_switch.set_channel(
+                        int(ichan),
+                        wait_settle=switch_wait_settle,
+                        settle_timeout=float(switch_settle_timeout_s),
+                    )
+                except TypeError:
+                    optical_switch.set_channel(int(ichan))
+
+                for _ in range(avg_frame_count):
+                    frames_wavelengths_modes[iwave, iframe, :, :] = _get_camera_frame(cam_obj)
+                    iframe += 1
+    finally:
+        if hasattr(cam_obj, "SetContinuousMode"):
+            cam_obj.SetContinuousMode()
+
+    return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels

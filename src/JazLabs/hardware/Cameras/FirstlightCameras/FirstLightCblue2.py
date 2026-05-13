@@ -123,17 +123,11 @@ class CameraObject:
     # buffer
     # ----------------------------
     def SetBufferSizeInNumberOfFrames(self, n_frames):
-        ok = FliSdk_V2.FliGenicamCamera.ExecuteFeature(self.cam_context, "AcquisitionStop")
+        self.StopAcquisition()
         FliSdk_V2.Stop(self.cam_context)
         FliSdk_V2.SetBufferSizeInImages(self.cam_context, int(n_frames))
         FliSdk_V2.Start(self.cam_context)
-
-        # restart acquisition in current mode
-        if self._get_str("TriggerMode") == "Off":
-            self.StartAcquisition()
-        else:
-            # software-triggered mode still needs AcquisitionStart armed
-            self.StartAcquisition()
+        self.StartAcquisition()
 
     def GetBufferSizeInNumberOfFrames(self):
         buffsize_mb = FliSdk_V2.GetBufferSize(self.cam_context)
@@ -203,7 +197,7 @@ class CameraObject:
         self.StartAcquisition()
         self.GetTriggerMode()
         
-    def SetHardwareTriggerMode(self,lineNumber=0,RiseEdgeOrFallEdge=1):
+    def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=1, lineNumber=0):
         self.StopAcquisition()
         FliSdk_V2.Stop(self.cam_context)
         ok = FliSdk_V2.FliGenicamCamera.SetStringFeature(self.cam_context, "AcquisitionMode","Continuous")
@@ -290,6 +284,7 @@ class CameraObject:
         # self.GetFrame()  # trigger update of camera state
         
         self.StartAcquisition()
+        return self.gain
         
     def GetGain(self):
         ok, self.gain = FliSdk_V2.FliGenicamCamera.GetDoubleFeature(self.cam_context, "Gain")

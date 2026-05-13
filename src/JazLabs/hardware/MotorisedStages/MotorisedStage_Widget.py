@@ -32,8 +32,10 @@ class MotorisedStageControlWindow:
         self.axis_var = tk.StringVar(value="X")
         self.value_var = tk.StringVar(value="0")
         self.positions_var = tk.StringVar(value="")
+        self.stage_type = None
 
         self._build_layout()
+        self._configure_by_stage_type()
         self.refresh_all()
         self._schedule_status_refresh()
 
@@ -53,7 +55,14 @@ class MotorisedStageControlWindow:
         move.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
 
         ttk.Label(move, text="Axis").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(move, textvariable=self.axis_var, values=("X", "Y", "Z", "ROLL", "YAW", "PITCH", "U", "V"), width=10).grid(row=0, column=1, sticky="ew", padx=3)
+        self.axis_combo = ttk.Combobox(
+            move,
+            textvariable=self.axis_var,
+            values=("X", "Y", "Z", "ROLL", "YAW", "PITCH"),
+            width=10,
+            state="readonly",
+        )
+        self.axis_combo.grid(row=0, column=1, sticky="ew", padx=3)
         ttk.Label(move, text="Value").grid(row=1, column=0, sticky="w")
         ttk.Entry(move, textvariable=self.value_var, width=12).grid(row=1, column=1, sticky="ew", padx=3)
         ttk.Button(move, text="Move Abs", command=self.move_abs).grid(row=2, column=0, sticky="ew", padx=3, pady=2)
@@ -63,8 +72,10 @@ class MotorisedStageControlWindow:
         controls.grid(row=1, column=1, sticky="nsew", padx=8)
 
         ttk.Button(controls, text="Get Positions", command=self.get_positions).grid(row=0, column=0, sticky="ew", pady=2)
-        ttk.Button(controls, text="Home All", command=self.home_all).grid(row=1, column=0, sticky="ew", pady=2)
-        ttk.Button(controls, text="Set Nominal", command=self.set_nominal).grid(row=2, column=0, sticky="ew", pady=2)
+        self.home_btn = ttk.Button(controls, text="Home All", command=self.home_all)
+        self.home_btn.grid(row=1, column=0, sticky="ew", pady=2)
+        self.nominal_btn = ttk.Button(controls, text="Set Nominal", command=self.set_nominal)
+        self.nominal_btn.grid(row=2, column=0, sticky="ew", pady=2)
         ttk.Button(controls, text="Refresh", command=self.refresh_all).grid(row=3, column=0, sticky="ew", pady=2)
 
         server = ttk.LabelFrame(main, text="Server", padding=8)
@@ -81,9 +92,37 @@ class MotorisedStageControlWindow:
     def refresh_status(self):
         try:
             props = self.stage.GetProperties()
+            if props.get("stage_type") != self.stage_type:
+                self.stage_type = props.get("stage_type")
+                self._configure_by_stage_type()
             self.properties_var.set(f"type={props['stage_type']} host={props['host']} port={props['command_port']}")
         except Exception as exc:
             self.show_error(exc)
+
+    def _configure_by_stage_type(self):
+        try:
+            props = self.stage.GetProperties()
+            stage_type = props.get("stage_type", "Luminos")
+        except Exception:
+            stage_type = "Luminos"
+
+        self.stage_type = stage_type
+
+        if stage_type == "Luminos":
+            self.axis_combo.configure(values=("X", "Y", "Z", "ROLL", "YAW", "PITCH"))
+            self.axis_var.set("X")
+            self.home_btn.state(["!disabled"])
+            self.nominal_btn.state(["!disabled"])
+        elif stage_type == "NewportM100D":
+            self.axis_combo.configure(values=("U", "V"))
+            self.axis_var.set("U")
+            self.home_btn.state(["disabled"])
+            self.nominal_btn.state(["disabled"])
+        else:
+            self.axis_combo.configure(values=("X",))
+            self.axis_var.set("X")
+            self.home_btn.state(["disabled"])
+            self.nominal_btn.state(["disabled"])
 
     def refresh_all(self):
         self.refresh_status()
