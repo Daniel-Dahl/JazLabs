@@ -348,19 +348,19 @@ def LuminosXYSnakeScanGetFrameMetrics(
         "stage_pos_weighted_metric_min": stage_pos_weighted_min,
     }
 
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
+
 def ChangeOpticalSwitchGetFrame(
-    laser: LaserLike,
+    laser,
     optical_switch,
-    cam_obj: CameraLike,
+    cam_obj,
     mode_count: int = 6,
     channel_start: int = 1,
     avg_frame_count: int = 1,
     wavelength_count: int = 40,
     min_wavelength_nm: float = 1520.0,
     max_wavelength_nm: float = 1600.0,
-    wavelength_settle_time_s: float = 2.0,
-    switch_wait_settle: bool = False,
-    switch_settle_timeout_s: float = 10.0,
+    wavelength_settle_time_s: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if mode_count < 1 or avg_frame_count < 1 or wavelength_count < 1:
         raise ValueError("mode_count, avg_frame_count, and wavelength_count must all be >= 1.")
@@ -369,8 +369,7 @@ def ChangeOpticalSwitchGetFrame(
     channels = np.arange(channel_start, channel_start + mode_count, dtype=int)
     wavelength_get_values_nm = np.zeros(wavelength_count, dtype=np.float64)
 
-    if hasattr(cam_obj, "SetSoftwareTriggerMode"):
-        cam_obj.SetSoftwareTriggerMode()
+    cam_obj.SetSoftwareTriggerMode()
 
     first_frame = _get_camera_frame(cam_obj)
     ny, nx = first_frame.shape
@@ -381,30 +380,20 @@ def ChangeOpticalSwitchGetFrame(
 
     try:
         for iwave, wavelength_nm in enumerate(wavelengths_nm):
-            if hasattr(laser, "set_wavelength_nm"):
-                wavelength_get_values_nm[iwave] = float(laser.set_wavelength_nm(float(wavelength_nm)))
-            else:
-                raise AttributeError("Laser object must implement set_wavelength_nm(...).")
+            laser.set_wavelength_nm(float(wavelength_nm))
+            wavelength_get_values_nm[iwave] = laser.get_wavelength_nm()
 
             if wavelength_settle_time_s > 0:
                 time.sleep(wavelength_settle_time_s)
 
             iframe = 0
             for ichan in channels:
-                try:
-                    optical_switch.set_channel(
-                        int(ichan),
-                        wait_settle=switch_wait_settle,
-                        settle_timeout=float(switch_settle_timeout_s),
-                    )
-                except TypeError:
-                    optical_switch.set_channel(int(ichan))
-
+                optical_switch.SetChannel(int(ichan))
                 for _ in range(avg_frame_count):
                     frames_wavelengths_modes[iwave, iframe, :, :] = _get_camera_frame(cam_obj)
                     iframe += 1
     finally:
-        if hasattr(cam_obj, "SetContinuousMode"):
-            cam_obj.SetContinuousMode()
+        cam_obj.SetContinuousMode()
 
     return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels
+

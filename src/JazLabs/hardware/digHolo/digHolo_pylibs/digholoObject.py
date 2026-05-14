@@ -780,14 +780,11 @@ class digholoObject():
             ViewPortHeight=ctypes.c_int(0)
             ViewPortWidth=ctypes.c_int(0)
             ViewPortPtr=ctypes.c_char_p()# this is were the output is
-            print("test1") 
             ViewPortPtr=digH_hpy.digHoloGetViewport(int(self.handleIdx), idisplay, 0,ctypes.byref(ViewPortWidth),ctypes.byref(ViewPortHeight),ctypes.byref(windowString))
-            print("test3") 
             
             ViewPortWidth = np.int32(ViewPortWidth)
             ViewPortHeight = np.int32(ViewPortHeight)
             ViewPortRGB = np.ctypeslib.as_array(ViewPortPtr,shape=(ViewPortHeight,ViewPortWidth,3))
-            print(idisplay)
             if idisplay==1:
                 ViewPortRGB_cam=copy.deepcopy(ViewPortRGB)
                 FullText=FullText+"Cam: "+self.remove_after_tab(str(windowString.value.decode('utf-8')))+" \n"
