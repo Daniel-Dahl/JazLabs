@@ -45,7 +45,7 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
     return int(snapped)
 
 class CameraObject:
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=17.0e-6, verbose=False):
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=15.0e-6, verbose=False):
         self.cam_context = FliSdk_V2.Init()
         self._closed = False
         self.verbose = verbose
