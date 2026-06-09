@@ -196,6 +196,18 @@ class CameraObject:
         FliSdk_V2.Start(self.cam_context)
         self.StartAcquisition()
         self.GetTriggerMode()
+
+    def FireSoftwareTrigger(self):
+        """
+        Fire one software trigger. Call GetFrame separately to retrieve the frame.
+        """
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            self.GetTriggerMode()
+
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            raise RuntimeError("Camera is not in software trigger mode")
+
+        return FliSdk_V2.FliGenicamCamera.ExecuteFeature(self.cam_context, "TriggerSoftware")
         
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=1, lineNumber=0):
         self.StopAcquisition()
@@ -517,12 +529,8 @@ class CameraObject:
     def GetFrame(self):
         """
         In continuous mode: return latest frame.
-        In software trigger mode: send one software trigger, then return latest frame.
+        In trigger modes: return the latest frame already produced by a trigger.
         """
-
-        if self.trigger_mode == "On" and self.trigger_source == "Software":
-            ok = FliSdk_V2.FliGenicamCamera.ExecuteFeature(self.cam_context, "TriggerSoftware")
-
         frame = FliSdk_V2.GetRawImageAsNumpyArray(self.cam_context, -1)
         # self.frame_id = self.GetFrameID()
         # print("Buffer filling:", self.frame_id)

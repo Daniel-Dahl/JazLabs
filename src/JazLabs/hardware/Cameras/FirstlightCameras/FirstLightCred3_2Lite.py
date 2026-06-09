@@ -45,7 +45,7 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
     return int(snapped)
 
 class CameraObject:
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=15.0e-6, verbose=False):
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=17.0e-6, verbose=False):
         self.cam_context = FliSdk_V2.Init()
         self._closed = False
         self.verbose = verbose
@@ -199,6 +199,18 @@ class CameraObject:
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr) 
     
         self.GetTriggerMode()
+
+    def FireSoftwareTrigger(self):
+        """
+        Fire one software trigger. Call GetFrame separately to retrieve the frame.
+        """
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            self.GetTriggerMode()
+
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            raise RuntimeError("Camera is not in software trigger mode")
+
+        return FliSdk_V2.FliCredThree.SoftwareTrig(self.cam_context)
         
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=-1, lineNumber=0):
         commandstr='set swsynchro off'
@@ -443,12 +455,8 @@ class CameraObject:
     def GetFrame(self):
         """
         In continuous mode: return latest frame.
-        In software trigger mode: send one software trigger, then return latest frame.
+        In trigger modes: return the latest frame already produced by a trigger.
         """
-
-        if self.trigger_mode == "On" and self.trigger_source == "Software":
-            errorval = FliSdk_V2.FliCredThree.SoftwareTrig(self.cam_context)
-
         frame = FliSdk_V2.GetRawImageAsNumpyArray(self.cam_context, -1)
         
         # self.frame_id = self.GetFrameID()
