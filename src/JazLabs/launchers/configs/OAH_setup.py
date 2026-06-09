@@ -4,8 +4,8 @@ CAMERA_HOST = "127.0.0.1"
 
 CAMERA_SERVERS = [
     {
-        "name": "cam_slm",
-        "camera_type": "FLIR",
+        "name": "cam_oah",
+        "camera_type": "First Light C-Red3_2Lite",
         "camera_idx": 0,
         "command_port": 50731,
         "frame_pub_port": 50732,

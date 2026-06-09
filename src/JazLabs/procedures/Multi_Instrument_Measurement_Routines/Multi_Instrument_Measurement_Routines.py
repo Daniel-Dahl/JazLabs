@@ -24,6 +24,7 @@ def _as_list(objs: Union[object, Sequence[object]]) -> List[object]:
 
 def _get_camera_frame(camera: CameraLike) -> np.ndarray:
     try:
+        camera.Fire
         return camera.GetFrame(ConvertToFloat32=True)
     except TypeError:
         frame = camera.GetFrame()
@@ -132,37 +133,37 @@ def SLMMaskChangeWavelengthChangeGetFrame(
 
 def WavelengthChangeGetFrame(
     laser: LaserLike,
-    cam_objs: Union[CameraLike, Sequence[CameraLike]],
+    cam_objs,
     avg_frame_count: int = 1,
     wavelength_count: int = 100,
     min_wavelength: float = 1465,
     max_wavelength: float = 1665,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    cameras = _as_list(cam_objs)
 
-    for cam in cameras:
-        cam.SetSoftwareTriggerMode()
+    cam_objs.SetSoftwareTriggerMode()
         
 
-    first_frame = _get_camera_frame(cameras[0])
+    first_frame = _get_camera_frame(cam_objs)
     ny, nx = first_frame.shape
 
-    frames_wavelength = np.empty((len(cameras), wavelength_count, avg_frame_count, ny, nx), dtype=np.float32)
+
+    frames_wavelength = np.empty((wavelength_count, avg_frame_count, ny, nx), dtype=np.float32)
 
     wavelength_set_values = np.linspace(min_wavelength, max_wavelength, wavelength_count)
-    wavelength_get_values = np.zeros(wavelength_count, dtype=np.float64)
+    
+    wavelength_get_values = np.zeros(wavelength_count, dtype=np.float32)
 
-    for iwave, wavelength in enumerate(wavelength_set_values):
-        if hasattr(laser, "set_wavelength_nm"):
-            wavelength_get_values[iwave]= float(laser.set_wavelength_nm(wavelength))
-        else:
-            raise AttributeError("Laser object must implement set_wavelength_nm(...)")
+    for iwave in range(wavelength_count):
+        laser.set_wavelength_nm(wavelength_set_values[iwave])
+        wavelength_get_values[iwave]=laser.get_wavelength_nm()
+        time.sleep(1)
+
+      
         for iframe in range(avg_frame_count):
-            for icam, cam in enumerate(cameras):
-                frames_wavelength[icam, iwave, iframe, :, :] = _get_camera_frame(cam)
-
-    for cam in cameras:
-        cam.SetContinuousMode()
+            # for icam, cam in enumerate(cameras):
+            frames_wavelength[ iwave, iframe, :, :] = _get_camera_frame(cam_objs)
+    
+    cam_objs.SetContinuousMode()
 
     return frames_wavelength, wavelength_set_values, wavelength_get_values
 
