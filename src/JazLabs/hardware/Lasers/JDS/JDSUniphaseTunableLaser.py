@@ -1,12 +1,15 @@
-import pyvisa
-import time
 import re
+import time
+
+import pyvisa
+
 
 class LaserObject:
     """
     JDS/Photonetics/EXFO-style tunable laser over GPIB/VISA.
-    Adds robust write/read with LF+EOI, serial-poll sync, and verification loops
-    for Set_Power() and Set_wavelength().
+
+    The public API matches the shared tunable-laser calls used by the Anritsu
+    and Santec drivers while keeping the JDS command set internally.
     """
 
     def __init__(self, LaserID=None):
@@ -20,394 +23,271 @@ class LaserObject:
 
         self.LaserID = LaserID
         self.Laser = rm.open_resource(self.LaserID, timeout=2000)
-
-        # Per manual: terminate with LF and/or EOI
         self.Laser.write_termination = "\n"
-        self.Laser.read_termination  = "\n"
+        self.Laser.read_termination = "\n"
         self.Laser.send_end = True
 
-        # User prefs / defaults
         self.channel = 0
-        self.Source = 0
-        self.TryCount = 5
-        self.PowerUnits = "MW"  # default (no unit query exists on this model)
+        self.source = 0
+        self.try_count = 5
+        self.power_units = "mW"
 
-        # Optional: identify (not all firmwares support *IDN?)
         try:
-            idn = self.Laser.query("*IDN?").strip()
-            if idn:
-                print("Connected to:", idn)
+            self._idn = self.idn()
+            print("Connection successful. Device ID:", self._idn)
         except Exception:
-            pass
-        self.Get_PowerState()
+            self._idn = None
 
-    # --------------------------
-    # Low-level helpers
-    # --------------------------
-    # This should really be using Laser.read_stb() to do a serial poll and look at the bit to see if status messages have 
-    # changed but the device doesnt seem to support the serial polling so we just do a simple delay here.
-    def _poll_stable(self, max_time=0.1, dwell=0.01, stable_reads=2):
-        time.sleep(max_time)
-        return None
-
-    def _parse_numeric_equals(self, resp, key):
-        """
-        Parse responses like 'L=1550' or 'P=1.23'.
-        Returns float or None.
-        """
-        if resp is None:
-            return None
-        m = re.match(rf"^\s*{re.escape(key)}\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*$", resp.strip(), flags=re.IGNORECASE)
-        return float(m.group(1)) if m else None
-
-    # --------------------------
-    # Wavelength
-    # --------------------------
-    def Get_wavelength(self, printResponse=True):
-        """
-        Robust wavelength read using 'L?' with pre/post serial-poll sync and stability check.
-        Expected response: 'L=1550.000'
-        """
-        if not self.Laser:
-            return None
-
-        self._poll_stable(max_time=0.3)
-
-        last_val = None
-        for _ in range(self.TryCount):
-            try:
-                resp = self.Laser.query("L?").strip()
-            except Exception:
-                # transient I/O hiccup; brief pause then retry
-                time.sleep(0.12)
-                continue
-
-            wl = self._parse_numeric_equals(resp, "L")
-            if wl is not None:
-                if wl == last_val:
-                    # stable reading
-                    if printResponse:
-                        print(f"Wavelength is {wl:.3f} nm")
-                    self.wavelength = wl
-                    return wl
-                last_val = wl
-
-            self._poll_stable(max_time=0.3)
-            time.sleep(0.12)
-
-        # Fallback: return last seen good number if we had one
-        if last_val is not None:
-            if printResponse:
-                print(f"Wavelength (last read): {last_val:.3f} nm")
-            self.wavelength = last_val
-            return last_val
-
-        print("No valid wavelength response.")
-        return None
-
-    def Set_wavelength(self, wavelength=1550.0, tol_nm=0.01,Wait=True):
-        """
-        Robust wavelength set:
-          - send 'L=<nm>'
-          - serial-poll sync
-          - verify via L? until within tol_nm, with auto-resend as needed
-        """
-        if not self.Laser:
-            return None
-
-        cmd = f"L={float(wavelength)}"
-        if Wait:
-            self._poll_stable(max_time=0.3)
-
-            last_read = None
-            for _ in range(self.TryCount):
-                try:
-                    self.Laser.write(cmd)
-                except Exception:
-                    # Clear and re-try on transient write error
-                    try:
-                        self.Laser.clear()
-                    except Exception:
-                        pass
-
-                self._poll_stable(max_time=1)
-                time.sleep(0.12)
-
-                current = self.Get_wavelength(printResponse=False)
-                last_read = current
-
-                if isinstance(current, float) and abs(current - wavelength) <= tol_nm:
-                    # Converged
-                    self.wavelength = current
-                    return self.wavelength
-
-                # Not converged: resend command on next loop
-
-            print("Warning: Wavelength setting did not converge within the maximum number of tries.")
-            if last_read is not None:
-                self.wavelength = last_read
-            return getattr(self, "wavelength", None)
-        else:
-            self.Laser.write(cmd)
-
-    
-
-    # --------------------------
-    # Frequency
-    # --------------------------
-    def Get_frequency(self, printResponse=True):
-        """
-        Robust wavelength read using 'L?' with pre/post serial-poll sync and stability check.
-        Expected response: 'L=1550.000'
-        """
-        if not self.Laser:
-            return None
-
-        self._poll_stable(max_time=0.3)
-
-        last_val = None
-        for _ in range(self.TryCount):
-            try:
-                resp = self.Laser.query("f?").strip()
-            except Exception:
-                # transient I/O hiccup; brief pause then retry
-                time.sleep(0.12)
-                continue
-
-            wl = self._parse_numeric_equals(resp, "f")
-            if wl is not None:
-                if wl == last_val:
-                    # stable reading
-                    if printResponse:
-                        print(f"Frequency is {wl:.1f} GHz")
-                    self.frequency = wl
-                    return wl
-                last_val = wl
-
-            self._poll_stable(max_time=0.3)
-            time.sleep(0.12)
-
-        # Fallback: return last seen good number if we had one
-        if last_val is not None:
-            if printResponse:
-                print(f"Frequency (last read): {last_val:.1f} GHz")
-            self.frequency = last_val
-            return last_val
-
-        print("No valid wavelength response.")
-        return None
-
-    def Set_frequency(self, frequency=193414.5, tol_GHz=0.5):
-        """
-        Robust frequency set:
-          - send 'f=<GHz>'
-          - serial-poll sync
-          - verify via f? until within tol_GHz, with auto-resend as needed
-        """
-        if not self.Laser:
-            return None
-
-        cmd = f"f={float(frequency)}"
-        self._poll_stable(max_time=0.3)
-
-        last_read = None
-        for _ in range(self.TryCount):
-            try:
-                self.Laser.write(cmd)
-            except Exception:
-                # Clear and re-try on transient write error
-                try:
-                    self.Laser.clear()
-                except Exception:
-                    pass
-
-            self._poll_stable(max_time=1)
-            time.sleep(0.12)
-
-            current = self.Get_frequency(printResponse=False)
-            last_read = current
-
-            if isinstance(current, float) and abs(current - frequency) <= tol_GHz:
-                # Converged
-                self.frequency = current
-                return self.frequency
-
-            # Not converged: resend command on next loop
-
-        print("Warning: frequency setting did not converge within the maximum number of tries.")
-        if last_read is not None:
-            self.frequency = last_read
-        return getattr(self, "frequency", None)
-
-    # --------------------------
-    # Power state
-    # --------------------------
-    def Get_PowerState(self):
-        """
-        'P?' returns either 'DISABLE' or 'P=<value>'.
-        """
-        if not self.Laser:
-            return None
-
-        state = None
-        last = None
-        for _ in range(self.TryCount):
-            try:
-                resp = self.Laser.query("P?").strip()
-            except Exception:
-                time.sleep(0.1)
-                continue
-
-            if resp.upper().startswith("DISABLE"):
-                state = 0
-                break
-            if resp.upper().startswith("ENABLE"):
-                state = 1
-                break
-            if resp.upper().startswith("P"):
-                state = 1
-                break
-
-            last = resp
-            time.sleep(0.1)
-
-        if state == 0:
-            print("Laser Power is OFF")
-        elif state == 1:
-            print("Laser Power is ON")
-        else:
-            print("Unknown Power State response:", last if last is not None else "None")
-        self.PowerState = state
-        return self.PowerState
-
-    def Set_PowerState(self, PowerState=0):
-        """
-        ENABLE/DISABLE emission; verify via Get_PowerState().
-        """
-        if PowerState not in (0, 1):
-            print("Invalid Power state value: use 0=OFF or 1=ON")
-            return None
-
-        cmd = "ENABLE" if PowerState == 1 else "DISABLE"
-        self._poll_stable(max_time=0.3)
-        try:
-            self.Laser.write(cmd)
-        except Exception:
-            try:
-                self.Laser.clear()
-            except Exception:
-                pass
-        self._poll_stable(max_time=0.3)
-        return self.Get_PowerState()
-
-    # --------------------------
-    # Power units / level
-    # --------------------------
-    def Get_PowerUnits(self):
-        if self.PowerUnits == "DBM":
-            print("Power units are in dBm")
-        elif self.PowerUnits == "MW":
-            print("Power units are in mW")
-        return self.PowerUnits
-
-    def Set_PowerUnits(self, PowerUnits="MW"):
-        if PowerUnits not in ("DBM", "MW"):
-            print("Invalid Power units: use 'DBM' or 'MW'")
-            return self.PowerUnits
-        self.PowerUnits = PowerUnits
-        try:
-            self.Laser.write(str(PowerUnits))
-        except Exception:
-            pass
-        return self.Get_PowerUnits()
-
-    def Get_Power(self, printResponse=True):
-        """
-        Query output power with 'P?' and parse 'P=<value>'.
-        """
-        if not self.Laser:
-            return None
-
-        # Some firmwares occasionally echo ENABLE/DISABLE first; loop until numeric
-        val = None
-        for _ in range(self.TryCount):
-            try:
-                resp = self.Laser.query("P?").strip()
-            except Exception:
-                time.sleep(0.1)
-                continue
-            val = self._parse_numeric_equals(resp, "P")
-            if val is not None:
-                break
-            time.sleep(0.1)
-
-        if val is None:
-            print("No valid power response.")
-            return None
-
-        self.Power = val
-        if printResponse:
-            print(f"Power is {self.Power:.3f} {self.PowerUnits}")
-        return self.Power
-
-    def Set_Power(self, Power=1.0, tol=0.011):
-        """
-        Robust power set:
-          - send 'P=<value>'
-          - serial-poll sync
-          - verify via P? until within tolerance, with auto-resend as needed
-        """
-        if not self.Laser:
-            return None
-
-        cmd = f"P={float(Power)}"
-        self._poll_stable(max_time=0.3)
-
-        last_read = None
-        for _ in range(self.TryCount):
-            try:
-                self.Laser.write(cmd)
-            except Exception:
-                try:
-                    self.Laser.clear()
-                except Exception:
-                    pass
-
-            self._poll_stable(max_time=0.4)
-            time.sleep(0.12)
-
-            current = self.Get_Power(printResponse=False)
-            last_read = current
-
-            if isinstance(current, float) and abs(current - Power) <= tol:
-                self.Power = current
-                return self.Power
-            # else: resend next loop
-
-        print("Warning: Power setting did not converge within the maximum number of tries.")
-        if last_read is not None:
-            self.Power = last_read
-        return getattr(self, "Power", None)
-
-    # --------------------------
-    # Utilities
-    # --------------------------
-    def SendCommand(self, command):
-        if not self.Laser:
-            return None
-        return self.Laser.write(command)
-
-    def QueryCommand(self, command):
-        if not self.Laser:
-            return None
-        message=self.Laser.query(command)
-        print( message )
-        return 
+        self.get_laser_output_state()
 
     def __del__(self):
-        try:
-            if hasattr(self, "Laser") and self.Laser is not None:
-                self.Laser.close()
-                print("Laser disconnected")
-        except Exception:
-            pass
+        self.close()
+
+    def close(self):
+        if hasattr(self, "Laser") and self.Laser is not None:
+            self.Laser.close()
+            self.Laser = None
+
+    def write(self, command):
+        if self.Laser is None:
+            return None
+        self.Laser.write(command)
+        return True
+
+    def query(self, command):
+        if self.Laser is None:
+            return None
+        return self.Laser.query(command).strip()
+
+    def idn(self):
+        return self.query("*IDN?")
+
+    def reset(self):
+        return self.write("*RST")
+
+    def clear_status(self):
+        return self.write("*CLS")
+
+    def set_cw_mode(self):
+        return True
+
+    def set_sweep_mode(self):
+        raise NotImplementedError("Sweep mode is not implemented for this JDS laser.")
+
+    def _poll_stable(self, delay_s=0.1):
+        time.sleep(delay_s)
+
+    def _parse_numeric_equals(self, response, key):
+        if response is None:
+            return None
+        match = re.match(
+            rf"^\s*{re.escape(key)}\s*=\s*([+-]?[0-9]+(?:\.[0-9]+)?)\s*$",
+            response.strip(),
+            flags=re.IGNORECASE,
+        )
+        return float(match.group(1)) if match else None
+
+    # -------------------------
+    # Wavelength
+    # -------------------------
+
+    def wait_until_wavelength_settled(
+        self,
+        target_nm=None,
+        tolerance_nm=0.001,
+        timeout_s=30,
+        poll_interval_s=0.1,
+    ):
+        start_time = time.time()
+        last_nm = None
+
+        while True:
+            current_nm = self.get_wavelength_nm()
+
+            if target_nm is not None:
+                if abs(current_nm - target_nm) <= tolerance_nm:
+                    return True
+            elif last_nm is not None and current_nm == last_nm:
+                return True
+
+            if time.time() - start_time > timeout_s:
+                if target_nm is None:
+                    raise TimeoutError(
+                        f"Laser wavelength did not settle within {timeout_s} s."
+                    )
+                raise TimeoutError(
+                    f"Laser wavelength did not settle within {timeout_s} s. "
+                    f"Target={target_nm:.6f} nm, current={current_nm:.6f} nm"
+                )
+
+            last_nm = current_nm
+            time.sleep(poll_interval_s)
+
+    def set_wavelength_nm(self, wavelength_nm, wait=True, timeout_s=30, poll_interval_s=0.1):
+        self.set_cw_mode()
+        self.write(f"L={float(wavelength_nm)}")
+
+        if wait:
+            self.wait_until_wavelength_settled(
+                target_nm=wavelength_nm,
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+            )
+
+        return self.get_wavelength_nm()
+
+    def get_wavelength_setpoint_nm(self):
+        return self.get_wavelength_nm()
+
+    def get_min_wavelength_nm(self):
+        raise NotImplementedError("Minimum wavelength query is not implemented for this JDS laser.")
+
+    def get_max_wavelength_nm(self):
+        raise NotImplementedError("Maximum wavelength query is not implemented for this JDS laser.")
+
+    def get_wavelength_nm(self):
+        last_nm = None
+        for _ in range(self.try_count):
+            response = self.query("L?")
+            wavelength_nm = self._parse_numeric_equals(response, "L")
+            if wavelength_nm is not None:
+                if wavelength_nm == last_nm:
+                    self.wavelength = wavelength_nm
+                    return self.wavelength
+                last_nm = wavelength_nm
+            self._poll_stable()
+
+        if last_nm is not None:
+            self.wavelength = last_nm
+            return self.wavelength
+
+        raise RuntimeError("No valid wavelength response from JDS laser.")
+
+    # -------------------------
+    # Frequency
+    # -------------------------
+
+    def get_frequency_ghz(self):
+        last_ghz = None
+        for _ in range(self.try_count):
+            response = self.query("f?")
+            frequency_ghz = self._parse_numeric_equals(response, "f")
+            if frequency_ghz is not None:
+                if frequency_ghz == last_ghz:
+                    self.frequency = frequency_ghz
+                    return self.frequency
+                last_ghz = frequency_ghz
+            self._poll_stable()
+
+        if last_ghz is not None:
+            self.frequency = last_ghz
+            return self.frequency
+
+        raise RuntimeError("No valid frequency response from JDS laser.")
+
+    def set_frequency_ghz(
+        self,
+        frequency_ghz,
+        wait=True,
+        tolerance_ghz=0.5,
+        timeout_s=30,
+        poll_interval_s=0.1,
+    ):
+        self.write(f"f={float(frequency_ghz)}")
+
+        if wait:
+            start_time = time.time()
+            while True:
+                current_ghz = self.get_frequency_ghz()
+                if abs(current_ghz - frequency_ghz) <= tolerance_ghz:
+                    return current_ghz
+                if time.time() - start_time > timeout_s:
+                    raise TimeoutError(
+                        f"Laser frequency did not settle within {timeout_s} s. "
+                        f"Target={frequency_ghz:.6f} GHz, current={current_ghz:.6f} GHz"
+                    )
+                time.sleep(poll_interval_s)
+
+        return self.get_frequency_ghz()
+
+    # -------------------------
+    # Power
+    # -------------------------
+
+    def get_laser_output_state(self):
+        response = self.query("P?")
+        if response is None:
+            return None
+
+        response = response.strip().upper()
+        self.output_state = not response.startswith("DISABLE")
+        return self.output_state
+
+    def laser_on(self):
+        self.write("ENABLE")
+        return self.get_laser_output_state()
+
+    def laser_off(self):
+        self.write("DISABLE")
+        return self.get_laser_output_state()
+
+    def get_power_units(self):
+        return self.power_units
+
+    def set_power_units(self, units):
+        if units not in ("dBm", "mW"):
+            raise ValueError("Invalid power units. Use 'dBm' or 'mW'.")
+
+        command = "DBM" if units == "dBm" else "MW"
+        self.write(command)
+        self.power_units = units
+        return self.get_power_units()
+
+    def set_power_dbm(self, power_dbm):
+        self.set_power_units("dBm")
+        return self.set_power_level(power_dbm)
+
+    def set_power_mw(self, power_mw):
+        self.set_power_units("mW")
+        return self.set_power_level(power_mw)
+
+    def get_power_level(self):
+        return self.get_power()
+
+    def set_power_level(self, power_level=1.0, tolerance=0.011):
+        self.write(f"P={float(power_level)}")
+        self._poll_stable(0.4)
+
+        current_power = self.get_power()
+        if abs(current_power - power_level) <= tolerance:
+            return current_power
+
+        for _ in range(self.try_count - 1):
+            self.write(f"P={float(power_level)}")
+            self._poll_stable(0.4)
+            current_power = self.get_power()
+            if abs(current_power - power_level) <= tolerance:
+                return current_power
+
+        raise RuntimeError(
+            f"Power setting did not converge. "
+            f"Target={power_level:.6f} {self.power_units}, "
+            f"current={current_power:.6f} {self.power_units}"
+        )
+
+    def get_power(self):
+        for _ in range(self.try_count):
+            response = self.query("P?")
+            power = self._parse_numeric_equals(response, "P")
+            if power is not None:
+                self.power = power
+                return self.power
+            time.sleep(0.1)
+
+        raise RuntimeError("No valid power response from JDS laser.")
+
+    def get_min_power_dbm(self):
+        raise NotImplementedError("Minimum power query is not implemented for this JDS laser.")
+
+    def get_max_power(self):
+        raise NotImplementedError("Maximum power query is not implemented for this JDS laser.")

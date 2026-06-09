@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import scipy
 import scipy.io
 import copy
-import JazLabs.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
+import pwi_inst.utils.PlotingFunctions.ComplexPlotFunction as cmplxplt
 from scipy.interpolate import splrep, splev, UnivariateSpline
 # import MyLibs.OpticalOperators as OpticOp
 # import MyLibs.CoupMatrixAndMetricAnalysisFuncitons as MetricCals

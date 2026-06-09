@@ -22,13 +22,21 @@ def _as_list(objs: Union[object, Sequence[object]]) -> List[object]:
     return [objs]
 
 
+def _set_software_trigger_mode(cameras: Sequence[CameraLike]) -> None:
+    for camera in cameras:
+        camera.SetSoftwareTriggerMode()
+
+
+def _set_continuous_mode(cameras: Sequence[CameraLike]) -> None:
+    for camera in cameras:
+        camera.SetContinuousMode()
+
+
 def _get_camera_frame(camera: CameraLike) -> np.ndarray:
-    try:
-        camera.Fire
-        return camera.GetFrame(ConvertToFloat32=True)
-    except TypeError:
-        frame = camera.GetFrame()
-        return frame.astype(np.float32, copy=False)
+    camera.FireSoftwareTrigger()
+    frame = camera.GetFrame()
+    return np.asarray(frame, dtype=np.float32)
+
 
 def _get_mode_indices(slm_obj: SLMLike, pol: str, slm_channel: Optional[int], mode_count: Optional[int], mode_idx_arr):
     if slm_channel is None:
@@ -60,26 +68,24 @@ def SLMMaskChangeGetFrame(
     cameras = _as_list(cam_objs)
     slm_channel, mode_indices = _get_mode_indices(slm_obj, pol, slm_channel, mode_count, mode_idx_arr)
 
-    for cam in cameras:
-        cam.SetSoftwareTriggerMode()
+    _set_software_trigger_mode(cameras)
+    try:
+        first_frame = _get_camera_frame(cameras[0])
+        ny, nx = first_frame.shape
 
-    first_frame = _get_camera_frame(cameras[0])
-    ny, nx = first_frame.shape
+        frames = np.empty((len(cameras), len(mode_indices) * avg_frame_count, ny, nx), dtype=np.float32)
 
-    frames = np.empty((len(cameras), len(mode_indices) * avg_frame_count, ny, nx), dtype=np.float32)
+        iframe = 0
+        for mode_idx in mode_indices:
+            slm_obj.setmask(slm_channel, mode_idx)
+            for _ in range(avg_frame_count):
+                for icam, cam in enumerate(cameras):
+                    frames[icam, iframe, :, :] = _get_camera_frame(cam)
+                iframe += 1
 
-    iframe = 0
-    for mode_idx in mode_indices:
-        slm_obj.setmask(slm_channel, mode_idx)
-        for _ in range(avg_frame_count):
-            for icam, cam in enumerate(cameras):
-                frames[icam, iframe, :, :] = _get_camera_frame(cam)
-            iframe += 1
-
-    for cam in cameras:
-        cam.SetContinuousMode()
-
-    return frames
+        return frames
+    finally:
+        _set_continuous_mode(cameras)
 
 
 def SLMMaskChangeWavelengthChangeGetFrame(
@@ -98,37 +104,32 @@ def SLMMaskChangeWavelengthChangeGetFrame(
     cameras = _as_list(cam_objs)
     slm_channel, mode_indices = _get_mode_indices(slm_obj, pol, slm_channel, mode_count, mode_idx_arr)
 
-    for cam in cameras:
-        cam.SetSoftwareTriggerMode()
+    _set_software_trigger_mode(cameras)
+    try:
+        first_frame = _get_camera_frame(cameras[0])
+        ny, nx = first_frame.shape
 
-    first_frame = _get_camera_frame(cameras[0])
-    ny, nx = first_frame.shape
+        frames_wavelength = np.empty(
+            (len(cameras), wavelength_count, len(mode_indices) * avg_frame_count, ny, nx), dtype=np.float32
+        )
 
-    frames_wavelength = np.empty(
-        (len(cameras), wavelength_count, len(mode_indices) * avg_frame_count, ny, nx), dtype=np.float32
-    )
+        wavelength_set_values = np.linspace(min_wavelength, max_wavelength, wavelength_count)
+        wavelength_get_values = np.zeros(wavelength_count, dtype=np.float64)
 
-    wavelength_set_values = np.linspace(min_wavelength, max_wavelength, wavelength_count)
-    wavelength_get_values = np.zeros(wavelength_count, dtype=np.float64)
+        for iwave, wavelength in enumerate(wavelength_set_values):
+            wavelength_get_values[iwave] = float(laser.set_wavelength_nm(wavelength))
 
-    for iwave, wavelength in enumerate(wavelength_set_values):
-        if hasattr(laser, "set_wavelength_nm"):
-            wavelength_get_values[iwave]= float(laser.set_wavelength_nm(wavelength))
-        else:
-            raise AttributeError("Laser object must implement set_wavelength_nm(...)")
+            iframe = 0
+            for mode_idx in mode_indices:
+                slm_obj.setmask(slm_channel, mode_idx)
+                for _ in range(avg_frame_count):
+                    for icam, cam in enumerate(cameras):
+                        frames_wavelength[icam, iwave, iframe, :, :] = _get_camera_frame(cam)
+                    iframe += 1
 
-        iframe = 0
-        for mode_idx in mode_indices:
-            slm_obj.setmask(slm_channel, mode_idx)
-            for _ in range(avg_frame_count):
-                for icam, cam in enumerate(cameras):
-                    frames_wavelength[icam, iwave, iframe, :, :] = _get_camera_frame(cam)
-                iframe += 1
-
-    for cam in cameras:
-        cam.SetContinuousMode()
-
-    return frames_wavelength, wavelength_set_values, wavelength_get_values
+        return frames_wavelength, wavelength_set_values, wavelength_get_values
+    finally:
+        _set_continuous_mode(cameras)
 
 
 def WavelengthChangeGetFrame(
@@ -140,32 +141,28 @@ def WavelengthChangeGetFrame(
     max_wavelength: float = 1665,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
-    cam_objs.SetSoftwareTriggerMode()
-        
+    cameras = _as_list(cam_objs)
+    _set_software_trigger_mode(cameras)
+    try:
+        first_frame = _get_camera_frame(cameras[0])
+        ny, nx = first_frame.shape
 
-    first_frame = _get_camera_frame(cam_objs)
-    ny, nx = first_frame.shape
+        frames_wavelength = np.empty((wavelength_count, avg_frame_count, ny, nx), dtype=np.float32)
 
+        wavelength_set_values = np.linspace(min_wavelength, max_wavelength, wavelength_count)
+        wavelength_get_values = np.zeros(wavelength_count, dtype=np.float32)
 
-    frames_wavelength = np.empty((wavelength_count, avg_frame_count, ny, nx), dtype=np.float32)
+        for iwave in range(wavelength_count):
+            laser.set_wavelength_nm(wavelength_set_values[iwave])
+            wavelength_get_values[iwave] = laser.get_wavelength_nm()
+            time.sleep(1)
 
-    wavelength_set_values = np.linspace(min_wavelength, max_wavelength, wavelength_count)
-    
-    wavelength_get_values = np.zeros(wavelength_count, dtype=np.float32)
+            for iframe in range(avg_frame_count):
+                frames_wavelength[iwave, iframe, :, :] = _get_camera_frame(cameras[0])
 
-    for iwave in range(wavelength_count):
-        laser.set_wavelength_nm(wavelength_set_values[iwave])
-        wavelength_get_values[iwave]=laser.get_wavelength_nm()
-        time.sleep(1)
-
-      
-        for iframe in range(avg_frame_count):
-            # for icam, cam in enumerate(cameras):
-            frames_wavelength[ iwave, iframe, :, :] = _get_camera_frame(cam_objs)
-    
-    cam_objs.SetContinuousMode()
-
-    return frames_wavelength, wavelength_set_values, wavelength_get_values
+        return frames_wavelength, wavelength_set_values, wavelength_get_values
+    finally:
+        _set_continuous_mode(cameras)
 
 
 def SLMMaskChangeGetPower(
@@ -252,6 +249,8 @@ def LuminosXYSnakeScanGetFrameMetrics(
     if mount_pos_no_feature_y is not None:
         stage_obj.Set_Single_Stage_State_abs(Axes.Y, mount_pos_no_feature_y)
 
+    _set_software_trigger_mode([cam_obj])
+
     ref_frame = _get_camera_frame(cam_obj)
     ref_centre = np.unravel_index(np.nanargmax(ref_frame), ref_frame.shape)
     ref_flux = get_relative_power(
@@ -333,6 +332,8 @@ def LuminosXYSnakeScanGetFrameMetrics(
     stage_pos_corr_min = grid_points[corr_min_idx]
     stage_pos_weighted_min = grid_points[weighted_min_idx]
 
+    _set_continuous_mode([cam_obj])
+
     return {
         "grid_points": grid_points,
         "ref_frame": ref_frame,
@@ -348,8 +349,6 @@ def LuminosXYSnakeScanGetFrameMetrics(
         "stage_pos_corr_metric_min": stage_pos_corr_min,
         "stage_pos_weighted_metric_min": stage_pos_weighted_min,
     }
-
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 def ChangeOpticalSwitchGetFrame(
     laser,
@@ -370,16 +369,17 @@ def ChangeOpticalSwitchGetFrame(
     channels = np.arange(channel_start, channel_start + mode_count, dtype=int)
     wavelength_get_values_nm = np.zeros(wavelength_count, dtype=np.float64)
 
-    cam_obj.SetSoftwareTriggerMode()
-
-    first_frame = _get_camera_frame(cam_obj)
-    ny, nx = first_frame.shape
-    frames_wavelengths_modes = np.empty(
-        (wavelength_count, mode_count * avg_frame_count, ny, nx),
-        dtype=np.float32,
-    )
+    cameras = [cam_obj]
+    _set_software_trigger_mode(cameras)
 
     try:
+        first_frame = _get_camera_frame(cam_obj)
+        ny, nx = first_frame.shape
+        frames_wavelengths_modes = np.empty(
+            (wavelength_count, mode_count * avg_frame_count, ny, nx),
+            dtype=np.float32,
+        )
+
         for iwave, wavelength_nm in enumerate(wavelengths_nm):
             laser.set_wavelength_nm(float(wavelength_nm))
             wavelength_get_values_nm[iwave] = laser.get_wavelength_nm()
@@ -393,8 +393,7 @@ def ChangeOpticalSwitchGetFrame(
                 for _ in range(avg_frame_count):
                     frames_wavelengths_modes[iwave, iframe, :, :] = _get_camera_frame(cam_obj)
                     iframe += 1
+
+        return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels
     finally:
-        cam_obj.SetContinuousMode()
-
-    return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels
-
+        _set_continuous_mode(cameras)

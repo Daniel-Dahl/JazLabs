@@ -7,7 +7,7 @@ from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
 # Defult Pploting properties 
 plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
-import JazLabs.utils.camera_utils as cam_utils
+import pwi_inst.utils.camera_utils as cam_utils
 
 
 def CalibrateOPA(CamObj,VOAObj,voltageMin=0,voltageMax=5,dvolt=0.001,UseRawCal=False,

@@ -1,393 +1,404 @@
-from Lab_Equipment.Config import config 
-
-# Python Libs
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-import ctypes
-import copy
-from IPython.display import display, clear_output
-import ipywidgets
-import multiprocessing
+import gc
 import time
-import scipy.io
 
-from scipy import io, integrate, linalg, signal
-from scipy.io import savemat, loadmat
-from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
-# Defult Pploting properties 
-plt.style.use('dark_background')
-plt.rcParams['figure.figsize'] = [5,5]
+import matplotlib.pyplot as plt
+import numpy as np
 
-#SLM Libs
-import Lab_Equipment.SLM.pyLCOS as pyLCOS
-import Lab_Equipment.ZernikeModule.ZernikeModule as zernMod
-
-#Camera Libs
-import Lab_Equipment.Camera.CameraObject as CamForm
+import pwi_inst.utils.GenerateSimplePhaseMasks as slm_masks
+import pwi_inst.utils.camera_utils as camera_utils
 
 
-#Camera Libs
-import Lab_Equipment.Camera.CameraObject as CamForm
-
-# digiHolo Libs
-import Lab_Equipment.digHolo.digHolo_pylibs.digholoObject as digholoLib
-import Lab_Equipment.PowerMeter.PowerMeter_Thorlabs_lib as pwrMeter_lib
-
-
-import  Lab_Equipment.GeneralLibs.ComplexPlotFunction as cmplxplt
+CHANNEL_INDEX_BY_NAME = {
+    "Blue": 0,
+    "Green": 1,
+    "Red": 2,
+}
 
 
+def timing_stats(samples_s):
+    samples_s = np.asarray(samples_s, dtype=np.float64)
+    if samples_s.size == 0:
+        raise ValueError("Cannot calculate timing stats for an empty sample array")
 
-def periodic_strip_mask_1(mask_shape, strip_width=10, strip_value=1, orientation='x'):
-    """
-    Create a 2D mask with periodic strips where the strip (0) 
-    and background (strip_value) have equal widths.
+    return {
+        "mean_s": float(np.mean(samples_s)),
+        "std_s": float(np.std(samples_s)),
+        "min_s": float(np.min(samples_s)),
+        "max_s": float(np.max(samples_s)),
+        "jitter_s": float(np.max(samples_s) - np.min(samples_s)),
+    }
 
-    Parameters
-    ----------
-    mask_shape : tuple
-        Shape of the mask (rows, cols).
-    strip_width : int
-        Width of each region (strip and gap).
-    strip_value : int
-        Value of the gap region (strip is 0).
-    orientation : str
-        'horizontal' or 'vertical'.
 
-    Returns
-    -------
-    np.ndarray
-        2D mask with alternating 0 / strip_value regions.
-    """
-    rows, cols = mask_shape
-    mask = np.zeros(mask_shape, dtype=np.uint8)
+def print_timing_stats(label, stats):
+    if stats is None:
+        print(f"{label}: no samples")
+        return
 
-    if orientation == 'x':
-        idx = np.arange(rows) // strip_width
-        mask[(idx % 2 == 1), :] = strip_value
-    elif orientation == 'y':
-        idx = np.arange(cols) // strip_width
-        mask[:, (idx % 2 == 1)] = strip_value
-    else:
-        raise ValueError("orientation must be 'x' or 'y'")
+    print(label)
+    print(f"  Mean:   {stats['mean_s'] * 1e3:.3f} ms")
+    print(f"  Std:    {stats['std_s'] * 1e3:.3f} ms")
+    print(f"  Min:    {stats['min_s'] * 1e3:.3f} ms")
+    print(f"  Max:    {stats['max_s'] * 1e3:.3f} ms")
+    print(f"  Jitter: {stats['jitter_s'] * 1e3:.3f} ms")
 
-    return mask
 
-def slmRefreshRateCalibration(slmobj_client, phasemaskobj:PhaseMaskClass.PhaseMaskObject,Cam:CamClientlib.CameraClient,channel="Red",
-                              refreshCount=10,refreshRateMin=0,refreshRateMax=100,MeasCount=1,
-                               Direction="vertical", imask=0,pol="H",backgroundLevel=0,strip_value=0.0,
-                                       strip_width=10,
-                                       ixCamCenter=None,iyCamCenter=None,
-                                    x_half_width=None,
-                                    y_half_width=None):
-    
-    mask_NoStrip_MASKTODisplay_256=np.zeros((1024,1024),dtype=np.uint8)
-    MaskCMPLX=slm_masks.binary_stripe_phase(Nx=1024,Ny=1024,stripe_width=strip_width,phase_value=strip_value,orientation=Direction)
-    mask_Strip_MASKTODisplay_256=phasemaskobj.convert_phase_to_uint8( arr=(MaskCMPLX[0,0,:,:]))
-    
-    
-    # plt.subplot(1,2,1)
-    # plt.imshow(frame_NoStrip)
-    # plt.subplot(1,2,2)
-    # plt.imshow(frame_Strip)
-    refreshArr = np.linspace(refreshRateMin,refreshRateMax,refreshCount)*1e-3
-    metricValues=np.zeros((MeasCount,refreshCount))
-    intialpwrTracker=np.zeros((MeasCount,refreshCount))
-    timetotal_slm=0
-    timetotal_cam=0
-    
-    
-    for imeas in range(MeasCount):
-        slmobj_client.SetRefreshRate(100.0e-3)
-        # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-        slmobj_client.WriteImageToSLM(mask_NoStrip_MASKTODisplay_256)
-        frame_blankslm=Cam.GetFrame() 
-        initalpwr= cam_utils.get_relative_power(frame=frame_blankslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-        
-        slmobj_client.WriteImageToSLM(mask_Strip_MASKTODisplay_256)
-        frame_stripslm=Cam.GetFrame() 
-        initalpwr_strip= cam_utils.get_relative_power(frame=frame_stripslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-        # plt.subplot(1,2,1)
-        # plt.imshow(frame_blankslm)
-        # plt.subplot(1,2,2)
-        # plt.imshow(frame_stripslm)
-        
-        print("Initial Power: "+str(initalpwr_strip/initalpwr ))
-        
-        for irefreshrate in range(refreshCount):
-            slmobj_client.SetRefreshRate(refreshArr[irefreshrate])
-            # Draw a strip profile on the SLM and get a frame
-            slmobj_client.WriteImageToSLM(mask_Strip_MASKTODisplay_256)
-            frame_slmPIStrip=Cam.GetFrame() 
-            pwrAfterTilt=cam_utils.get_relative_power(frame=frame_slmPIStrip,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-            # Draw a Blank profile on the SLM and get a frame
-            slmobj_client.WriteImageToSLM(mask_NoStrip_MASKTODisplay_256,channel)
-            frame_Reblankslm=Cam.GetFrame() 
-            pwrAfterReflat=cam_utils.get_relative_power(frame=frame_Reblankslm,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
+def resolve_slm_channel_index(slm, channel):
+    if getattr(slm, "NumberOfChannels", 1) == 1:
+        return 0
+
+    if isinstance(channel, str):
+        return CHANNEL_INDEX_BY_NAME[channel]
+
+    return int(channel)
+
+
+def make_blank_and_stripe_masks(
+    phasemask,
+    stripe_width,
+    stripe_phase_value,
+    stripe_orientation="vertical",
+    mask_shape=None,
+):
+    if mask_shape is None:
+        slm = phasemask.SLMObject
+        mask_shape = (int(slm.monitor_height), int(slm.monitor_width))
+
+    height, width = mask_shape
+    blank_mask = np.zeros((height, width), dtype=np.uint8)
+
+    stripe_phase = slm_masks.binary_stripe_phase(
+        Nx=width,
+        Ny=height,
+        stripe_width=int(stripe_width),
+        phase_value=float(stripe_phase_value),
+        orientation=stripe_orientation,
+    )
+    stripe_mask = phasemask.convert_phase_to_uint8(arr=stripe_phase[0, 0, :, :])
+
+    return (
+        np.ascontiguousarray(blank_mask, dtype=np.uint8),
+        np.ascontiguousarray(stripe_mask, dtype=np.uint8),
+    )
+
+
+def write_slm_frame_and_time(
+    slm,
+    frame,
+    channel_index=0,
+    wait_for_display=True,
+    display_timeout_ms=10000,
+):
+    write_start_s = time.perf_counter()
+    result = slm.WriteImageToSLM(
+        frame,
+        channelIdx=channel_index,
+        wait=wait_for_display,
+        display_timeout_ms=display_timeout_ms,
+    )
+    write_done_s = time.perf_counter()
+    return result, write_done_s - write_start_s
+
+
+def measure_slm_client_write_timing(
+    slm,
+    frame_count=1000,
+    channel_index=0,
+    wait_for_display=False,
+    display_timeout_ms=10000,
+    disable_gc=True,
+):
+    frame_count = int(frame_count)
+    frame_shape = (int(slm.monitor_height), int(slm.monitor_width))
+    frame = np.zeros(frame_shape, dtype=np.uint8)
+    write_times_s = np.empty(frame_count, dtype=np.float64)
+    loop_intervals_s = np.empty(max(0, frame_count - 1), dtype=np.float64)
+
+    if disable_gc:
+        gc.disable()
+
+    last_loop_start_s = None
+    try:
+        for frame_index in range(frame_count):
+            frame.fill(frame_index % 255)
+
+            loop_start_s = time.perf_counter()
+            if last_loop_start_s is not None:
+                loop_intervals_s[frame_index - 1] = loop_start_s - last_loop_start_s
+
+            slm.WriteImageToSLM(
+                frame,
+                channelIdx=channel_index,
+                wait=wait_for_display,
+                display_timeout_ms=display_timeout_ms,
+            )
+
+            write_done_s = time.perf_counter()
+            write_times_s[frame_index] = write_done_s - loop_start_s
+            last_loop_start_s = loop_start_s
+
+    finally:
+        if disable_gc:
+            gc.enable()
+
+    return {
+        "write_times_s": write_times_s,
+        "loop_intervals_s": loop_intervals_s,
+        "write_stats": timing_stats(write_times_s),
+        "loop_interval_stats": timing_stats(loop_intervals_s)
+        if loop_intervals_s.size
+        else None,
+    }
+
+
+def measure_slm_direct_shm_write_timing(
+    slm,
+    frame_count=1000,
+    wait_for_display=False,
+    display_timeout_ms=10000,
+    disable_gc=True,
+):
+    from pyMilk.interfacing.isio_shmlib import SHM
+
+    frame_count = int(frame_count)
+    shm = SHM(slm.shm_name, autoSqueeze=False)
+    image_cube_shape = tuple(slm.image_shape)
+    write_times_s = np.empty(frame_count, dtype=np.float64)
+    loop_intervals_s = np.empty(max(0, frame_count - 1), dtype=np.float64)
+
+    if disable_gc:
+        gc.disable()
+
+    last_loop_start_s = None
+    try:
+        for frame_index in range(frame_count):
+            image_cube = np.random.randint(
+                0,
+                256,
+                image_cube_shape,
+                dtype=np.uint8,
+            )
+
+            loop_start_s = time.perf_counter()
+            if last_loop_start_s is not None:
+                loop_intervals_s[frame_index - 1] = loop_start_s - last_loop_start_s
+
+            shm.set_data(image_cube)
+            shm_counter = int(shm.get_counter())
+
+            if wait_for_display:
+                slm.WaitForSLMDisplayAck(
+                    shm_counter=shm_counter,
+                    timeout_ms=display_timeout_ms,
+                )
+
+            write_done_s = time.perf_counter()
+            write_times_s[frame_index] = write_done_s - loop_start_s
+            last_loop_start_s = loop_start_s
+
+    finally:
+        if disable_gc:
+            gc.enable()
+        shm.close()
+
+    return {
+        "write_times_s": write_times_s,
+        "loop_intervals_s": loop_intervals_s,
+        "write_stats": timing_stats(write_times_s),
+        "loop_interval_stats": timing_stats(loop_intervals_s)
+        if loop_intervals_s.size
+        else None,
+    }
+
+
+def plot_slm_write_timing(timing_result, title="SLM write timing"):
+    write_times_ms = timing_result["write_times_s"] * 1e3
+    loop_intervals_ms = timing_result["loop_intervals_s"] * 1e3
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    axes[0].plot(write_times_ms, ".")
+    axes[0].set_title("Write call")
+    axes[0].set_xlabel("Frame")
+    axes[0].set_ylabel("ms")
+    axes[0].grid(True)
+
+    axes[1].plot(loop_intervals_ms, ".")
+    axes[1].set_title("Loop interval")
+    axes[1].set_xlabel("Frame")
+    axes[1].set_ylabel("ms")
+    axes[1].grid(True)
+
+    axes[2].hist(loop_intervals_ms, bins=80)
+    axes[2].set_title("Loop interval histogram")
+    axes[2].set_xlabel("ms")
+    axes[2].set_ylabel("count")
+    axes[2].grid(True)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    return fig, axes
+
+
+def measure_slm_camera_delay_response(
+    slm,
+    phasemask,
+    camera,
+    camera_roi_center,
+    camera_roi_half_width,
+    camera_roi_half_height,
+    delay_count=10,
+    delay_min_s=0.0,
+    delay_max_s=0.1,
+    measurement_count=1,
+    channel="Red",
+    stripe_width=12,
+    stripe_phase_value=np.pi / 3,
+    stripe_orientation="vertical",
+    initial_settle_s=0.1,
+    wait_for_display=True,
+    display_timeout_ms=10000,
+    restore_continuous_camera=True,
+):
+    channel_index = resolve_slm_channel_index(slm, channel)
+    delay_values_s = np.linspace(float(delay_min_s), float(delay_max_s), int(delay_count))
+    metric_values = np.zeros((int(measurement_count), delay_values_s.size), dtype=np.float64)
+    reblank_power_values = np.zeros_like(metric_values)
+    write_durations_s = []
+
+    blank_mask, stripe_mask = make_blank_and_stripe_masks(
+        phasemask=phasemask,
+        stripe_width=stripe_width,
+        stripe_phase_value=stripe_phase_value,
+        stripe_orientation=stripe_orientation,
+        mask_shape=(int(slm.monitor_height), int(slm.monitor_width)),
+    )
+
+    camera.SetSoftwareTriggerMode()
+    try:
+        _, write_duration_s = write_slm_frame_and_time(
+            slm,
+            blank_mask,
+            channel_index=channel_index,
+            wait_for_display=wait_for_display,
+            display_timeout_ms=display_timeout_ms,
+        )
+        write_durations_s.append(write_duration_s)
+        slm.SetRefreshRate(float(initial_settle_s))
+        camera.FireSoftwareTrigger()
+        blank_frame = camera.GetFrame()
+        blank_power = camera_utils.get_relative_power(
+            frame=blank_frame,
+            centre=camera_roi_center,
+            x_half_width=camera_roi_half_width,
+            y_half_width=camera_roi_half_height,
+        )
+        if blank_power == 0:
+            raise ValueError(
+                "Blank SLM ROI power is zero; adjust the camera ROI or exposure "
+                "before calculating stripe / blank power ratios"
+            )
+
+        _, write_duration_s = write_slm_frame_and_time(
+            slm,
+            stripe_mask,
+            channel_index=channel_index,
+            wait_for_display=wait_for_display,
+            display_timeout_ms=display_timeout_ms,
+        )
+        write_durations_s.append(write_duration_s)
+        time.sleep(float(initial_settle_s))
+        camera.FireSoftwareTrigger()
+        stripe_reference_frame = camera.GetFrame()
+        stripe_reference_power = camera_utils.get_relative_power(
+            frame=stripe_reference_frame,
+            centre=camera_roi_center,
+            x_half_width=camera_roi_half_width,
+            y_half_width=camera_roi_half_height,
+        )
+
+        for delay_index, delay_s in enumerate(delay_values_s):
+            print(f"SLM-to-camera delay: {delay_s * 1e3:.3f} ms")
+            slm.SetRefreshRate(delay_s)  # Force SLM to update the display immediately
             
-            metricValues[imeas,irefreshrate]=pwrAfterTilt/initalpwr
-            intialpwrTracker[imeas,irefreshrate]=pwrAfterReflat/initalpwr
-            if imeas==0:
-                print(metricValues[imeas,irefreshrate])
-        if imeas==0:
-            plt.plot(refreshArr*1e3,metricValues[imeas,:])
-            
-            print(metricValues[imeas,irefreshrate])
-            
-    print(timetotal_slm/MeasCount)
-    print(timetotal_cam/MeasCount)
-        # print(imeas) 
-    return refreshArr,metricValues,intialpwrTracker
+
+            for measurement_index in range(int(measurement_count)):
+                if delay_index == 0 and measurement_index == 0:
+                    print(f"Initial stripe power: {stripe_reference_power}")
+                    print(f"Initial blank power: {blank_power}")
+                    print(
+                        "Initial stripe / blank power: "
+                        f"{stripe_reference_power / blank_power}"
+                    )
+                    initalmetric_value = stripe_reference_power / blank_power
+
+                _, write_duration_s = write_slm_frame_and_time(
+                    slm,
+                    stripe_mask,
+                    channel_index=channel_index,
+                    wait_for_display=wait_for_display,
+                    display_timeout_ms=display_timeout_ms,
+                )
+                write_durations_s.append(write_duration_s)
+                # time.sleep(float(delay_s))
+                camera.FireSoftwareTrigger()
+                stripe_frame = camera.GetFrame()
+                stripe_power = camera_utils.get_relative_power(
+                    frame=stripe_frame,
+                    centre=camera_roi_center,
+                    x_half_width=camera_roi_half_width,
+                    y_half_width=camera_roi_half_height,
+                )
+
+                _, write_duration_s = write_slm_frame_and_time(
+                    slm,
+                    blank_mask,
+                    channel_index=channel_index,
+                    wait_for_display=wait_for_display,
+                    display_timeout_ms=display_timeout_ms,
+                )
+                write_durations_s.append(write_duration_s)
+                # time.sleep(float(delay_s))
+                camera.FireSoftwareTrigger()
+                reblank_frame = camera.GetFrame()
+                reblank_power = camera_utils.get_relative_power(
+                    frame=reblank_frame,
+                    centre=camera_roi_center,
+                    x_half_width=camera_roi_half_width,
+                    y_half_width=camera_roi_half_height,
+                )
+
+                metric_values[measurement_index, delay_index] = abs(stripe_power / blank_power - initalmetric_value)
+                reblank_power_values[measurement_index, delay_index] = reblank_power / blank_power
+
+            print(np.mean(metric_values[:, delay_index]))
+
+    finally:
+        camera.SetContinuousMode()
+
+    write_durations_s = np.asarray(write_durations_s, dtype=np.float64)
+    return {
+        "delay_values_s": delay_values_s,
+        "metric_values": metric_values,
+        "reblank_power_values": reblank_power_values,
+        "blank_mask": blank_mask,
+        "stripe_mask": stripe_mask,
+        "blank_power": blank_power,
+        "stripe_reference_power": stripe_reference_power,
+        "write_durations_s": write_durations_s,
+        "write_stats": timing_stats(write_durations_s),
+    }
 
 
+def plot_slm_camera_delay_response(result):
+    delay_values_ms = result["delay_values_s"] * 1e3
+    metric_values = result["metric_values"]
 
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for measurement_index in range(metric_values.shape[0]):
+        ax.plot(delay_values_ms, metric_values[measurement_index], ".-", alpha=0.8)
 
-
-def slmRefreshRateCalibration_old(slm:pyLCOS.LCOS,Cam:CamForm.GeneralCameraObject,channel="Red",
-                              refreshCount=10,refreshRateMin=0,refreshRateMax=100,MeasCount=1,
-                               Direction="y", imask=0,pol="H",backgroundLevel=0,strip_value=128,
-                                       strip_width=10,
-                                       ixCamCenter=None,iyCamCenter=None,
-                                    x_half_width=None,
-                                    y_half_width=None):
-    
-    masksize=slm.polProps[channel][pol].masksize
-    
-    Nx=masksize[0]
-    Ny=masksize[1]
-    
-    y_center = slm.AllMaskProperties[channel][pol][imask].center[0]
-    x_center = slm.AllMaskProperties[channel][pol][imask].center[1]   
-    
-
-    
-    
-    mask_NoStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=0, orientation=Direction)
-    MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-    mask_NoStrip_MASKTODisplay_256=np.copy(MASKTODisplay_256)
-    
-    mask_piStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=strip_value, orientation=Direction)
-    MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_piStrip,backgroundLevel)
-    mask_piStrip_MASKTODisplay_256=np.copy(MASKTODisplay_256)
-    
-    plt.figure(100)
-    plt.subplot(1,2,1)
-    plt.imshow(mask_NoStrip_MASKTODisplay_256)
-    plt.subplot(1,2,2)
-    plt.imshow(mask_piStrip_MASKTODisplay_256)
-    plt.show()
-    
-
-
-    refreshArr = np.linspace(refreshRateMin,refreshRateMax,refreshCount)*1e-3
-    metricValues=np.zeros((MeasCount,refreshCount))
-    intialpwrTracker=np.zeros((MeasCount,refreshCount))
-    # CameraPowerMeterSwitch=1
-    # if CameraPowerMeterSwitch==1:
-    Cam.SetSingleFrameCapMode()
-    timetotal_slm=0
-    timetotal_cam=0
-    
-    
-    for imeas in range(MeasCount):
-        slm.GLobProps[channel].RefreshTime=100.0e-3
-        # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-        start = time.perf_counter()
-        slm.Write_To_Display(mask_NoStrip_MASKTODisplay_256,channel)
-        elapsed = time.perf_counter() - start
-        timetotal_slm+=elapsed
-        start = time.perf_counter()
-        Cam.GetFrame() 
-        # Cam.GetFrameSingleCapture() 
-        
-        
-        elapsed = time.perf_counter() - start
-        timetotal_cam+=elapsed
-        
-        initalpwr=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-        print("Initial Power: "+str(initalpwr/Cam.GetRelativePower() ))
-        for irefreshrate in range(refreshCount):
-            slm.GLobProps[channel].RefreshTime=refreshArr[irefreshrate]
-            # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_piStrip,backgroundLevel)
-            slm.Write_To_Display(mask_piStrip_MASKTODisplay_256,channel)
-            
-            pwrAfterTilt=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-
-            # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-            slm.Write_To_Display(mask_NoStrip_MASKTODisplay_256,channel)
-            pwrAfterReflat=Cam.GetRelativePower(centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-
-
-            metricValues[imeas,irefreshrate]=pwrAfterTilt/initalpwr
-            intialpwrTracker[imeas,irefreshrate]=pwrAfterReflat/initalpwr
-            if imeas==0:
-                print(metricValues[imeas,irefreshrate])
-        if imeas==0:
-            plt.plot(refreshArr*1e3,metricValues[imeas,:])
-            
-            print(metricValues[imeas,irefreshrate])
-            
-    print(timetotal_slm/MeasCount)
-    print(timetotal_cam/MeasCount)
-        # print(imeas) 
-
-    Cam.SetContinousFrameCapMode()
-    return refreshArr,metricValues,intialpwrTracker
-        
-        
-def slmRefreshRateCalibration_HardwareTrigger(slm:pyLCOS.LCOS,Cam:CamForm.GeneralCameraObject,channel="Red",
-                            refreshCount=10,refreshRateMin=0,refreshRateMax=100,MeasCount=1,
-                            Direction="y", imask=0,pol="H",backgroundLevel=0,
-                                    strip_width=10,
-                                    ixCamCenter=None,iyCamCenter=None,
-                                    x_half_width=None,
-                                    y_half_width=None):
-
-    masksize=slm.polProps[channel][pol].masksize
-    
-    Nx=masksize[0]
-    Ny=masksize[1]
-    
-    y_center = slm.AllMaskProperties[channel][pol][imask].center[0]
-    x_center = slm.AllMaskProperties[channel][pol][imask].center[1]   
-    
-
-    
-    
-    mask_NoStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=0, orientation=Direction)
-    MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-    mask_NoStrip_MASKTODisplay_256=np.copy(MASKTODisplay_256)
-    
-    mask_piStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=127, orientation=Direction)
-    MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_piStrip,backgroundLevel)
-    mask_piStrip_MASKTODisplay_256=np.copy(MASKTODisplay_256)
-    
-    plt.figure(100)
-    plt.subplot(1,2,1)
-    plt.imshow(mask_NoStrip_MASKTODisplay_256)
-    plt.subplot(1,2,2)
-    plt.imshow(mask_piStrip_MASKTODisplay_256)
-    plt.show()
-    
-
-
-    refreshArr = np.linspace(refreshRateMin,refreshRateMax,refreshCount)*1e-3
-    metricValues=np.zeros((MeasCount,refreshCount))
-    intialpwrTracker=np.zeros((MeasCount,refreshCount))
-    # CameraPowerMeterSwitch=1
-    # if CameraPowerMeterSwitch==1:
-    Cam.SetSingleFrameCapMode()
-    timetotal_slm=0
-    timetotal_cam=0
-    
-    Cam.SetTriggerMode(1)
-    for imeas in range(MeasCount):
-        print(imeas)
-        slm.GLobProps[channel].RefreshTime=100.0e-3
-        # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-        # start = time.perf_counter()
-        slm.Write_To_Display(mask_NoStrip_MASKTODisplay_256,channel)
-        # elapsed = time.perf_counter() - start
-        # timetotal_slm+=elapsed
-        # # start = time.perf_counter()
-        # # # Cam.GetFrame() 
-        # # Cam.GetFrameSingleCapture() 
-        
-        
-        # # elapsed = time.perf_counter() - start
-        # # timetotal_cam+=elapsed
-        fameInital=np.copy(Cam.GetFrame(ExtTriggerImageIdx=0))
-        # # print(fameInital.shape)
-        # # plt.figure(100)
-        # # plt.subplot(1,1,1)
-        # # plt.imshow(fameInital)
-        # # plt.show()
-        initalpwr=Cam.GetRelativePower(fameInital,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-
-        # initalpwr=Cam.GetRelativePower(frame=fameInital)    
-        Cam.SetTriggerMode(1)# this is to clear the buffer as the set trigger mode has that automatically
-        
-        # print("Initial Power: "+str(initalpwr/Cam.GetRelativePower() ))
-        for irefreshrate in range(refreshCount):
-            slm.GLobProps[channel].RefreshTime=refreshArr[irefreshrate]
-            # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_piStrip,backgroundLevel)
-            slm.Write_To_Display(mask_NoStrip_MASKTODisplay_256,channel)
-            
-            # slm.Write_To_Display(mask_piStrip_MASKTODisplay_256,channel)
-            
-
-            # MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask_NoStrip,backgroundLevel)
-            # slm.Write_To_Display(mask_NoStrip_MASKTODisplay_256,channel)
-            slm.Write_To_Display(mask_piStrip_MASKTODisplay_256,channel)
-            # dumbby=Cam.GetFrame(ExtTriggerImageIdx=1)
-            # copy.deepcopy(dumbby,fameWithOutSpot)
-            fameWithOutSpot=np.copy(Cam.GetFrame(ExtTriggerImageIdx=1))
-            pwrAfterTilt=Cam.GetRelativePower(fameWithOutSpot,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-            
-            # pwrAfterTilt=Cam.GetRelativePower(fameWithOutSpot)
-            # print(pwrAfterTilt)
-            # print("tilt")
-            # time.sleep(2)
-            
-            fameWithSpot=np.copy(Cam.GetFrame(ExtTriggerImageIdx=0))
-            # print("tiltoff")
-            pwrAfterReflat=Cam.GetRelativePower(fameWithSpot,centre=[ixCamCenter,iyCamCenter],x_half_width=x_half_width,y_half_width=y_half_width)
-            # pwrAfterReflat=Cam.GetRelativePower(fameWithSpot)
-            # print(pwrAfterReflat)
-            # time.sleep(2)
-            
-            
-            # pwrAfterTilt=Cam.GetRelativePower(fameWithOutSpot)
-            # print(pwrAfterTilt)
-            
-            # pwrAfterReflat=Cam.GetRelativePower(fameWithSpot)
-            # print(pwrAfterTilt)
-            
-            Cam.SetTriggerMode(1)# this is to clear the buffer as the set trigger mode has that automatically
-
-
-            # metricValues[imeas,irefreshrate]=pwrAfterReflat/pwrAfterTilt#pwrAfterTilt/pwrAfterReflat
-            metricValues[imeas,irefreshrate]=pwrAfterTilt/pwrAfterReflat#pwrAfterTilt/pwrAfterReflat
-            
-            intialpwrTracker[imeas,irefreshrate]=pwrAfterReflat/initalpwr
-            if imeas==0:
-                print(metricValues[imeas,irefreshrate])
-        if imeas==0:
-            plt.plot(refreshArr*1e3,metricValues[imeas,:])
-            
-            print(metricValues[imeas,irefreshrate])
-            
-    print(timetotal_slm/MeasCount)
-    print(timetotal_cam/MeasCount)
-        # print(imeas) 
-    Cam.SetTriggerMode(0)
-    Cam.SetContinousFrameCapMode()
-    return refreshArr,metricValues,intialpwrTracker
-    
-
-
-
-            
-    # if CameraPowerMeterSwitch==0:
-    #     tiltvalue=0.030
-
-    #     InitalTiltx=slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[1] 
-    #     InitalTilty=slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[2]
-    #     initalpwr=pwrMeter.GetPower()
-
-    #     for irefreshrate in range(refreshCount):
-    #         slm.GLobProps["Red"].RefreshTime=refreshArr[irefreshrate]
-    #         slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[1] = tiltvalue
-    #         slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[2] = tiltvalue
-    #         slm.setmask(channel="Red",imode=0)
-    #         pwrAfterTilt=pwrMeter.GetPower()
-
-    #         slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[1] = InitalTiltx
-    #         slm.AllMaskProperties["Red"]["H"][0].zernike.zern_coefs[2] = InitalTilty
-    #         slm.setmask(channel="Red",imode=0)
-
-    #         metricValues[irefreshrate]=pwrAfterTilt/initalpwr
-    #         print(metricValues[irefreshrate])
-
-    # plt.plot(refreshArr,metricValues)
+    ax.set_xlabel("SLM-to-camera delay [ms]")
+    ax.set_ylabel("Stripe / blank power")
+    ax.grid(True)
+    fig.tight_layout()
+    return fig, ax

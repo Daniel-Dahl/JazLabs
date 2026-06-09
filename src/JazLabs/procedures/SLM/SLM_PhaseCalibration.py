@@ -1,5 +1,3 @@
-
-
 # Python Libs
 import cv2
 import numpy as np
@@ -20,10 +18,9 @@ plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
 
 
-import JazLabs.utils.camera_utils as cam_utils
-import JazLabs.hardware.SLM.SLMStackMilk.SLM_ServerLinux as SLM_Serverlib
-import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
-import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
+import pwi_inst.utils.camera_utils as cam_utils
+import pwi_inst.hardware.Cameras.Camera_Client as CamClientlib
+import pwi_inst.hardware.SLM.PhaseMaskClass as PhaseMaskClass
 
 
 
@@ -221,6 +218,7 @@ def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.Pha
                                     x_half_width=None,
                                     y_half_width=None):
     # Cam.SetSingleFrameCapMode()
+    Cam.SetSoftwareTriggerMode()
     phaseLevels=256
     masksize=slm.polProps[channel][pol].masksize
     
@@ -242,9 +240,11 @@ def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.Pha
             
         MASKTODisplay_256=slm.Draw_Single_Mask( x_center, y_center, mask,backgroundLevel)
 
-        slm.Write_To_Display(MASKTODisplay_256,channel)
+        slm.WriteImageToSLM(MASKTODisplay_256,channel)
         # _=Cam.GetRelativePower(centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width,avgCount=camframeAvg)
+        Cam.FireSoftwareTrigger()
         frame=Cam.GetFrame() 
+
         PowerValues0th[level] = cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width)
         PowerValues_plus1st[level]= cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_plus1st,iyCamCenter_plus1st],x_half_width=x_half_width,y_half_width=y_half_width)
         PowerValues_minus1st[level]= cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter_minus1st,iyCamCenter_minus1st],x_half_width=x_half_width,y_half_width=y_half_width)
@@ -256,6 +256,8 @@ def PhaseCalibration_BinaryDiffraction_Cam_0thAnd1stOrder(slm:PhaseMaskClass.Pha
 
         
     slm.Clear_Display(channel)
+
+    Cam.FireSoftwareTrigger()
     frame=Cam.GetFrame() 
     
     PowerValues0th[level]=cam_utils.get_relative_power(frame=frame,centre=[ixCamCenter0th,iyCamCenter0th],x_half_width=x_half_width,y_half_width=y_half_width)

@@ -1,5 +1,4 @@
 
-
 # import tomography.standard as standard
 # import tomography.masks as masks
 
@@ -19,13 +18,12 @@ plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
 from typing import List
 
-import JazLabs.utils.camera_utils as cam_utils
-import JazLabs.hardware.SLM.SLMStackMilk.SLM_ServerLinux as SLM_Serverlib
-import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
-import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
-import JazLabs.utils.GenerateSimplePhaseMasks as SimpMaskLib
-import  JazLabs.utils.AlignmentFunctions as AlignFunc
-import JazLabs.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
+import pwi_inst.utils.camera_utils as cam_utils
+import pwi_inst.hardware.Cameras.Camera_Client as CamClientlib
+import pwi_inst.hardware.SLM.PhaseMaskClass as PhaseMaskClass
+import pwi_inst.utils.GenerateSimplePhaseMasks as SimpMaskLib
+import  pwi_inst.utils.AlignmentFunctions as AlignFunc
+import pwi_inst.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
 
 
 def apply_circular_aperture(array, center, radius, fill_value=0):
@@ -150,12 +148,13 @@ def FindFactors(num):
 
 
 def CourseSweepAcrossSLMPowerMeter(slm:PhaseMaskClass.PhaseMaskObject,channel,CamObjs:CamClientlib.CameraClient,flipCount=25):
-
+    CamObjs.SetSoftwareTriggerMode()
     slm.Clear_Display()
     # flipMin=//2-flipCount//2
     flipMin=0
     flipMax=slm.slmHeigth//2+flipCount//2
     flipMax=slm.slmWidth//2+flipCount//2
+    CamObjs.FireSoftwareTrigger()
     frame=CamObjs.GetFrame() 
     relativepwr = cam_utils.get_relative_power(frame=frame)
     print(relativepwr)
@@ -164,7 +163,7 @@ def CourseSweepAcrossSLMPowerMeter(slm:PhaseMaskClass.PhaseMaskObject,channel,Ca
 
     #Left to right sweep
     for iflip in range(0,slm.slmWidth,flipCount):
-        
+        CamObjs.FireSoftwareTrigger()
         frame=CamObjs.GetFrame() 
         relativepwr = cam_utils.get_relative_power(frame=frame)
         powerReadingX=np.append(powerReadingX,relativepwr)
@@ -178,13 +177,14 @@ def CourseSweepAcrossSLMPowerMeter(slm:PhaseMaskClass.PhaseMaskObject,channel,Ca
 
 
         # np.angle( np.random.rand(1200,1920) + np.random.rand(1200,1920) * 1j)
-        ArryForSLM=slm.convert_phase_to_uint8((PiFlip_cmplx), aperture = 1)
+        ArryForSLM=slm.convert_phase_to_uint8(PiFlip_cmplx)
         # slm.LCOS_Display(ArryForSLM, slm.GLobProps[channel].rgbChannelIdx)
-        slm.Write_To_Display(ArryForSLM, channel)
+        slm.WriteImageToSLM(ArryForSLM, channel)
         
         
     # top to bottom sweep    
     for iflip in range(0,slm.slmHeigth,flipCount):
+        CamObjs.FireSoftwareTrigger()
         frame=CamObjs.GetFrame()
         relativepwr = cam_utils.get_relative_power(frame=frame)
         powerReadingY=np.append(powerReadingY,relativepwr)
@@ -198,11 +198,12 @@ def CourseSweepAcrossSLMPowerMeter(slm:PhaseMaskClass.PhaseMaskObject,channel,Ca
         # PiFlip_cmplx[:,0:flipMin+iflip]=np.exp(1j*np.pi)
 
         # np.angle( np.random.rand(1200,1920) + np.random.rand(1200,1920) * 1j)
-        ArryForSLM=slm.convert_phase_to_uint8((PiFlip_cmplx), aperture = 1)
+        ArryForSLM=slm.convert_phase_to_uint8((PiFlip_cmplx))
         # slm.LCOS_Display(ArryForSLM, slm.GLobProps[channel].rgbChannelIdx)
-        slm.Write_To_Display(ArryForSLM, channel)
+        slm.WriteImageToSLM(ArryForSLM, channel)
         
     slm.Clear_Display(channel)
+    CamObjs.SetContinuousMode()
     return powerReadingX,powerReadingY
 
 class AlginmentObj():
@@ -235,6 +236,7 @@ class AlginmentObj():
     def GetAvgPowerOfSpot(self,avgFrameCount=25):
         spotPwrall_avg=0
         for iframe in range(avgFrameCount):
+            self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
             frame=self.CamObjs[self.CamObjIdx].GetFrame()
             spotPwr=self.SpotSelector_pwr(frame,self.ispot,self.radiusApp)
             spotPwrall_avg=spotPwrall_avg+spotPwr
@@ -245,6 +247,7 @@ class AlginmentObj():
         spotPwrall_avg=0
         spotCount=self.SpotCenters.shape[0]
         for iframe in range(avgFrameCount):
+            self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
             frame=self.CamObjs[self.CamObjIdx].GetFrame()
             spotPwrall=0
             for ispot in range(spotCount):
@@ -254,7 +257,7 @@ class AlginmentObj():
         return MetricVaule
 
             
-    def CalulateMetric(self,frame,CalulateRefMetric=False):
+    def CalulateMetric(self,avgframeCount,CalulateRefMetric=False):
         if self.MetricType=="POWERSPOT":
             if CalulateRefMetric:
                 metric= self.GetAvgPowerOfSpot(self.avgFrameCount)
@@ -266,6 +269,8 @@ class AlginmentObj():
         elif self.MetricType=="SPATIAL":
             if CalulateRefMetric:
                 if self.ApatureFrame:
+                    self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
+                    frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
                     metric,_= cam_utils.get_aperture(frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
             else:
                 if self.ApatureFrame:
@@ -278,10 +283,22 @@ class AlginmentObj():
             
         elif self.MetricType=="POWER":
             if CalulateRefMetric:
-                metric=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
+                metric=0
+                for iframe in range(avgframeCount):
+                    self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
+                    frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
+                    metric=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
+                metric += metric
+                metric=metric/avgframeCount
             else:
-                pwr=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
-                metric = np.abs(pwr - self.Ref_Metric)
+                pwr=0
+                for iframe in range(avgframeCount):
+                    self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
+                    frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
+                    pwr=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
+                pwr += pwr
+                pwr=pwr/avgframeCount
+                metric = np.abs(pwr - self.Ref_Metric//2)
         else:
             print("Incorrect Metric selected. You must select either POWER or SPATIAL")
         return metric
@@ -319,6 +336,7 @@ class AlginmentObj():
         print(self.MetricType)
         
         self.slmObjs[ObjIdx].Clear_Display(channel=channel)
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
         self.CamObjIdx=ObjIdx
         
         self.avgFrameCount=avgFrameCount
@@ -330,6 +348,7 @@ class AlginmentObj():
         if self.MetricType == "POWERSPOT":
             self.Ref_Metric = self.GetAvgPowerOfSpot(self.avgFrameCount)
         elif self.MetricType == "SPATIAL":
+            self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
             frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
             if self.ApatureFrame:
                 self.Ref_Metric,_= cam_utils.get_aperture(frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
@@ -337,6 +356,7 @@ class AlginmentObj():
             else:
                 self.Ref_Metric=np.copy(frame)
         elif self.MetricType == "POWER":
+            self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
             frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
             self.Ref_Metric=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
         else:
@@ -354,7 +374,7 @@ class AlginmentObj():
 
         if PlotResults:
             plt.plot(self.xValTrack,self.yValTrack)
-            
+        self.CamObjs[self.CamObjIdx].SetContinuousMode()
         return self.xValTrack,self.yValTrack
     
     def ChangeApatureRadiusTakeMetric(self,xVal):
@@ -386,9 +406,9 @@ class AlginmentObj():
             MASKTODisplay_cmplx=self.slmObjs[self.ObjIdx].Draw_Single_Mask( xCenter,yCenter, MASK_PlussZernike)
         
         self.slmObjs[self.ObjIdx].FullScreenBuffer_int=self.slmObjs[self.ObjIdx].convert_phase_to_uint8(MASKTODisplay_cmplx) # Note if nothing is passed it will use the self.FullScreenBuffer_cmplx array as the array it is going to convert      
-        self.slmObjs[self.ObjIdx].Write_To_Display(self.slmObjs[self.ObjIdx].FullScreenBuffer_int,self.channel)
+        self.slmObjs[self.ObjIdx].WriteImageToSLM(self.slmObjs[self.ObjIdx].FullScreenBuffer_int,self.channel)
         
-        metric=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame())
+        metric=self.CalulateMetric(avgframeCount=self.avgFrameCount)
 
         self.xValTrack=np.append(self.xValTrack,xVal)
         self.yValTrack=np.append(self.yValTrack,metric)
@@ -426,19 +446,21 @@ class AlginmentObj():
             channel=self.slmObjs[ObjIdx].ActiveRGBChannels[0]
         if MaskSize is  None:
             MaskSize=self.slmObjs[ObjIdx].polProps[channel][pol].masksize
+        else:
+            self.MaskSize=MaskSize
         self.CamObjIdx=ObjIdx
         self.ObjIdx=ObjIdx
 
         OriginialBackground_int=np.copy(self.slmObjs[ObjIdx].backgroundPattern_int)
         background=np.ones((self.slmObjs[ObjIdx].LCOSsize))*np.exp(1j*BackgroundPhase)
         self.slmObjs[ObjIdx].Clear_Display(channel=channel)
-        self.slmObjs[ObjIdx].SetBackGroundPattern(channel=channel,backgroundPattern=background)
+        # self.slmObjs[ObjIdx].SetBackGroundPattern(channel=channel,backgroundPattern=background)
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
         # self.RefPWR=self.CamObjs[self.ObjIdx].GetRelativePower()
         self.avgFrameCount=avgFrameCount
         self.ispot=ispot
         self.radiusApp=radiusApp
-        
-        self.Ref_Metric=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame(),CalulateRefMetric=True)
+        self.Ref_Metric=self.CalulateMetric(avgframeCount=self.avgFrameCount,CalulateRefMetric=True)
       
         # Need to set up self variables for the the function to be passed to the golden search function
         self.channel=channel
@@ -506,6 +528,7 @@ class AlginmentObj():
         print("New X Centers: ",MinXCenter)
         print("New Y Centers: ",MinYCenter)
         # self.CamObjs[ObjIdx].SetContinousFrameCapMode()
+        self.CamObjs[self.CamObjIdx].SetContinuousMode()
         
         return (MinXCenter),(MinYCenter)
     
@@ -514,10 +537,11 @@ class AlginmentObj():
         self.globalphaseshiftshift=-np.pi    
         # Nx=self.slm.masksize[0]
         # Ny=self.slm.masksize[1]
-        MaskSize=self.slmObjs[self.ObjIdx].polProps[self.channel][self.pol].masksize
+        # MaskSize=self.slmObjs[self.ObjIdx].polProps[self.channel][self.pol].masksize
         
-        Nx=MaskSize[0]
-        Ny=MaskSize[1]
+        Nx=self.MaskSize[0]
+        Ny=self.MaskSize[1]
+        # print(MaskSize)
         MASK=np.ones((Nx,Ny),dtype=complex)
         
         self.HalfMaskType="BinaryStrip"
@@ -592,32 +616,45 @@ class AlginmentObj():
             MASKTODisplay_cmplx=self.slmObjs[self.ObjIdx].Draw_Single_Mask( x_center_Input,xVal, MASK_PlussZernike)
         
         self.slmObjs[self.ObjIdx].FullScreenBuffer_int=self.slmObjs[self.ObjIdx].convert_phase_to_uint8(MASKTODisplay_cmplx) # Note if nothing is passed it will use the self.FullScreenBuffer_cmplx array as the array it is going to convert      
-        self.slmObjs[self.ObjIdx].Write_To_Display(self.slmObjs[self.ObjIdx].FullScreenBuffer_int,self.channel)
-        metric=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame())
+        self.slmObjs[self.ObjIdx].WriteImageToSLM(self.slmObjs[self.ObjIdx].FullScreenBuffer_int,self.channel)
+        
+        metric=self.CalulateMetric(avgframeCount=self.avgFrameCount)
         self.xValTrack=np.append(self.xValTrack,xVal)
         self.yValTrack=np.append(self.yValTrack,metric)
         
         return xVal,metric
     
     def SweepAcrossSLM_Mask(self,ObjIdx=0,imask=0,channel=None,pol="H",stepCount=10,PixelsFromCenter=50,
-                            ixCamCenter=None,iyCamCenter=None,x_half_width=None,y_half_width=None,MetricType="POWER"):
+                            ixCamCenter=None,iyCamCenter=None,x_half_width=None,y_half_width=None,MetricType="POWER",
+                            avgFrameCount=1):
 
         self.MetricType=MetricType
         self.ixCamCenter=ixCamCenter
         self.iyCamCenter=iyCamCenter
         self.x_half_width=x_half_width
         self.y_half_width=y_half_width
+        self.ObjIdx=ObjIdx
+        self.CamObjIdx=ObjIdx
+        self.avgFrameCount=avgFrameCount
+        self.pol=pol
+        self.imask=imask
+        if (self.ixCamCenter is not None and self.iyCamCenter is not None and self.x_half_width is not None and self.y_half_width is not None):
+            self.ApatureFrame = True
+        else:
+            self.ApatureFrame = False
         # CamObj.Exposure
         if channel is None:#if no channel is passed in then use the first active channel on the SLM
             channel=self.slmObjs[ObjIdx].ActiveRGBChannels[0]
+        self.channel=channel
         MaskCount=self.slmObjs[ObjIdx].polProps[channel][pol].MaskCount
         
         self.slmObjs[ObjIdx].Clear_Display(channel)
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
+        
        
         #This is the reference Field that the other fields will be overlaped with
         # self.RefPWR=self.CamObjs[self.ObjIdx].GetRelativePower(centre=[xcentre,ycentre],x_half_width=x_half_width,y_half_width=y_half_width)
-        
-        self.Ref_Metric=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame(),CalulateRefMetric=True)
+        self.Ref_Metric=self.CalulateMetric(avgframeCount=self.avgFrameCount,CalulateRefMetric=True)
         
         
         PixelFlipStep=np.zeros((2,2*PixelsFromCenter//stepCount,MaskCount))
@@ -625,7 +662,6 @@ class AlginmentObj():
         # I may have to move this to inside the imask loop to reset the pi flip location
         PiFlip_cmplx =np.ones((self.slmObjs[ObjIdx].slmHeigth,self.slmObjs[ObjIdx].slmWidth),dtype=complex)*np.exp(0.0*1j*np.pi)
         
-        self.imask=imask
         # set up at the boundaries of the mask properties
         x_center=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[1])
         y_center=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[0])
@@ -664,22 +700,23 @@ class AlginmentObj():
                 
                 # draw/display the actual masks
                 self.slmObjs[ObjIdx].FullScreenBuffer_int=self.slmObjs[ObjIdx].convert_phase_to_uint8(PiFlip_cmplx)
-                self.slmObjs[ObjIdx].Write_To_Display(self.slmObjs[ObjIdx].FullScreenBuffer_int,channel)
-                
-                self.Ref_Metric[iDirection,iflipIdx,imask]=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame())                
+                self.slmObjs[ObjIdx].WriteImageToSLM(self.slmObjs[ObjIdx].FullScreenBuffer_int,channel)
+                RefSigPWR[iDirection,iflipIdx,imask]=self.CalulateMetric(avgframeCount=self.avgFrameCount)
                 PixelFlipStep[iDirection,iflipIdx,imask]=iflip
                 iflipIdx=iflipIdx+1
                     
             
         # RefSigPWR = np.sqrt(RefSigPWR)# not sure why I sqrt twice might be wrong will come back and check
         # RefSigPWR_log =1# 10 * np.log10(RefSigPWR / self.RefPWR)
-        RefSigPWR_log =10 * np.log10(RefSigPWR )
+        RefSigPWR_log =10 * np.log10(np.maximum(RefSigPWR, np.finfo(float).tiny))
         
         self.slmObjs[ObjIdx].Clear_Display(channel) 
+        self.CamObjs[self.CamObjIdx].SetContinuousMode()
         
         return RefSigPWR,RefSigPWR_log,PixelFlipStep
     
     def SweepAcrossSLM_Mask_binaryGrating(self,ObjIdx=0,imask=0,channel=None,pol="H",stepCount=10,PixelsFromCenter=50,strip_width=10,
+                            MaskSize=None,avgFrameCount=1,
                             ixCamCenter=None,iyCamCenter=None,x_half_width=None,y_half_width=None,MetricType="POWER"):
 
         self.MetricType=MetricType
@@ -688,15 +725,29 @@ class AlginmentObj():
         self.x_half_width=x_half_width
         self.y_half_width=y_half_width
         self.ObjIdx=ObjIdx
+        self.CamObjIdx=ObjIdx
+        self.avgFrameCount=avgFrameCount
+        self.pol=pol
+        self.imask=imask
+        if (self.ixCamCenter is not None and self.iyCamCenter is not None and self.x_half_width is not None and self.y_half_width is not None):
+            self.ApatureFrame = True
+        else:
+            self.ApatureFrame = False
         # CamObj.Exposure
         if channel is None:#if no channel is passed in then use the first active channel on the SLM
             channel=self.slmObjs[ObjIdx].ActiveRGBChannels[0]
+        self.channel=channel
+        if MaskSize is None:
+            MaskSize=self.slmObjs[ObjIdx].polProps[channel][pol].masksize
+        self.MaskSize=MaskSize
+        Nx=int(MaskSize[0])
+        Ny=int(MaskSize[1])
         MaskCount=self.slmObjs[ObjIdx].polProps[channel][pol].MaskCount
         
         self.slmObjs[ObjIdx].Clear_Display(channel)
-       
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
         #This is the reference Field that the other fields will be overlaped with
-        self.Ref_Metric=self.CalulateMetric(frame=self.CamObjs[self.ObjIdx].GetFrame(),CalulateRefMetric=True)
+        self.Ref_Metric=self.CalulateMetric(avgframeCount=self.avgFrameCount,CalulateRefMetric=True)
         
         
         PixelFlipStep=np.zeros((2,2*PixelsFromCenter//stepCount,MaskCount))
@@ -704,7 +755,6 @@ class AlginmentObj():
         # I may have to move this to inside the imask loop to reset the pi flip location
         PiFlip_cmplx =np.ones((self.slmObjs[ObjIdx].slmHeigth,self.slmObjs[ObjIdx].slmWidth),dtype=complex)*np.exp(0.0*1j*np.pi)
         
-        self.imask=imask
         # set up at the boundaries of the mask properties
         x_center=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[1])
         y_center=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[0])
@@ -733,32 +783,33 @@ class AlginmentObj():
             iflipIdx=0
             for iflip in range(flipMin,flipMax,stepCount):
                 if (iDirection==1):
-                    mask_piStrip=periodic_strip_mask_1(mask_shape=[512,512], strip_width=strip_width, strip_value=128, orientation="x")
-                    mask_piStrip[:,512//2:]=0
+                    mask_piStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=128, orientation="x")
+                    mask_piStrip[:,Ny//2:]=0
                     
                     # PiFlip_cmplx[:,0:iflip]=PiFlip_cmplx[:,0:iflip]*np.exp(1j*np.pi)
                     MASKTODisplay_256=self.slmObjs[ObjIdx].Draw_Single_Mask( iflip, y_center, mask_piStrip)
                     
                 else:
-                    mask_piStrip=periodic_strip_mask_1(mask_shape=[512,512], strip_width=strip_width, strip_value=128, orientation="y")
+                    mask_piStrip=periodic_strip_mask_1(mask_shape=[Nx,Ny], strip_width=strip_width, strip_value=128, orientation="y")
                     
-                    mask_piStrip[512//2:,:]=0
+                    mask_piStrip[Nx//2:,:]=0
                     # PiFlip_cmplx[0:iflip,:]= PiFlip_cmplx[0:iflip,:]*np.exp(1j*np.pi)
                     MASKTODisplay_256=self.slmObjs[ObjIdx].Draw_Single_Mask( x_center, iflip, mask_piStrip)
                     
                 mask_piStrip_MASKTODisplay_256=np.copy(MASKTODisplay_256)
-                self.slmObjs[ObjIdx].Write_To_Display(mask_piStrip_MASKTODisplay_256,channel)
+                self.slmObjs[ObjIdx].WriteImageToSLM(mask_piStrip_MASKTODisplay_256,channel)
 
-                
-                RefSigPWR[iDirection,iflipIdx,imask]=self.CalulateMetric(frame=self.CamObjs[self.CamObjIdx].GetFrame())   
+                RefSigPWR[iDirection,iflipIdx,imask]=self.CalulateMetric(avgframeCount=self.avgFrameCount)   
                 
                 PixelFlipStep[iDirection,iflipIdx,imask]=iflip
                 iflipIdx=iflipIdx+1
                     
 
-        RefSigPWR_log =10 * np.log10(RefSigPWR )
+        RefSigPWR_log =10 * np.log10(np.maximum(RefSigPWR, np.finfo(float).tiny))
         
         self.slmObjs[ObjIdx].Clear_Display(channel) 
+        self.CamObjs[self.CamObjIdx].SetContinuousMode()
+        
         
         return RefSigPWR,RefSigPWR_log,PixelFlipStep
     
