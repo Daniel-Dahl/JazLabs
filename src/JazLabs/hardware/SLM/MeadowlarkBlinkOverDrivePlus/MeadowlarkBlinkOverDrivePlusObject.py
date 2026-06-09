@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 # Your modules
-from pwi_inst.hardware.SLM.MeadowlarkBlinkOverDrivePlus import MeadowlarkBlinkOverDrivePlusHeader as slm_lib
+from JazLabs.hardware.SLM.MeadowlarkBlinkOverDrivePlus import MeadowlarkBlinkOverDrivePlusHeader as slm_lib
 
 
 

@@ -1,249 +1,425 @@
-# SLM_PhaseMask_Window.py
-
-import numpy as np
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QGridLayout, QLabel, QComboBox,
-    QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton, QLineEdit
-)
-from PySide6.QtCore import Qt
-import sys
+import multiprocessing as mp
+import traceback
 
 
-class SLMPhaseMaskWindow(QWidget):
-    def __init__(self, slm, pol="V", imask=0, channel="Red"):
-        super().__init__()
+def _as_float(text):
+    text = str(text).strip()
+    if text == "":
+        return 0.0
+    return float(text)
 
-        self.slm = slm
-        self.channel = channel
-        self.pol = pol
-        self.imask = int(imask)
 
-        self.setWindowTitle("SLM Phase Mask Control")
+def _as_int(text):
+    text = str(text).strip()
+    if text == "":
+        return 0
+    return int(text)
 
-        self.layout = QGridLayout()
-        self.setLayout(self.layout)
 
-        self.channelBox = QComboBox()
-        self.channelBox.addItems(["Red", "Green", "Blue"])
-        self.channelBox.setCurrentText(channel)
+def _process_context():
+    try:
+        return mp.get_context("fork")
+    except ValueError:
+        return mp
 
-        self.polBox = QComboBox()
-        self.polBox.addItems(["H", "V"])
-        self.polBox.setCurrentText(pol)
 
-        self.polEnabledBox = QCheckBox("Enable Pol")
-        self.maskEnabledBox = QCheckBox("Enable Mask")
+class SLMPhaseMaskWindow:
+    def __init__(self, phase_mask=None, pol="V", imask=0, channel="Red", slm=None):
+        import tkinter as tk
+        from tkinter import ttk
 
-        self.planeBox = QSpinBox()
-        self.planeBox.setMinimum(0)
-        self.planeBox.setMaximum(9999)
-        self.planeBox.setValue(imask)
+        if phase_mask is None:
+            phase_mask = slm
+        if phase_mask is None:
+            raise TypeError("SLMPhaseMaskWindow requires a PhaseMaskObject")
 
-        self.modeHBox = QSpinBox()
-        self.modeHBox.setMinimum(0)
-        self.modeHBox.setMaximum(9999)
+        self.tk = tk
+        self.ttk = ttk
+        self.slm = phase_mask
+        self._refreshing = False
+        self._pending_update_id = None
+        self._updating_mask = False
+        self._require_phase_mask_object()
 
-        self.modeVBox = QSpinBox()
-        self.modeVBox.setMinimum(0)
-        self.modeVBox.setMaximum(9999)
+        channels = [
+            ch
+            for ch in getattr(self.slm, "ActiveRGBChannels", ["Red", "Green", "Blue"])
+            if ch in self.slm.polProps
+        ]
+        if not channels:
+            raise ValueError("PhaseMaskObject has no active channels in polProps")
 
-        self.xCenterBox = QSpinBox()
-        self.xCenterBox.setRange(-100000, 100000)
+        self.root = tk.Tk()
+        self.root.title("SLM Phase Mask Control")
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-        self.yCenterBox = QSpinBox()
-        self.yCenterBox.setRange(-100000, 100000)
+        self.status_var = tk.StringVar(value="Connected")
+        self.channel_var = tk.StringVar(value=channel if channel in channels else channels[0])
+        self.pol_var = tk.StringVar(value=pol)
+        self.plane_var = tk.StringVar(value=str(int(imask)))
+        self.mode_h_var = tk.StringVar(value="0")
+        self.mode_v_var = tk.StringVar(value="0")
+        self.pol_enabled_var = tk.BooleanVar()
+        self.mask_enabled_var = tk.BooleanVar()
+        self.x_center_var = tk.StringVar()
+        self.y_center_var = tk.StringVar()
+        self.x_tilt_var = tk.StringVar()
+        self.y_tilt_var = tk.StringVar()
+        self.piston_var = tk.StringVar()
+        self.defocus_var = tk.StringVar()
+        self.refresh_ms_var = tk.StringVar()
+        self.sweep_step_var = tk.StringVar(value="30")
+        self.mask_file_var = tk.StringVar(value=getattr(self.slm, "MasksFilename", ""))
 
-        self.xTiltBox = QDoubleSpinBox()
-        self.xTiltBox.setRange(-1e6, 1e6)
-        self.xTiltBox.setDecimals(6)
-        self.xTiltBox.setSingleStep(0.001)
-
-        self.yTiltBox = QDoubleSpinBox()
-        self.yTiltBox.setRange(-1e6, 1e6)
-        self.yTiltBox.setDecimals(6)
-        self.yTiltBox.setSingleStep(0.001)
-
-        self.pistonBox = QDoubleSpinBox()
-        self.pistonBox.setRange(-1e6, 1e6)
-        self.pistonBox.setDecimals(6)
-        self.pistonBox.setSingleStep(2 * np.pi / 256)
-
-        self.defocusBox = QDoubleSpinBox()
-        self.defocusBox.setRange(-1e6, 1e6)
-        self.defocusBox.setDecimals(6)
-        self.defocusBox.setSingleStep(1.0)
-
-        self.refreshBox = QDoubleSpinBox()
-        self.refreshBox.setRange(0, 1e6)
-        self.refreshBox.setDecimals(3)
-        self.refreshBox.setSuffix(" ms")
-
-        self.sweepStepBox = QSpinBox()
-        self.sweepStepBox.setRange(1, 100000)
-        self.sweepStepBox.setValue(30)
-
-        self.maskFileBox = QLineEdit()
-        self.maskFileBox.setText(getattr(self.slm, "MasksFilename", ""))
-
-        self.updateCurrentButton = QPushButton("Update Current SLM")
-        self.updateAllButton = QPushButton("Update All SLM")
-        self.clearButton = QPushButton("Clear SLM")
-        self.zeroZernikeButton = QPushButton("Set All Zernike To Zero")
-        self.equalSpacingButton = QPushButton("Set Plane To Equal Spacing")
-        self.reverseOrderButton = QPushButton("Reverse Plane Order")
-        self.sweepButton = QPushButton("Start Sweep")
-        self.saveButton = QPushButton("Save Mask Props")
-        self.loadPiButton = QPushButton("Load PI Flip Masks")
-        self.loadMaskButton = QPushButton("Load Mask Files")
-
-        row = 0
-        self.layout.addWidget(QLabel("Channel"), row, 0)
-        self.layout.addWidget(self.channelBox, row, 1)
-        self.layout.addWidget(QLabel("Pol"), row, 2)
-        self.layout.addWidget(self.polBox, row, 3)
-        self.layout.addWidget(self.polEnabledBox, row, 4)
-
-        row += 1
-        self.layout.addWidget(QLabel("Plane"), row, 0)
-        self.layout.addWidget(self.planeBox, row, 1)
-        self.layout.addWidget(self.maskEnabledBox, row, 2)
-
-        row += 1
-        self.layout.addWidget(QLabel("Mode H"), row, 0)
-        self.layout.addWidget(self.modeHBox, row, 1)
-        self.layout.addWidget(QLabel("Mode V"), row, 2)
-        self.layout.addWidget(self.modeVBox, row, 3)
-
-        row += 1
-        self.layout.addWidget(QLabel("X Center"), row, 0)
-        self.layout.addWidget(self.xCenterBox, row, 1)
-        self.layout.addWidget(QLabel("Y Center"), row, 2)
-        self.layout.addWidget(self.yCenterBox, row, 3)
-
-        row += 1
-        self.layout.addWidget(QLabel("X Tilt"), row, 0)
-        self.layout.addWidget(self.xTiltBox, row, 1)
-        self.layout.addWidget(QLabel("Y Tilt"), row, 2)
-        self.layout.addWidget(self.yTiltBox, row, 3)
-
-        row += 1
-        self.layout.addWidget(QLabel("Piston"), row, 0)
-        self.layout.addWidget(self.pistonBox, row, 1)
-        self.layout.addWidget(QLabel("Defocus"), row, 2)
-        self.layout.addWidget(self.defocusBox, row, 3)
-
-        row += 1
-        self.layout.addWidget(QLabel("Refresh"), row, 0)
-        self.layout.addWidget(self.refreshBox, row, 1)
-
-        row += 1
-        self.layout.addWidget(self.updateCurrentButton, row, 0)
-        self.layout.addWidget(self.updateAllButton, row, 1)
-        self.layout.addWidget(self.clearButton, row, 2)
-
-        row += 1
-        self.layout.addWidget(self.zeroZernikeButton, row, 0)
-        self.layout.addWidget(self.equalSpacingButton, row, 1)
-        self.layout.addWidget(self.reverseOrderButton, row, 2)
-
-        row += 1
-        self.layout.addWidget(QLabel("Sweep Step"), row, 0)
-        self.layout.addWidget(self.sweepStepBox, row, 1)
-        self.layout.addWidget(self.sweepButton, row, 2)
-
-        row += 1
-        self.layout.addWidget(QLabel("Mask File"), row, 0)
-        self.layout.addWidget(self.maskFileBox, row, 1, 1, 2)
-        self.layout.addWidget(self.loadMaskButton, row, 3)
-
-        row += 1
-        self.layout.addWidget(self.saveButton, row, 0)
-        self.layout.addWidget(self.loadPiButton, row, 1)
-
-        self.channelBox.currentTextChanged.connect(self.on_channel_or_pol_change)
-        self.polBox.currentTextChanged.connect(self.on_channel_or_pol_change)
-        self.planeBox.valueChanged.connect(self.on_plane_change)
-
-        self.polEnabledBox.stateChanged.connect(self.on_pol_enable_change)
-        self.maskEnabledBox.stateChanged.connect(self.on_mask_enable_change)
-
-        self.modeHBox.valueChanged.connect(self.update_mask)
-        self.modeVBox.valueChanged.connect(self.update_mask)
-
-        self.xCenterBox.valueChanged.connect(self.on_value_change)
-        self.yCenterBox.valueChanged.connect(self.on_value_change)
-        self.xTiltBox.valueChanged.connect(self.on_value_change)
-        self.yTiltBox.valueChanged.connect(self.on_value_change)
-        self.pistonBox.valueChanged.connect(self.on_value_change)
-        self.defocusBox.valueChanged.connect(self.on_value_change)
-        self.refreshBox.valueChanged.connect(self.on_value_change)
-
-        self.updateCurrentButton.clicked.connect(self.update_current_slm)
-        self.updateAllButton.clicked.connect(self.update_all_slm)
-        self.clearButton.clicked.connect(self.clear_slm)
-        self.zeroZernikeButton.clicked.connect(self.zero_zernikes)
-        self.equalSpacingButton.clicked.connect(self.equal_spacing)
-        self.reverseOrderButton.clicked.connect(self.reverse_order)
-        self.sweepButton.clicked.connect(self.start_sweep)
-        self.saveButton.clicked.connect(self.save_mask_props)
-        self.loadPiButton.clicked.connect(self.load_pi_flip_masks)
-        self.loadMaskButton.clicked.connect(self.load_mask_files)
+        self._build_layout(channels)
+        self._bind_property_traces()
 
         self.refresh_from_slm()
 
+    def _require_phase_mask_object(self):
+        required_attrs = ("AllMaskProperties", "GLobProps", "polProps", "setmask")
+        missing = [attr for attr in required_attrs if not hasattr(self.slm, attr)]
+        if missing:
+            raise TypeError(
+                "SLMPhaseMaskWindow expects a PhaseMaskObject-like instance; "
+                f"missing: {', '.join(missing)}"
+            )
+
     def current_channel(self):
-        return self.channelBox.currentText()
+        return self.channel_var.get()
 
     def current_pol(self):
-        return self.polBox.currentText()
+        return self.pol_var.get()
 
     def current_plane(self):
-        return int(self.planeBox.value())
+        return _as_int(self.plane_var.get())
+
+    def _valid_channels(self):
+        return [
+            channel
+            for channel in getattr(self.slm, "ActiveRGBChannels", [])
+            if channel in self.slm.polProps
+        ]
+
+    def _current_mask_props(self):
+        return self.slm.AllMaskProperties[
+            self.current_channel()
+        ][
+            self.current_pol()
+        ][
+            self.current_plane()
+        ]
+
+    def _refresh_time_seconds(self, ch):
+        glob_props = self.slm.GLobProps[ch]
+        if hasattr(glob_props, "RefreshTime"):
+            return float(glob_props.RefreshTime)
+
+        refresh_rate = getattr(glob_props, "RefreshRate", None)
+        if refresh_rate:
+            return 1.0 / float(refresh_rate)
+
+        slm_object = getattr(self.slm, "SLMObject", None)
+        refresh_rate = getattr(slm_object, "RefreshRate", 0.0)
+        return 0.0 if not refresh_rate else 1.0 / float(refresh_rate)
+
+    def _set_refresh_time_seconds(self, ch, refresh_time):
+        if hasattr(self.slm, "SetRefreshTime"):
+            self.slm.SetRefreshTime(refresh_time, channel=ch)
+            return
+
+        self.slm.GLobProps[ch].RefreshTime = refresh_time
+
+    def set_refresh_time_from_gui(self):
+        ch = self.current_channel()
+        self._set_refresh_time_seconds(ch, _as_float(self.refresh_ms_var.get()) * 1e-3)
+        self.set_status(f"Set {ch} refresh time to {self.refresh_ms_var.get()} ms")
+
+    def _set_mode_limits(self, ch):
+        self.mode_h_spin.configure(to=max(0, self.slm.polProps[ch]["H"].modeCount - 1))
+        self.mode_v_spin.configure(to=max(0, self.slm.polProps[ch]["V"].modeCount - 1))
+
+    def _set_plane_limits(self, ch, pol):
+        self.plane_spin.configure(to=max(0, self.slm.polProps[ch][pol].MaskCount - 1))
+
+    def _apply_widget_values_to_current_mask(self, update_refresh=False):
+        ch = self.current_channel()
+        pol = self.current_pol()
+        props = self._current_mask_props()
+
+        props.center[1] = _as_int(self.x_center_var.get())
+        props.center[0] = _as_int(self.y_center_var.get())
+        props.zernike.zern_coefs[1] = _as_float(self.x_tilt_var.get())
+        props.zernike.zern_coefs[2] = _as_float(self.y_tilt_var.get())
+        props.zernike.zern_coefs[0] = _as_float(self.piston_var.get())
+        props.zernike.zern_coefs[4] = _as_float(self.defocus_var.get())
+        props.maskEnabled = bool(self.mask_enabled_var.get())
+        self.slm.polProps[ch][pol].polEnabled = bool(self.pol_enabled_var.get())
+        if update_refresh:
+            self._set_refresh_time_seconds(ch, _as_float(self.refresh_ms_var.get()) * 1e-3)
+
+    def _bind_property_traces(self):
+        for var in (
+            self.x_center_var,
+            self.y_center_var,
+            self.x_tilt_var,
+            self.y_tilt_var,
+            self.piston_var,
+            self.defocus_var,
+        ):
+            var.trace_add("write", self._schedule_mask_property_update_from_trace)
+
+    def _schedule_mask_property_update_from_trace(self, *_):
+        self.schedule_mask_property_update()
+
+    def schedule_mask_property_update(self, delay_ms=80):
+        if self._refreshing:
+            return
+
+        if self._pending_update_id is not None:
+            try:
+                self.root.after_cancel(self._pending_update_id)
+            except Exception:
+                pass
+
+        self._pending_update_id = self.root.after(delay_ms, self.apply_mask_property_update)
+
+    def apply_mask_property_update(self):
+        self._pending_update_id = None
+        if self._refreshing or self._updating_mask:
+            return
+
+        self._updating_mask = True
+        try:
+            self._apply_widget_values_to_current_mask(update_refresh=False)
+            self.update_mask()
+        finally:
+            self._updating_mask = False
+
+    def nudge_mask_center(self, dx=0, dy=0):
+        if self._refreshing:
+            return
+
+        self.x_center_var.set(str(_as_int(self.x_center_var.get()) + int(dx)))
+        self.y_center_var.set(str(_as_int(self.y_center_var.get()) + int(dy)))
+        self.schedule_mask_property_update(delay_ms=20)
+
+    def _on_center_arrow_key(self, event):
+        if event.keysym == "Left":
+            self.nudge_mask_center(dx=-1)
+        elif event.keysym == "Right":
+            self.nudge_mask_center(dx=1)
+        elif event.keysym == "Up":
+            self.nudge_mask_center(dy=-1)
+        elif event.keysym == "Down":
+            self.nudge_mask_center(dy=1)
+        return "break"
+
+    def _call(self, func):
+        def wrapped():
+            try:
+                func()
+            except Exception as exc:
+                self.show_error(exc)
+
+        return wrapped
+
+    def _build_layout(self, channels):
+        ttk = self.ttk
+
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        main = ttk.Frame(self.root, padding=10)
+        main.grid(row=0, column=0, sticky="nsew")
+        for col in range(4):
+            main.columnconfigure(col, weight=1)
+
+        status = ttk.LabelFrame(main, text="Status", padding=8)
+        status.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        status.columnconfigure(0, weight=1)
+        ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+
+        select = ttk.LabelFrame(main, text="Selection", padding=8)
+        select.grid(row=1, column=0, columnspan=4, sticky="ew", pady=4)
+        for col in range(8):
+            select.columnconfigure(col, weight=1)
+
+        ttk.Label(select, text="Channel").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        self.channel_combo = ttk.Combobox(select, textvariable=self.channel_var, values=channels, state="readonly", width=10)
+        self.channel_combo.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self.channel_combo.bind("<<ComboboxSelected>>", self._call_event(self.on_channel_or_pol_change))
+
+        ttk.Label(select, text="Pol").grid(row=0, column=2, sticky="w", padx=2, pady=2)
+        self.pol_combo = ttk.Combobox(select, textvariable=self.pol_var, values=("H", "V"), state="readonly", width=8)
+        self.pol_combo.grid(row=0, column=3, sticky="ew", padx=2, pady=2)
+        self.pol_combo.bind("<<ComboboxSelected>>", self._call_event(self.on_channel_or_pol_change))
+
+        ttk.Label(select, text="Plane").grid(row=0, column=4, sticky="w", padx=2, pady=2)
+        self.plane_spin = ttk.Spinbox(select, textvariable=self.plane_var, from_=0, to=9999, width=8, command=self._call(self.on_plane_change))
+        self.plane_spin.grid(row=0, column=5, sticky="ew", padx=2, pady=2)
+        self.plane_spin.bind("<Return>", self._call_event(self.on_plane_change))
+
+        self.pol_check = ttk.Checkbutton(select, text="Enable Pol", variable=self.pol_enabled_var, command=self._call(self.on_pol_enable_change))
+        self.pol_check.grid(row=0, column=6, sticky="w", padx=2, pady=2)
+        self.mask_check = ttk.Checkbutton(select, text="Enable Mask", variable=self.mask_enabled_var, command=self._call(self.on_mask_enable_change))
+        self.mask_check.grid(row=0, column=7, sticky="w", padx=2, pady=2)
+
+        modes = ttk.LabelFrame(main, text="Modes", padding=8)
+        modes.grid(row=2, column=0, columnspan=4, sticky="ew", pady=4)
+        for col in range(4):
+            modes.columnconfigure(col, weight=1)
+        ttk.Label(modes, text="Mode H").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        self.mode_h_spin = ttk.Spinbox(modes, textvariable=self.mode_h_var, from_=0, to=9999, width=10, command=self._call(self.update_mask))
+        self.mode_h_spin.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self.mode_h_spin.bind("<Return>", self._call_event(self.update_mask))
+        ttk.Label(modes, text="Mode V").grid(row=0, column=2, sticky="w", padx=2, pady=2)
+        self.mode_v_spin = ttk.Spinbox(modes, textvariable=self.mode_v_var, from_=0, to=9999, width=10, command=self._call(self.update_mask))
+        self.mode_v_spin.grid(row=0, column=3, sticky="ew", padx=2, pady=2)
+        self.mode_v_spin.bind("<Return>", self._call_event(self.update_mask))
+
+        props = ttk.LabelFrame(main, text="Mask Properties", padding=8)
+        props.grid(row=3, column=0, columnspan=4, sticky="ew", pady=4)
+        for col in range(5):
+            props.columnconfigure(col, weight=1)
+
+        self.x_center_spin, self.y_center_spin = self._add_spinbox_row(
+            props, 0, "X Center", self.x_center_var, "Y Center", self.y_center_var,
+            from_=-100000, to=100000, increment=1,
+        )
+        self.x_tilt_spin, self.y_tilt_spin = self._add_spinbox_row(
+            props, 1, "X Tilt", self.x_tilt_var, "Y Tilt", self.y_tilt_var,
+            from_=-1e6, to=1e6, increment=0.001,
+        )
+        self.piston_spin, self.defocus_spin = self._add_spinbox_row(
+            props, 2, "Piston", self.piston_var, "Defocus", self.defocus_var,
+            from_=-1e6, to=1e6, increment=2 * 3.141592653589793 / 256,
+        )
+        self._add_entry_row(props, 3, "Refresh ms", self.refresh_ms_var, "Sweep Step", self.sweep_step_var)
+        ttk.Button(props, text="Set Refresh", command=self._call(self.set_refresh_time_from_gui)).grid(row=3, column=4, sticky="ew", padx=2, pady=2)
+
+        for spin in (self.x_center_spin, self.y_center_spin):
+            spin.bind("<Left>", self._on_center_arrow_key)
+            spin.bind("<Right>", self._on_center_arrow_key)
+            spin.bind("<Up>", self._on_center_arrow_key)
+            spin.bind("<Down>", self._on_center_arrow_key)
+
+        ttk.Button(props, text="Apply Current", command=self._call(self.update_current_slm)).grid(row=4, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(props, text="Apply All Channels", command=self._call(self.update_all_slm)).grid(row=4, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(props, text="Refresh From Object", command=self._call(self.refresh_from_slm)).grid(row=4, column=2, sticky="ew", padx=2, pady=2)
+        ttk.Button(props, text="Clear SLM", command=self._call(self.clear_slm)).grid(row=4, column=3, sticky="ew", padx=2, pady=2)
+
+        operations = ttk.LabelFrame(main, text="Operations", padding=8)
+        operations.grid(row=4, column=0, columnspan=4, sticky="ew", pady=4)
+        for col in range(4):
+            operations.columnconfigure(col, weight=1)
+        ttk.Button(operations, text="Zero Zernikes", command=self._call(self.zero_zernikes)).grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(operations, text="Equal Spacing", command=self._call(self.equal_spacing)).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(operations, text="Reverse Plane Order", command=self._call(self.reverse_order)).grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+        ttk.Button(operations, text="Start Sweep", command=self._call(self.start_sweep)).grid(row=0, column=3, sticky="ew", padx=2, pady=2)
+
+        files = ttk.LabelFrame(main, text="Masks", padding=8)
+        files.grid(row=5, column=0, columnspan=4, sticky="ew", pady=4)
+        files.columnconfigure(1, weight=1)
+        ttk.Label(files, text="Mask File").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(files, textvariable=self.mask_file_var).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(files, text="Load Mask File", command=self._call(self.load_mask_files)).grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+        ttk.Button(files, text="Load PI Flip", command=self._call(self.load_pi_flip_masks)).grid(row=0, column=3, sticky="ew", padx=2, pady=2)
+        ttk.Button(files, text="Save Mask Props", command=self._call(self.save_mask_props)).grid(row=0, column=4, sticky="ew", padx=2, pady=2)
+
+        server = ttk.LabelFrame(main, text="Window", padding=8)
+        server.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        server.columnconfigure(0, weight=1)
+        ttk.Button(server, text="Close Window", command=self.close).grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+
+    def _add_entry_row(self, parent, row, label_a, var_a, label_b, var_b):
+        ttk = self.ttk
+        ttk.Label(parent, text=label_a).grid(row=row, column=0, sticky="w", padx=2, pady=2)
+        entry_a = ttk.Entry(parent, textvariable=var_a, width=12)
+        entry_a.grid(row=row, column=1, sticky="ew", padx=2, pady=2)
+        entry_a.bind("<Return>", self._call_event(self.on_value_change))
+        ttk.Label(parent, text=label_b).grid(row=row, column=2, sticky="w", padx=2, pady=2)
+        entry_b = ttk.Entry(parent, textvariable=var_b, width=12)
+        entry_b.grid(row=row, column=3, sticky="ew", padx=2, pady=2)
+        entry_b.bind("<Return>", self._call_event(self.on_value_change))
+
+    def _add_spinbox_row(self, parent, row, label_a, var_a, label_b, var_b, from_, to, increment):
+        ttk = self.ttk
+        ttk.Label(parent, text=label_a).grid(row=row, column=0, sticky="w", padx=2, pady=2)
+        spin_a = ttk.Spinbox(
+            parent,
+            textvariable=var_a,
+            from_=from_,
+            to=to,
+            increment=increment,
+            width=12,
+            command=self.schedule_mask_property_update,
+        )
+        spin_a.grid(row=row, column=1, sticky="ew", padx=2, pady=2)
+        spin_a.bind("<Return>", self._call_event(self.apply_mask_property_update))
+        spin_a.bind("<FocusOut>", self._call_event(self.apply_mask_property_update))
+
+        ttk.Label(parent, text=label_b).grid(row=row, column=2, sticky="w", padx=2, pady=2)
+        spin_b = ttk.Spinbox(
+            parent,
+            textvariable=var_b,
+            from_=from_,
+            to=to,
+            increment=increment,
+            width=12,
+            command=self.schedule_mask_property_update,
+        )
+        spin_b.grid(row=row, column=3, sticky="ew", padx=2, pady=2)
+        spin_b.bind("<Return>", self._call_event(self.apply_mask_property_update))
+        spin_b.bind("<FocusOut>", self._call_event(self.apply_mask_property_update))
+
+        return spin_a, spin_b
+
+    def _call_event(self, func):
+        def wrapped(_event=None):
+            try:
+                func()
+            except Exception as exc:
+                self.show_error(exc)
+
+        return wrapped
+
+    def set_status(self, message):
+        self.status_var.set(str(message))
+
+    def show_error(self, exc):
+        self.status_var.set(f"ERROR: {type(exc).__name__}: {exc}")
 
     def refresh_from_slm(self):
+        self._require_phase_mask_object()
         ch = self.current_channel()
         pol = self.current_pol()
         imask = self.current_plane()
 
-        max_plane = self.slm.polProps[ch][pol].MaskCount - 1
+        self._refreshing = True
+        self._set_mode_limits(ch)
+        self._set_plane_limits(ch, pol)
+
+        max_plane = int(float(self.plane_spin.cget("to")))
         if imask > max_plane:
-            self.planeBox.setValue(0)
+            self.plane_var.set("0")
             imask = 0
 
         props = self.slm.AllMaskProperties[ch][pol][imask]
 
-        self.xCenterBox.blockSignals(True)
-        self.yCenterBox.blockSignals(True)
-        self.xTiltBox.blockSignals(True)
-        self.yTiltBox.blockSignals(True)
-        self.pistonBox.blockSignals(True)
-        self.defocusBox.blockSignals(True)
-        self.polEnabledBox.blockSignals(True)
-        self.maskEnabledBox.blockSignals(True)
-        self.refreshBox.blockSignals(True)
+        self.x_center_var.set(str(int(props.center[1])))
+        self.y_center_var.set(str(int(props.center[0])))
+        self.piston_var.set(str(float(props.zernike.zern_coefs[0])))
+        self.x_tilt_var.set(str(float(props.zernike.zern_coefs[1])))
+        self.y_tilt_var.set(str(float(props.zernike.zern_coefs[2])))
+        self.defocus_var.set(str(float(props.zernike.zern_coefs[4])))
 
-        self.xCenterBox.setValue(int(props.center[1]))
-        self.yCenterBox.setValue(int(props.center[0]))
-        self.pistonBox.setValue(float(props.zernike.zern_coefs[0]))
-        self.xTiltBox.setValue(float(props.zernike.zern_coefs[1]))
-        self.yTiltBox.setValue(float(props.zernike.zern_coefs[2]))
-        self.defocusBox.setValue(float(props.zernike.zern_coefs[4]))
+        self.pol_enabled_var.set(bool(self.slm.polProps[ch][pol].polEnabled))
+        self.mask_enabled_var.set(bool(props.maskEnabled))
+        self.refresh_ms_var.set(str(float(self._refresh_time_seconds(ch) * 1e3)))
 
-        self.polEnabledBox.setChecked(bool(self.slm.polProps[ch][pol].polEnabled))
-        self.maskEnabledBox.setChecked(bool(props.maskEnabled))
-        self.refreshBox.setValue(float(self.slm.GLobProps[ch].RefreshTime * 1e3))
-
-        self.xCenterBox.blockSignals(False)
-        self.yCenterBox.blockSignals(False)
-        self.xTiltBox.blockSignals(False)
-        self.yTiltBox.blockSignals(False)
-        self.pistonBox.blockSignals(False)
-        self.defocusBox.blockSignals(False)
-        self.polEnabledBox.blockSignals(False)
-        self.maskEnabledBox.blockSignals(False)
-        self.refreshBox.blockSignals(False)
-
-        self.update_mask()
+        self._refreshing = False
+        self.set_status(f"Loaded {ch} {pol} plane {imask}")
 
     def on_channel_or_pol_change(self):
         self.refresh_from_slm()
@@ -252,89 +428,80 @@ class SLMPhaseMaskWindow(QWidget):
         ch = self.current_channel()
         pol = self.current_pol()
 
-        if self.planeBox.value() > self.slm.polProps[ch][pol].MaskCount - 1:
-            self.planeBox.setValue(0)
+        if self.current_plane() > self.slm.polProps[ch][pol].MaskCount - 1:
+            self.plane_var.set("0")
             return
 
         self.refresh_from_slm()
 
     def on_value_change(self):
-        ch = self.current_channel()
-        pol = self.current_pol()
-        imask = self.current_plane()
-
-        props = self.slm.AllMaskProperties[ch][pol][imask]
-
-        props.center[1] = self.xCenterBox.value()
-        props.center[0] = self.yCenterBox.value()
-        props.zernike.zern_coefs[1] = self.xTiltBox.value()
-        props.zernike.zern_coefs[2] = self.yTiltBox.value()
-        props.zernike.zern_coefs[0] = self.pistonBox.value()
-        props.zernike.zern_coefs[4] = self.defocusBox.value()
-
-        self.slm.GLobProps[ch].RefreshTime = self.refreshBox.value() * 1e-3
-
-        self.update_mask()
+        if self._refreshing:
+            return
+        self.apply_mask_property_update()
 
     def on_pol_enable_change(self):
         ch = self.current_channel()
         pol = self.current_pol()
-        self.slm.polProps[ch][pol].polEnabled = self.polEnabledBox.isChecked()
+        self.slm.polProps[ch][pol].polEnabled = bool(self.pol_enabled_var.get())
         self.update_mask()
 
     def on_mask_enable_change(self):
         ch = self.current_channel()
         pol = self.current_pol()
         imask = self.current_plane()
-        self.slm.AllMaskProperties[ch][pol][imask].maskEnabled = self.maskEnabledBox.isChecked()
+        self.slm.AllMaskProperties[ch][pol][imask].maskEnabled = bool(self.mask_enabled_var.get())
         self.update_mask()
 
     def update_mask(self):
+        if self._refreshing:
+            return
+
         ch = self.current_channel()
 
         max_h = self.slm.polProps[ch]["H"].modeCount - 1
         max_v = self.slm.polProps[ch]["V"].modeCount - 1
 
-        if self.modeHBox.value() > max_h:
-            self.modeHBox.setValue(0)
-            return
+        mode_h = _as_int(self.mode_h_var.get())
+        mode_v = _as_int(self.mode_v_var.get())
 
-        if self.modeVBox.value() > max_v:
-            self.modeVBox.setValue(0)
-            return
+        if mode_h > max_h:
+            mode_h = 0
+            self.mode_h_var.set("0")
+
+        if mode_v > max_v:
+            mode_v = 0
+            self.mode_v_var.set("0")
 
         self.slm.setmask(
             ch,
-            imode_H=self.modeHBox.value(),
-            imode_V=self.modeVBox.value(),
+            imode_H=mode_h,
+            imode_V=mode_v,
         )
+        self.set_status(f"Updated {ch}: H mode {mode_h}, V mode {mode_v}")
 
     def update_current_slm(self):
-        ch = self.current_channel()
-        pol = self.current_pol()
-        imask = self.current_plane()
-        self.update_slm_properties(ch, pol, imask)
+        self._apply_widget_values_to_current_mask(update_refresh=False)
+        self.update_mask()
 
     def update_all_slm(self):
-        for ch in self.slm.ActiveRGBChannels:
-            for pol in ["H", "V"]:
-                self.update_slm_properties(ch, pol, self.current_plane())
-
-    def update_slm_properties(self, ch, pol, imask):
-        self.refresh_from_slm()
-        self.slm.setmask(
-            ch,
-            imode_H=self.modeHBox.value(),
-            imode_V=self.modeVBox.value(),
-        )
+        self._apply_widget_values_to_current_mask(update_refresh=False)
+        for ch in self._valid_channels():
+            self.slm.setmask(
+                ch,
+                imode_H=min(_as_int(self.mode_h_var.get()), self.slm.polProps[ch]["H"].modeCount - 1),
+                imode_V=min(_as_int(self.mode_v_var.get()), self.slm.polProps[ch]["V"].modeCount - 1),
+            )
+        self.set_status("Updated all active SLM channels")
 
     def clear_slm(self):
-        for ch in self.slm.ActiveRGBChannels:
-            self.slm.LCOS_Clean(ch)
+        for ch in self._valid_channels():
+            self.slm.Clear_Display(ch)
+        self.set_status("Cleared SLM")
 
     def zero_zernikes(self):
         self.slm.ResetAllZernikesToZero(self.current_channel())
         self.refresh_from_slm()
+        self.update_mask()
 
     def equal_spacing(self):
         self.slm.setCentersToEqualSpacing(self.current_channel())
@@ -350,38 +517,125 @@ class SLMPhaseMaskWindow(QWidget):
     def start_sweep(self):
         self.slm.CourseSweepAcrossSLM(
             self.current_channel(),
-            self.sweepStepBox.value(),
+            _as_int(self.sweep_step_var.get()),
         )
+        self.set_status("Sweep complete")
 
     def save_mask_props(self):
         self.slm.saveMaskProperties(channel=self.current_channel())
+        self.set_status("Saved mask properties")
 
     def load_pi_flip_masks(self):
         self.slm.LoadPiFlipMasks(channel=self.current_channel())
+        self.mask_file_var.set(getattr(self.slm, "MasksFilename", ""))
+        self.refresh_from_slm()
 
     def load_mask_files(self):
         self.slm.LoadMasksFromFile(
-            Filename=self.maskFileBox.text(),
+            Filename=self.mask_file_var.get(),
             channel=self.current_channel(),
         )
         self.refresh_from_slm()
 
+    def close(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
-def show_slm_phase_mask_window(slm, pol="V", imask=0, channel="Red"):
-    app = QApplication.instance()
+    def run(self):
+        self.root.mainloop()
 
-    if app is None:
-        app = QApplication(sys.argv)
 
-    win = SLMPhaseMaskWindow(
+def SLMWidgetProcess(phase_mask, pol="V", imask=0, channel="Red"):
+    try:
+        window = SLMPhaseMaskWindow(
+            phase_mask=phase_mask,
+            pol=pol,
+            imask=imask,
+            channel=channel,
+        )
+        window.run()
+    except Exception:
+        print("SLM widget crashed:")
+        print(traceback.format_exc())
+        raise
+
+
+class SLMWidget:
+    def __init__(self, phase_mask=None, pol="V", imask=0, channel="Red", slm=None):
+        if phase_mask is None:
+            phase_mask = slm
+        if phase_mask is None:
+            raise TypeError("SLMWidget requires a PhaseMaskObject")
+
+        self.phase_mask = phase_mask
+        self.pol = pol
+        self.imask = int(imask)
+        self.channel = channel
+        self.Process = None
+
+    def startProcess(self):
+        if self.Process is not None and self.Process.is_alive():
+            print("SLM widget already running.")
+            return
+
+        ctx = _process_context()
+        self.Process = ctx.Process(
+            target=SLMWidgetProcess,
+            kwargs={
+                "phase_mask": self.phase_mask,
+                "pol": self.pol,
+                "imask": self.imask,
+                "channel": self.channel,
+            },
+            daemon=False,
+        )
+
+        self.Process.start()
+        print(f"SLM widget started with PID {self.Process.pid}")
+
+    def stopProcess(self):
+        if self.Process is None:
+            return
+
+        if self.Process.is_alive():
+            self.Process.terminate()
+            self.Process.join(timeout=1)
+
+        self.Process = None
+
+
+def launch_slm_phase_mask_widget(phase_mask=None, pol="V", imask=0, channel="Red", slm=None):
+    widget = SLMWidget(
+        phase_mask=phase_mask,
         slm=slm,
         pol=pol,
         imask=imask,
         channel=channel,
     )
+    widget.startProcess()
+    return widget
 
-    win.show()
-    return win
+
+launch_slm_widget = launch_slm_phase_mask_widget
+
+
+def show_slm_phase_mask_window(phase_mask=None, pol="V", imask=0, channel="Red", slm=None):
+    window = SLMPhaseMaskWindow(
+        phase_mask=phase_mask,
+        slm=slm,
+        pol=pol,
+        imask=imask,
+        channel=channel,
+    )
+    window.run()
+    return window
+
+
+if __name__ == "__main__":
+    mp.freeze_support()
+    print("Create a PhaseMaskObject and call launch_slm_phase_mask_widget(phase_mask).")
 
 
 # import matplotlib.pyplot as plt
@@ -389,7 +643,7 @@ def show_slm_phase_mask_window(slm, pol="V", imask=0, channel="Red"):
 # from IPython.display import display
 # import cv2
 # import numpy as np
-# import pwi_inst.hardware.SLM.PhaseMaskClass as PhaseMaskClass
+# import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
 
 
 # def create_slm_widget(slm:PhaseMaskClass.PhaseMaskObject, pol="V", imask=0, channel="Red"):

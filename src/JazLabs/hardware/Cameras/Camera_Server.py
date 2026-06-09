@@ -1,5 +1,6 @@
 import time
 import traceback
+import json
 import multiprocessing as mp
 from multiprocessing import shared_memory
 
@@ -16,6 +17,8 @@ class CameraZMQServer:
         CameraType="FLIR Point Grey",
         CameraKwargs=None,
         PollSleep=0.0,
+        PublishFramesOverZMQ=False,
+        frame_topic="camera.frame",
     ):
         self.host = host
         self.command_port = int(command_port)
@@ -23,6 +26,8 @@ class CameraZMQServer:
         self.CameraType = CameraType
         self.CameraKwargs = CameraKwargs or {}
         self.PollSleep = float(PollSleep)
+        self.PublishFramesOverZMQ = bool(PublishFramesOverZMQ)
+        self.frame_topic = str(frame_topic)
 
         self.Process = None
 
@@ -74,8 +79,10 @@ class CameraZMQServer:
             import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as cameraobj
         elif self.CameraType == "First Light C-Red3_2Lite":
             import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as cameraobj
-        elif self.CameraType == "FLIR Point Grey":
-            import JazLabs.hardware.Cameras.FLIRPointGreyCameras.FLIR_PointGrey as cameraobj
+        elif self.CameraType == "Point Grey":
+            import JazLabs.hardware.Cameras.PointGreyCameras.PointGrey as cameraobj
+        elif self.CameraType == "FLIR":
+            import JazLabs.hardware.Cameras.FLIRCameras.FLIR as cameraobj
         else:
             raise ValueError(f"Unknown CameraType: {self.CameraType}")
 
@@ -139,11 +146,14 @@ class CameraZMQServer:
             command_socket.bind(f"tcp://{self.host}:{self.command_port}")
 
             frame_pub_socket = context.socket(zmq.PUB)
+            if self.PublishFramesOverZMQ:
+                frame_pub_socket.setsockopt(zmq.SNDHWM, 1)
             frame_pub_socket.bind(f"tcp://{self.host}:{self.frame_pub_port}")
 
             print("Camera ZMQ server running.")
             print(f"Command socket: tcp://{self.host}:{self.command_port}")
             print(f"Frame PUB socket: tcp://{self.host}:{self.frame_pub_port}")
+            print(f"Publish frames over ZMQ: {self.PublishFramesOverZMQ}")
             print(f"CameraType: {self.CameraType}")
             print(f"Frame SHM name: {self.frame_shm.name}")
             print(f"Meta SHM name:  {self.meta_shm.name}")
@@ -271,13 +281,15 @@ class CameraZMQServer:
 
                                 reply = {"ok": True, "result": result, "client_id": client_id}
 
-                            elif cmd == "software_trigger":
+                            elif cmd in ["fire_software_trigger", "software_trigger"]:
+                                result = camOBJ.FireSoftwareTrigger()
                                 frame = np.asarray(camOBJ.GetFrame())
                                 self.WriteFrameToSharedMemory(frame)
                                 self.PublishNewFrame(frame_pub_socket)
                                 reply = {
                                     "ok": True,
                                     "result": {
+                                        "trigger_result": result,
                                         "frame_counter": int(self.meta_arr[1]),
                                         "last_write_time_ns": int(self.meta_arr[2]),
                                         "frame_layout_version": int(self.meta_arr[4]),
@@ -473,13 +485,29 @@ class CameraZMQServer:
             raise
 
     def PublishNewFrame(self, frame_pub_socket):
+        msg = {
+            "type": "new_frame",
+            "frame_counter": int(self.meta_arr[1]),
+            "last_write_time_ns": int(self.meta_arr[2]),
+            "frame_layout_version": int(self.meta_arr[4]),
+        }
+
+        if self.PublishFramesOverZMQ:
+            frame = np.ascontiguousarray(self.frame_arr)
+            msg["shape"] = list(frame.shape)
+            msg["dtype"] = str(frame.dtype)
+            msg["nbytes"] = int(frame.nbytes)
+            frame_pub_socket.send_multipart(
+                [
+                    self.frame_topic.encode("utf-8"),
+                    json.dumps(msg).encode("utf-8"),
+                    memoryview(frame),
+                ]
+            )
+            return
+
         frame_pub_socket.send_json(
-            {
-                "type": "new_frame",
-                "frame_counter": int(self.meta_arr[1]),
-                "last_write_time_ns": int(self.meta_arr[2]),
-                "frame_layout_version": int(self.meta_arr[4]),
-            }
+            msg
         )
 
     def WriteFrameToSharedMemory(self, frame):

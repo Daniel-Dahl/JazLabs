@@ -447,10 +447,15 @@ def CameraViewerProcess(
 
     try:
         while True:
-            frame = cam.GetFrame(
-                WaitForNewFrame=wait_for_new_frame,
-                LastFrameCounter=last_frame_counter,
-            )
+            software_trigger_mode = cam.IsSoftwareTriggerMode()
+
+            if software_trigger_mode:
+                frame = cam.GetFrame(WaitForNewFrame=False)
+            else:
+                frame = cam.GetFrame(
+                    WaitForNewFrame=wait_for_new_frame,
+                    LastFrameCounter=last_frame_counter,
+                )
 
             frame_counter = cam.GetFrameCounter()
             last_frame_counter = frame_counter
@@ -603,6 +608,14 @@ def CameraViewerProcess(
                     display_max = hw_max
                 except Exception:
                     pass
+
+            elif key in [ord(" "), ord("t")]:
+                if software_trigger_mode:
+                    try:
+                        last_frame_counter = cam.GetFrameCounter()
+                        cam.SoftwareTrigger()
+                    except Exception:
+                        pass
                 
             elif key == ord("i"):
                 if roi_x_half_width is not None:

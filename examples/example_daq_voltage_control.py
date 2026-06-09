@@ -2,7 +2,7 @@ import numpy as np
 from datetime import datetime
 import time
 
-from pwi_inst.hardware.DAQ_Controller.mcc_daq import DAQObject
+from JazLabs.hardware.DAQ_Controller.MCC.mcc_daq import DAQObject
 
 # Select DAQ model to use
 daq_model = 'mcc_daq' # 'ni_daq' or 'mcc_daq'
@@ -22,9 +22,9 @@ zero_daq = False
 if __name__ == '__main__':
     # Import camera library based on model
     if daq_model == 'mcc_daq':
-        import pwi_inst.hardware.DAQ_Controller.mcc_daq as DAQLib
+        import JazLabs.hardware.DAQ_Controller.MCC.mcc_daq as DAQLib
     elif daq_model == 'ni_daq':
-        import pwi_inst.hardware.DAQ_Controller.ni_daq as DAQLib
+        import JazLabs.hardware.DAQ_Controller.NI.NI_DAQ as DAQLib
     else:
         raise ValueError('Unknown DAQ model specified')
 

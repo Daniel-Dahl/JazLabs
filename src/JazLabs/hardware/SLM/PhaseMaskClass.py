@@ -8,8 +8,8 @@ import scipy
 from pathlib import Path
 
 
-import pwi_inst.utils.ZernikeModule as zernMod
-import pwi_inst.utils.GenerateSimplePhaseMasks as SimpMaskLib
+import JazLabs.utils.ZernikeModule as zernMod
+import JazLabs.utils.GenerateSimplePhaseMasks as SimpMaskLib
 
 class MaskProperties:
     def __init__(self, zernike,zernikeEnable, MaskCmplx,maskPatternEnable,MaskPlusZern,maskEnabled, att_enabled, attWeight, center):
@@ -23,11 +23,12 @@ class MaskProperties:
         self.center = center
         self.maskEnabled=maskEnabled
 class GlobalProperties():
-    def __init__(self,rgbChannel,rgbChannelIdx,slmEnable):
+    def __init__(self,rgbChannel,rgbChannelIdx,slmEnable,RefreshTime=0.0,RefreshRate=0.0):
         self.rgbChannel=rgbChannel
         self.rgbChannelIdx=rgbChannelIdx
         self.slmEnable=slmEnable
-        # self.RefreshTime= RefreshTime
+        self.RefreshTime=RefreshTime
+        self.RefreshRate=RefreshRate
 class PolProperties():
     def __init__(self,zernikeEnable,polEnabled,maskPatternEnable,modeCount,MaskCount,masksize,pixelSize):
         self.zernikeEnable=zernikeEnable
@@ -85,7 +86,7 @@ class PhaseMaskObject():
 
         self.LCOSsize = [ self.SLMObject.monitor_height, self.SLMObject.monitor_width] 
         self.pixel_size  = pixel_size
-        # self.RefreshTimetemp=RefreshTime
+        self.RefreshTimetemp=RefreshTime
         self.wavelength=wavelength
         self.phase_lut = None
         self.slmWidth=self.LCOSsize[1]
@@ -149,6 +150,9 @@ class PhaseMaskObject():
         print("Cleaning up resources...")
         print("Destroying")
         # del self.DisplayObj
+
+    def _slm_calibration_dir(self) -> Path:
+        return Path(__file__).resolve().parents[4] / "data" / "SLM"
 
     def SetBackGroundPattern(self,channel="Red",backgroundPattern=None):
         if backgroundPattern is None:
@@ -357,7 +361,8 @@ class PhaseMaskObject():
                 rgbChannel= channel,
                 rgbChannelIdx=rgbChannelIdx,
                 slmEnable=True,
-                # RefreshTime=self.RefreshTimetemp
+                RefreshTime=self.RefreshTimetemp,
+                RefreshRate=getattr(self.SLMObject, "RefreshRate", 0.0),
             )
         
         self.GLobProps[channel]= GLobPropsSingleChannel
@@ -375,8 +380,7 @@ class PhaseMaskObject():
         
     def LoadMasksFromFile(self,Filename='',channel="Red",PolSelector='HV',ConjagateMasks=True):
         self.MasksFilename=Filename
-        base_dir = Path(__file__).parent
-        mask_dir = base_dir / "MaskFiles"
+        mask_dir = self._slm_calibration_dir() / "MaskFiles"
         FullPath = mask_dir / f"{self.MasksFilename}.mat"
         if FullPath.exists():
             data = scipy.io.loadmat(FullPath)
@@ -399,8 +403,7 @@ class PhaseMaskObject():
         if filenamePrefix is None:
             filenamePrefix = self.MasksFilename
 
-        base_dir = Path(__file__).parent
-        mask_dir = base_dir / "MaskProperties"
+        mask_dir = self._slm_calibration_dir() / "MaskProperties"
         mask_dir.mkdir(parents=True, exist_ok=True)
 
         FullPath_H = mask_dir / f"MaskProperties_H_{filenamePrefix}.pkl"
@@ -451,8 +454,7 @@ class PhaseMaskObject():
         if filenamePrefix is None:
             filenamePrefix = self.MasksFilename
 
-        base_dir = Path(__file__).parent
-        mask_dir = base_dir / "MaskProperties"
+        mask_dir = self._slm_calibration_dir() / "MaskProperties"
 
         FullPath_H = mask_dir / f"MaskProperties_H_{filenamePrefix}.pkl"
         FullPath_V = mask_dir / f"MaskProperties_V_{filenamePrefix}.pkl"
@@ -633,30 +635,7 @@ class PhaseMaskObject():
             imode_V = self.polProps[channel][pol].modeCount-1
         for imask in range(MaskCount):
             self.AllMaskProperties[channel][pol][imask].MaskPlusZern[imode_V,:,:]=self.ApplyZernikesToSingleMask(channel,self.AllMaskProperties[channel][pol][imask].MaskCmplx[imode_V,:,:],imask,pol,imode_V) 
-
-                
-   
-    
-    # These are some old function from originial original code I dont think i need them any more but i will keep here just in case
-    # def calcApertures(self):
-    #     self.ap_H = self.aperture(self.aperture_diameter,self.Hcenter,self.LCOSsize,self.pixel_size)
-    #     self.ap_V = self.aperture(self.aperture_diameter,self.Vcenter,self.LCOSsize,self.pixel_size)
-    #     self.ap = np.logical_or(self.ap_H,self.ap_V)
-
-    # def setCenters(self, centerH, centerV):
-    #     self.defineCenters()
-    #     self.calcApertures()
-    # def defineCenters(self,channel):
-    #     cH = self.AllMaskProperties[channel]['H'][:].centers
-    #     cV =  self.AllMaskProperties[channel]['V'][:].centers                  
-    #     self.Hcenter = [cH[:,0] - self.offset_center, cH[:,1] - self.offset_center]
-    #     self.Vcenter = [cV[:,0] - self.offset_center, cV[:,1] - self.offset_center]
-        
-    # def resetAttenuation(self):
-    #     for pol in ['H','V']:
-    #         self.mask_specs[pol]['att_enabled'] = 0
-    #         self.mask_specs[pol]['attWeight'] = 0
-  
+ 
     def Draw_Single_Mask(self, x_center, y_center, Mask:np.ndarray,BackGroundFill=0):
         
         if np.issubdtype(Mask.dtype, np.integer):
@@ -816,7 +795,7 @@ class PhaseMaskObject():
         self.ApplyZernikesToAllMasks(channel,imode,imode_H=imode_H,imode_V=imode_V) #Update the masks       
         _=self.Draw_All_Masks(channel,imode,imode_H=imode_H,imode_V=imode_V) #Draw the masks to the FullScreenBuffer_cmplx array
         self.FullScreenBuffer_int=self.convert_phase_to_uint8() # Note if nothing is passed it will use the self.FullScreenBuffer_cmplx array as the array it is going to convert      
-        self.Write_To_Display(self.FullScreenBuffer_int,channel)
+        self.WriteImageToSLM(self.FullScreenBuffer_int,channel)
         etime = time.time() - t1
         self.refreshfreq = 1/etime
         
@@ -933,13 +912,13 @@ class PhaseMaskObject():
                 
 
     #Write to the SLM Display by updating the shared memory array that is connected to the thread updating the opencv window
-    def Write_To_Display(self, arr_data, channel="Red"):
+    def WriteImageToSLM(self, arr_data, channel="Red"):
         channelIdx=self.GLobProps[channel].rgbChannelIdx
         # self.DisplayObj.Set_RefreshRate(self.GLobProps[channel].RefreshTime)
         # Fill in the shared memory with the updated image
         # np.copyto(self.DisplayObj.DisplayBuffer_arr_shm[:,:,channelIdx],arr_data)
         # self.DisplayObj.DisplayBuffer_arr_shm[:,:,channelIdx] = arr_data
-        self.SLMObject.WriteImageToSLM(arr_data,channelIdx)
+        self.SLMObject.WriteImageToSLM(arr_data,channelIdx,wait=True)
         # if self.DisplayObj.type=="Server":
         #     test=self.DisplayObj.WriteImageToSLM(arr_data,channelIdx)
             
@@ -957,9 +936,32 @@ class PhaseMaskObject():
         
         
         # time.sleep(self.GLobProps[channel].RefreshTime)
+
+    def SetRefreshRate(self, NewRefreshRate, channel="Red"):
+        """
+        Set the refresh rate through the current SLM stack when supported.
+
+        Older code stored refresh timing only on the phase-mask object. The
+        Linux/Windows SLM stack exposes SetRefreshRate on the underlying
+        SLMObject, so this method keeps both layers in sync for UI callers.
+        """
+        refresh_rate = float(NewRefreshRate)
+        if hasattr(self.SLMObject, "SetRefreshRate"):
+            refresh_rate = float(self.SLMObject.SetRefreshRate(refresh_rate))
+
+        if channel in self.GLobProps:
+            self.GLobProps[channel].RefreshRate = refresh_rate
+            self.GLobProps[channel].RefreshTime = 0.0 if refresh_rate == 0 else 1.0 / refresh_rate
+
+        return refresh_rate
+
+    def SetRefreshTime(self, RefreshTime, channel="Red"):
+        refresh_time = float(RefreshTime)
+        refresh_rate = 0.0 if refresh_time <= 0 else 1.0 / refresh_time
+        return self.SetRefreshRate(refresh_rate, channel=channel)
     
     def Clear_Display(self,channel="Red"):
-        self.Write_To_Display(np.zeros(self.LCOSsize,dtype=np.uint8),channel)
+        self.WriteImageToSLM(np.zeros(self.LCOSsize,dtype=np.uint8),channel)
         # It seems like you need to wait just a litte longer for the clear whole display so we
         # will do a sleep for another refresh time 
         # time.sleep(self.GLobProps[channel].RefreshTime)
@@ -999,7 +1001,7 @@ class PhaseMaskObject():
             # print(self.AllMaskProperties['V'][0].center[1]) 
             
     def CourseSweepAcrossSLM(self,channel,flipCount):
-        self.LCOS_Clean(channel)
+        self.Clear_Display(channel)
         # flipMin=//2-flipCount//2
         flipMin=0
         flipMax=self.slmHeigth//2+flipCount//2
@@ -1009,7 +1011,7 @@ class PhaseMaskObject():
         
         #         PiFlip_cmplx[:,0:flipMin+iflip]=PiFlip_cmplx[:,0:flipMin+iflip]*np.exp(-1j*np.pi)
         #         self.FullScreenBuffer_int=self.convert_phase_to_uint8(PiFlip_cmplx)
-        #         self.Write_To_Display(self.FullScreenBuffer_int,channel)
+        #         self.WriteImageToSLM(self.FullScreenBuffer_int,channel)
 
         PiFlip_cmplx =np.ones((self.slmHeigth,self.slmWidth),dtype=complex)*np.exp(-1j*np.pi)
         for itop in range(2):
@@ -1022,7 +1024,7 @@ class PhaseMaskObject():
                     PiFlip_cmplx[self.slmHeigth//2::,0:flipMin+iflip]=PiFlip_cmplx[self.slmHeigth//2::,0:flipMin+iflip]*np.exp(-1j*np.pi)
 
                 self.FullScreenBuffer_int=self.convert_phase_to_uint8(PiFlip_cmplx)
-                self.Write_To_Display(self.FullScreenBuffer_int,channel)
+                self.WriteImageToSLM(self.FullScreenBuffer_int,channel)
 
            
             
@@ -1032,10 +1034,10 @@ class PhaseMaskObject():
        
             PiFlip_cmplx[0:flipMin+iflip,:]=PiFlip_cmplx[0:flipMin+iflip,:]*np.exp(1j*np.pi)
             self.FullScreenBuffer_int=self.convert_phase_to_uint8(PiFlip_cmplx)
-            self.Write_To_Display(self.FullScreenBuffer_int,channel)
+            self.WriteImageToSLM(self.FullScreenBuffer_int,channel)
 
         
-        self.LCOS_Clean(channel)
+        self.Clear_Display(channel)
         return    
             
     def flipUpDownMasks(self,pol="H",channel="Red"):

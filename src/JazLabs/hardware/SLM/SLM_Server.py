@@ -5,6 +5,7 @@ import numpy as np
 from multiprocessing import shared_memory
 import traceback
 import uuid
+import time
 
 
 class SLMServerObject:
@@ -188,24 +189,49 @@ class SLMServerObject:
 
         return int(self.SLMwriteSuccess.value)
 
-    def _send_command_and_wait(self, cmd, timeout=2.0):
+    def _send_command_and_wait(self, cmd, timeout=2.0, max_retries=3):
         command_id = str(uuid.uuid4())
         cmd["command_id"] = command_id
 
-        self.control_queue.put(cmd)
-        self.Doorbell.set()
+        last_exception = None
 
-        while True:
+        for attempt in range(max_retries):
             try:
-                reply = self.reply_queue.get(timeout=timeout)
-            except Exception:
-                raise TimeoutError(f"Timed out waiting for command reply: {cmd['cmd']}")
+                # Send command
+                self.control_queue.put(cmd)
+                self.Doorbell.set()
 
-            if reply.get("command_id") == command_id:
-                if not reply.get("ok", False):
-                    raise RuntimeError(reply.get("error", f"Command failed: {cmd['cmd']}"))
+                # Wait for matching reply
+                while True:
+                    reply = self.reply_queue.get(timeout=timeout)
 
-                return reply
+                    if reply.get("command_id") == command_id:
+                        if not reply.get("ok", False):
+                            raise RuntimeError(
+                                reply.get(
+                                    "error",
+                                    f"Command failed: {cmd['cmd']}",
+                                )
+                            )
+
+                        return reply
+
+            except Exception as e:
+                last_exception = e
+
+                print(
+                    f"Command '{cmd['cmd']}' failed "
+                    f"(attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+                # Re-ring the worker in case it missed the event
+                self.Doorbell.set()
+
+        raise TimeoutError(
+            f"Command '{cmd['cmd']}' failed after "
+            f"{max_retries} attempts. "
+            f"Last error: {last_exception}"
+    )
 
     def SetRefreshRate(self, NewRefreshRate):
         reply = self._send_command_and_wait({
@@ -263,11 +289,11 @@ class SLMServerObject:
 
         try:
             if self.SLMType == "Blink Plus":
-                import pwi_inst.hardware.SLM.MeadowlarkBlinkPlus.MeadowlarkBlinkPlusObject as slmobj
+                import JazLabs.hardware.SLM.MeadowlarkBlinkPlus.MeadowlarkBlinkPlusObject as slmobj
             elif self.SLMType == "Blink OverDrive Plus":
-                import pwi_inst.hardware.SLM.MeadowlarkBlinkOverDrivePlus.MeadowlarkBlinkOverDrivePlusObject as slmobj
+                import JazLabs.hardware.SLM.MeadowlarkBlinkOverDrivePlus.MeadowlarkBlinkOverDrivePlusObject as slmobj
             elif self.SLMType == "HDMI SLM":
-                import pwi_inst.hardware.SLM.HDMI_SLM.HDMIFullDisplayObject as slmobj
+                import JazLabs.hardware.SLM.HDMI_SLM.HDMIFullDisplayObject as slmobj
             else:
                 raise ValueError(f"Unknown SLMType: {self.SLMType}")
 
@@ -454,6 +480,7 @@ class SLMServerObject:
     def __del__(self):
         try:
             self.stopProcess()
+            time.sleep(3)
         except Exception:
             pass
 

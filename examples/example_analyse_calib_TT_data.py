@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pwi_inst.procedures.TipTiltMirror.tiptilt_calibration_core import analyse_and_save_calibration, BaseTipTiltCalibration
+from JazLabs.procedures.TipTiltMirror.tiptilt_calibration_core import analyse_and_save_calibration, BaseTipTiltCalibration
 
 # ============================================================
 # Configuration — edit these

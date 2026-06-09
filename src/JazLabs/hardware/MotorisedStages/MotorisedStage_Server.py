@@ -98,54 +98,37 @@ class MotorisedStageZMQServer:
                         }
 
                     elif cmd == "get_positions":
-                        if self.stage_type == "Luminos":
-                            result = stage_obj.Get_all_stage_Positions().tolist()
-                        else:
-                            result = {"U": stage_obj.get_position("U"), "V": stage_obj.get_position("V")}
+                        result = stage_obj.GetPositions()
                         reply = {"ok": True, "result": result, "client_id": client_id}
 
                     elif cmd == "move_abs":
                         axis = str(msg["axis"])
                         value = float(msg["value"])
-                        if self.stage_type == "Luminos":
-                            if axis.upper() not in axis_map:
-                                raise ValueError(f"Invalid Luminos axis '{axis}'. Valid: {list(axis_map.keys())}")
-                            stage_obj.Set_Single_Stage_State_abs(axis_map[axis.upper()], value)
+                        if self.stage_type == "Luminos" and axis.upper() in axis_map:
+                            stage_obj.MoveAbs(axis.upper(), value)
                         else:
-                            if axis.upper() not in ("U", "V"):
-                                raise ValueError("Invalid Newport axis. Valid: ['U', 'V']")
-                            stage_obj.move_abs(value, axis.upper())
+                            stage_obj.MoveAbs(axis.upper(), value)
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "move_rel":
                         axis = str(msg["axis"])
                         value = float(msg["value"])
-                        if self.stage_type == "Luminos":
-                            if axis.upper() not in axis_map:
-                                raise ValueError(f"Invalid Luminos axis '{axis}'. Valid: {list(axis_map.keys())}")
-                            stage_obj.Set_Single_Stage_State_rel(axis_map[axis.upper()], value)
+                        if self.stage_type == "Luminos" and axis.upper() in axis_map:
+                            stage_obj.MoveRel(axis.upper(), value)
                         else:
-                            if axis.upper() not in ("U", "V"):
-                                raise ValueError("Invalid Newport axis. Valid: ['U', 'V']")
-                            stage_obj.move_rel(value, axis.upper())
+                            stage_obj.MoveRel(axis.upper(), value)
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "home_all":
-                        if self.stage_type == "Luminos":
-                            stage_obj.home_all()
-                        else:
-                            raise NotImplementedError("home_all is only implemented for Luminos in this server.")
+                        stage_obj.HomeAll()
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "set_nominal":
-                        if self.stage_type == "Luminos":
-                            stage_obj.Set_all_stage_Position_Nominal()
-                        else:
-                            raise NotImplementedError("set_nominal is only implemented for Luminos in this server.")
+                        stage_obj.SetNominal()
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "close_stage":
-                        result = stage_obj.close() if hasattr(stage_obj, "close") else None
+                        result = stage_obj.CloseStage() if hasattr(stage_obj, "CloseStage") else None
                         reply = {"ok": True, "result": result, "client_id": client_id}
 
                     else:

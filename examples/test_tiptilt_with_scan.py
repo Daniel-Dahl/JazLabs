@@ -6,7 +6,7 @@ from datetime import datetime
 from scipy.optimize import curve_fit
 import time
 
-from pwi_inst.hardware.DAQ_Controller.mcc_daq import mcc_daq_Volt_Ctrl
+from JazLabs.hardware.DAQ_Controller.MCC.mcc_daq import mcc_daq_Volt_Ctrl
 
 
 datadir = 'C:/Users/sail/Documents/Data_2025-2026/202603/'

@@ -206,6 +206,10 @@ class CameraControlWindow:
 
     def show_error(self, exc):
         self.status_var.set(f"ERROR: {type(exc).__name__}: {exc}")
+        try:
+            self.cam.ResetCommandSocket()
+        except Exception:
+            pass
 
     def refresh_status(self):
         try:
@@ -280,8 +284,16 @@ class CameraControlWindow:
 
     def software_trigger(self):
         try:
-            result = self.cam.SoftwareTrigger()
-            self.set_status(f"Software trigger fired: {result}")
+            last_frame_counter = self.cam.GetFrameCounter()
+            result = self.cam.FireSoftwareTrigger()
+            frame = self.cam.GetFrame(
+                WaitForNewFrame=True,
+                LastFrameCounter=last_frame_counter,
+            )
+            self.set_status(
+                f"Software trigger fired: {result}; got frame {frame.shape}, "
+                f"dtype {frame.dtype}, counter {self.cam.GetFrameCounter()}"
+            )
             self.refresh_status()
         except Exception as exc:
             self.show_error(exc)

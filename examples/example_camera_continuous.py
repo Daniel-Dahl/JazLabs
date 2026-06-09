@@ -36,11 +36,11 @@ auto_stretch_image = True
 if __name__ == '__main__':
     # Import camera library based on model
     if camera_model == 'FirstLightCred3_2Lite':
-        import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
+        import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
     elif camera_model == 'FirstLightCblue2':
-        import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
+        import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
     elif camera_model == "FLIR_pointgrey":
-        import pwi_inst.hardware.Cameras.FLIRPointGreyCameras.FLIR_PointGrey as CamLib
+        import JazLabs.hardware.Cameras.FLIRCameras.FLIR as CamLib
     else:
         raise ValueError('Unknown camera model specified')
 

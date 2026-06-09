@@ -16,9 +16,9 @@ class VOAObject():
             # NOTE this is based on the DAQ NOT the device that is being manipulated
             #self.voltage_range = ULRange.UNI5VOLTS
             if DAType == 'mcc_daq':
-                import pwi_inst.hardware.DAQ_Controller.MCC.mcc_daq as DAQLib
+                import JazLabs.hardware.DAQ_Controller.MCC.mcc_daq as DAQLib
             elif DAType == 'ni_daq':
-                import pwi_inst.hardware.DAQ_Controller.NI.NI_DAQ as DAQLib
+                import JazLabs.hardware.DAQ_Controller.NI.NI_DAQ as DAQLib
             else:
                 raise ValueError('Unknown DAQ model specified')
             

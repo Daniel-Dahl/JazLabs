@@ -3,8 +3,8 @@
 from pathlib import Path
 import numpy as np
 
-from pwi_inst.hardware.DAQ_Controller.mcc_daq import mcc_daq_Volt_Ctrl
-from pwi_inst.procedures.TipTiltMirror.calibration_scan_TTmirror import TTAttenCalibrator
+from JazLabs.hardware.DAQ_Controller.MCC.mcc_daq import mcc_daq_Volt_Ctrl
+from JazLabs.procedures.TipTiltMirror.calibration_scan_TTmirror import TTAttenCalibrator
 
 datadir = '../temp/'
 darkframe_filename = 'darkframe_20260415_180343.npy'
@@ -19,9 +19,9 @@ refresh_rate = 0.001
 board_number = 0
 
 if camera_model == 'FirstLightCred3_2Lite':
-    import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
+    import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
 elif camera_model == 'FirstLightCblue2':
-    import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
+    import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
 else:
     raise ValueError('Unknown camera model specified')
 

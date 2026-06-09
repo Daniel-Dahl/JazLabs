@@ -66,16 +66,16 @@ class LuminosStage:
         self.deviceMaxLimits=np.zeros(self.deviceCount)
         
         self.StoredStagePositions_arr=np.zeros((1,self.deviceCount))
-        self.Get_all_stage_Positions(displayState=True)
+        self.GetPositions(displayState=True)
         self.get_stage_limits()
     def __del__(self):
-        self.connection.close()
+        self.CloseStage()
         
     def StoreStagePositions(self,istore,appendToCurrentpositions=False):
         storedstateCount=self.StoredStagePositions_arr.shape[0]
         # for idevice in range(self.deviceCount):
         #     postionsToStore=self.devices[idevice].get_position()
-        postionsToStore=self.Get_all_stage_Positions()
+        postionsToStore=self.GetPositions()
         
         if appendToCurrentpositions:
             self.StoredStagePositions_arr = np.vstack((self.StoredStagePositions_arr, postionsToStore))
@@ -101,22 +101,27 @@ class LuminosStage:
 
     
 
-    def Set_Single_Stage_State_abs(
-        self,
-        motor_num: int,
-        position: float,
-        units=Units.NATIVE,
-    ):
+    def GetProperties(self):
+        return {
+            "stage_type": "Luminos",
+            "device_count": self.deviceCount,
+            "units": "native",
+        }
+
+    def MoveAbs(self, axis, value: float, units=Units.NATIVE):
         """
         Move a motor to an absolute position
 
         Parameters
         ----------
-        motor_num : int
-            The motor_num to move
-        position : float
+        axis : int or str
+            The axis to move. Supports int index or axis names in Axes enum.
+        value : float
             The position to move the motor to (in um)
         """
+        motor_num = self._axis_to_index(axis)
+        position = float(value)
+
         # Clamp position within limits
         if position > self.deviceMaxLimits[motor_num]:
             position = self.deviceMaxLimits[motor_num]
@@ -127,26 +132,23 @@ class LuminosStage:
         self.devices[motor_num].move_absolute(position, units)
                     
 
-    def Set_Single_Stage_State_rel(
-        self,
-        motor_num: int,
-        distance: float,
-        units=Units.NATIVE,
-    ):
+    def MoveRel(self, axis, value: float, units=Units.NATIVE):
         """
         Move a motor a relative distance
 
         Parameters
         ----------
-        motor_num : int
-            The motor_num to move
-        distance : float
+        axis : int or str
+            The axis to move. Supports int index or axis names in Axes enum.
+        value : float
             The distance to move the motor (in um)
         """
+        motor_num = self._axis_to_index(axis)
+        distance = float(value)
         self.devices[motor_num].move_relative(distance, units)
     
 
-    def home_all(self):
+    def HomeAll(self):
         """
         Return all motors to the home position. Required to read accurate
         positions.
@@ -157,24 +159,14 @@ class LuminosStage:
         """
         for dev in self.devices:
             dev.home()
-    def Set_all_stage_Position_Nominal(self):
+
+    def SetNominal(self):
         nominal_positions=self.deviceMaxLimits[:]//2
-        self.Set_all_stage_Positions_abs(nominal_positions)
+        for idevice in range(self.deviceCount):
+            self.devices[idevice].move_absolute(nominal_positions[idevice], Units.NATIVE)
 
  
-    def Set_all_stage_Positions_abs(
-        self,
-        posistions,
-        units: Units = Units.NATIVE,
-    ):
-        if len(posistions)!=self.deviceCount:
-            print("positions array not the correct lenght")
-            return
-        
-        for idevice in range(self.deviceCount):
-            self.devices[idevice].move_absolute(posistions[idevice],units)
-            
-    def Get_all_stage_Positions(
+    def GetPositions(
         self,
         units: Units = Units.NATIVE,
         displayState=False
@@ -185,6 +177,22 @@ class LuminosStage:
         if(displayState):
             print(positions)
         return positions
+
+    def CloseStage(self):
+        if getattr(self, "connection", None) is not None:
+            self.connection.close()
+
+    def _axis_to_index(self, axis):
+        if isinstance(axis, int):
+            if 0 <= axis < self.deviceCount:
+                return axis
+            raise IndexError(f"axis index {axis} out of range 0..{self.deviceCount-1}")
+
+        axis_text = str(axis).strip().upper()
+        if axis_text in Axes.__members__:
+            return Axes[axis_text].value
+
+        raise ValueError(f"Invalid axis '{axis}'. Valid: {list(Axes.__members__.keys())} or integer index.")
 
     # def middle_all(self, units=Units.NATIVE):
     #     """

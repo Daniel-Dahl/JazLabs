@@ -1,6 +1,6 @@
 import time
 import numpy as np
-import pwi_inst.utils.camera_tools as camtools
+import JazLabs.utils.camera_tools as camtools
 
 ### Example script for taking and using darkframes for software-triggered acquisition of images from a camera ###
 
@@ -37,11 +37,11 @@ auto_stretch_image = False
 if __name__ == '__main__':
     # Import camera library based on model
     if camera_model == 'FirstLightCred3_2Lite':
-        import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
+        import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCred3_2Lite as CamLib
     elif camera_model == 'FirstLightCblue2':
-        import pwi_inst.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
+        import JazLabs.hardware.Cameras.FirstlightCameras.FirstLightCblue2 as CamLib
     elif camera_model == "FLIR_pointgrey":
-        import pwi_inst.hardware.Cameras.FLIRPointGreyCameras.FLIR_PointGrey as CamLib
+        import JazLabs.hardware.Cameras.FLIRCameras.FLIR as CamLib
     else:
         raise ValueError('Unknown camera model specified')
 

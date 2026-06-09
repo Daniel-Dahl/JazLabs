@@ -1,8 +1,30 @@
 import time
+import inspect
 from multiprocessing import shared_memory
 
 import numpy as np
 import zmq
+
+
+_SHARED_MEMORY_SUPPORTS_TRACK = (
+    "track" in inspect.signature(shared_memory.SharedMemory).parameters
+)
+
+
+def _attach_shared_memory(name):
+    """
+    Attach to server-owned shared memory without taking ownership.
+
+    On Python 3.13+, SharedMemory(track=True) registers attached blocks with
+    the client's resource tracker. If an independent client process exits
+    first, the tracker can unlink a block that the camera server still owns.
+    """
+
+    if _SHARED_MEMORY_SUPPORTS_TRACK:
+        return shared_memory.SharedMemory(name=name, track=False)
+
+    return shared_memory.SharedMemory(name=name)
+
 
 class CameraClient:
     def __init__(
@@ -20,15 +42,14 @@ class CameraClient:
         self.client_id = client_id
 
         self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REQ)
+        self.socket = None
         self.frame_sub_socket = self.context.socket(zmq.SUB)
 
-        self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self._connect_command_socket()
+
         self.frame_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
 
-        self.socket.connect(f"tcp://{self.host}:{self.command_port}")
         self.frame_sub_socket.connect(f"tcp://{self.host}:{self.frame_pub_port}")
 
         properties = self.GetProperties()
@@ -45,12 +66,12 @@ class CameraClient:
 
         self.frame_layout_version = int(properties["frame_layout_version"])
 
-        self.frame_shm = shared_memory.SharedMemory(
-            name=properties["frame_shared_memory_name"]
+        self.frame_shm = _attach_shared_memory(
+            properties["frame_shared_memory_name"]
         )
 
-        self.meta_shm = shared_memory.SharedMemory(
-            name=properties["meta_shared_memory_name"]
+        self.meta_shm = _attach_shared_memory(
+            properties["meta_shared_memory_name"]
         )
 
         self.frame_shape = tuple(properties["frame_shape"])
@@ -71,11 +92,31 @@ class CameraClient:
         self._drain_frame_notifications()
         self.trigger_mode, self.trigger_source = self.GetTriggerMode()
 
+    def _connect_command_socket(self):
+        if self.socket is not None:
+            try:
+                self.socket.close(0)
+            except Exception:
+                pass
+
+        self.socket = self.context.socket(zmq.REQ)
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self.socket.connect(f"tcp://{self.host}:{self.command_port}")
+
+    def ResetCommandSocket(self):
+        self._connect_command_socket()
+
     def SendCommand(self, msg):
         msg["client_id"] = self.client_id
 
-        self.socket.send_json(msg)
-        reply = self.socket.recv_json()
+        try:
+            self.socket.send_json(msg)
+            reply = self.socket.recv_json()
+        except zmq.ZMQError:
+            self.ResetCommandSocket()
+            raise
 
         if not reply.get("ok", False):
             raise RuntimeError(
@@ -136,8 +177,8 @@ class CameraClient:
         self.frame_dtype = np.dtype(properties["frame_dtype"])
         self.frame_layout_version = int(properties["frame_layout_version"])
 
-        self.frame_shm = shared_memory.SharedMemory(
-            name=properties["frame_shared_memory_name"]
+        self.frame_shm = _attach_shared_memory(
+            properties["frame_shared_memory_name"]
         )
 
         self.frame_arr = np.ndarray(
@@ -177,11 +218,6 @@ class CameraClient:
 
     def GetFrame(self, WaitForNewFrame=False, LastFrameCounter=None):
         self.RefreshFrameSharedMemoryIfNeeded()
-
-        if not WaitForNewFrame and self.IsSoftwareTriggerMode():
-            LastFrameCounter = self.GetFrameCounter()
-            self.SoftwareTrigger()
-            self.WaitForFrameNotification(LastFrameCounter=LastFrameCounter)
 
         if WaitForNewFrame:
             if LastFrameCounter is None:
@@ -280,11 +316,9 @@ class CameraClient:
         return result
 
     def IsSoftwareTriggerMode(self):
-        mode = str(getattr(self, "trigger_mode", "")).lower()
-        source = str(getattr(self, "trigger_source", "")).lower()
         return (
-            mode == "on"
-            and source in ("software", "swtrig")
+            str(getattr(self, "trigger_mode", "")).lower() == "on"
+            and str(getattr(self, "trigger_source", "")).lower() == "software"
         )
 
     def SetContinuousMode(self):
@@ -295,16 +329,22 @@ class CameraClient:
     def SetSoftwareTriggerMode(self):
         result = self.SendCommand({"cmd": "set_software_trigger_mode"})
         self.GetTriggerMode()
+        self._drain_frame_notifications()
         return result
 
     def SoftwareTrigger(self):
-        return self.SendCommand({"cmd": "software_trigger"})
+        return self.FireSoftwareTrigger()
 
     def FireSoftwareTrigger(self):
-        return self.SoftwareTrigger()
+        return self.SendCommand({"cmd": "fire_software_trigger"})
 
     def GetSoftwareTriggeredFrame(self):
-        return self.GetFrame()
+        last_frame_counter = self.GetFrameCounter()
+        self.FireSoftwareTrigger()
+        return self.GetFrame(
+            WaitForNewFrame=True,
+            LastFrameCounter=last_frame_counter,
+        )
 
     def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
         result = self.SendCommand({
