@@ -32,7 +32,7 @@ class CameraClient:
         host="127.0.0.1",
         command_port=50731,
         frame_pub_port=50732,
-        timeout_ms=5000,
+        timeout_ms=20000,
         client_id="camera_client",
     ):
         self.host = host

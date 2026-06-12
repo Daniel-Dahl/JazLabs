@@ -397,3 +397,55 @@ def ChangeOpticalSwitchGetFrame(
         return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels
     finally:
         _set_continuous_mode(cameras)
+
+def ChagePolSwitchChangeOpticalSwitchGetFrame(
+    laser,
+    optical_switch,
+    pol_switch,
+    cam_obj,
+    mode_count: int = 6,
+    channel_start: int = 1,
+    avg_frame_count: int = 1,
+    wavelength_count: int = 40,
+    min_wavelength_nm: float = 1520.0,
+    max_wavelength_nm: float = 1600.0,
+    wavelength_settle_time_s: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if mode_count < 1 or avg_frame_count < 1 or wavelength_count < 1:
+        raise ValueError("mode_count, avg_frame_count, and wavelength_count must all be >= 1.")
+
+    wavelengths_nm = np.linspace(min_wavelength_nm, max_wavelength_nm, wavelength_count)
+    channels = np.arange(channel_start, channel_start + mode_count, dtype=int)
+    wavelength_get_values_nm = np.zeros(wavelength_count, dtype=np.float64)
+    polmode=[2,3]
+    polCount=len(polmode)
+    cameras = [cam_obj]
+    _set_software_trigger_mode(cameras)
+
+    try:
+        first_frame = _get_camera_frame(cam_obj)
+        ny, nx = first_frame.shape
+        frames_wavelengths_modes = np.empty(
+            (wavelength_count,2, mode_count * avg_frame_count, ny, nx),
+            dtype=np.float32,
+        )
+
+        for iwave, wavelength_nm in enumerate(wavelengths_nm):
+            laser.set_wavelength_nm(float(wavelength_nm))
+            wavelength_get_values_nm[iwave] = laser.get_wavelength_nm()
+
+            if wavelength_settle_time_s > 0:
+                time.sleep(wavelength_settle_time_s)
+
+            for ipol in range(polCount):
+                pol_switch.SetChannel(polmode[ipol])
+                iframe = 0
+                for ichan in channels:
+                    optical_switch.SetChannel(int(ichan))
+                    for _ in range(avg_frame_count):
+                        frames_wavelengths_modes[iwave,ipol, iframe, :, :] = _get_camera_frame(cam_obj)
+                        iframe += 1
+
+        return frames_wavelengths_modes, wavelengths_nm, wavelength_get_values_nm, channels
+    finally:
+        _set_continuous_mode(cameras)

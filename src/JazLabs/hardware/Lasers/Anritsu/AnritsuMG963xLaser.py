@@ -21,7 +21,7 @@ class LaserObject:
         bytesize=8,
         parity="N",
         stopbits=1,
-        timeout=5,
+        timeout=20,
     ):
         self.ser = serial.Serial(
             port=port,
