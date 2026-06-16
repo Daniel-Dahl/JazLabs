@@ -83,6 +83,12 @@ class CameraZMQServer:
             import JazLabs.hardware.Cameras.PointGreyCameras.PointGrey as cameraobj
         elif self.CameraType == "FLIR":
             import JazLabs.hardware.Cameras.FLIRCameras.FLIR as cameraobj
+        elif self.CameraType == "Lucid Vision":
+            import JazLabs.hardware.Cameras.LucidVision.LucidVisionCameraObj as cameraobj
+        elif self.CameraType == "QImaging":
+            import JazLabs.hardware.Cameras.QImag.QImagCameraObj as cameraobj
+        elif self.CameraType == "Allied Vision":
+            import JazLabs.hardware.Cameras.AlliedVision.AlliedVisionCameraObj as cameraobj
         else:
             raise ValueError(f"Unknown CameraType: {self.CameraType}")
 

@@ -172,8 +172,14 @@ class CameraObject:
         for _ in range(int(max_frames)):
             image_buffer = None
             try:
-                image_buffer = self.device.get_buffer(timeout_ms)
+                image_buffer = self.device.get_buffer(timeout=timeout_ms)
                 drained += 1
+            except TypeError:
+                try:
+                    image_buffer = self.device.get_buffer()
+                    drained += 1
+                except Exception:
+                    break
             except Exception:
                 break
             finally:
@@ -446,7 +452,7 @@ class CameraObject:
 
         try:
             try:
-                image_buffer = self.device.get_buffer(int(timeout_ms))
+                image_buffer = self.device.get_buffer(timeout=int(timeout_ms))
             except TypeError:
                 image_buffer = self.device.get_buffer()
 
