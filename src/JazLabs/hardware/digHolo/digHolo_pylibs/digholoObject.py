@@ -427,6 +427,92 @@ class digholoObject():
 
 
 
+    def digHolo_AutoAlignWavelengthSweepArbitrary(self,frameBuffer,wavelengths,AverageBatch=False,batchCount=1,AvgCount=1,
+                                                  AvgMode=digH_hpy.DIGHOLO_AVGMODE_SEQUENTIAL,DoAutoAlgin=True,
+                                                  InputWavelengthOrdering=digH_hpy.DIGHOLO_WAVELENGTHORDER_FAST,
+                                                  OutputWavelengthOrdering=digH_hpy.DIGHOLO_WAVELENGTHORDER_SLOW):
+        wavelengths = np.asarray(wavelengths,dtype=np.float32)
+        if len(wavelengths.shape)!=1 or wavelengths.shape[0]<1:
+            print(" AutoAlgin wavelength sweep NOT run.\n The wavelengths that you have passed are not the correct dims. They should be [WavelengthCount].")
+            return
+
+        Camdims=frameBuffer.shape
+        if len(Camdims)<2 or len(Camdims)>3:
+            print(" AutoAlgin wavelength sweep NOT run.\n The Camera frames that you have passed are not the correct dims. They should be [batchCount,CamHieght,CamWidth].")
+            return 
+        
+        if len(Camdims)==2:
+            self.digholoProperties["batchCount"]=1
+            self.digholoProperties["maxMG"]=1
+            frameBuffer = adjust_array_dimensions(frameBuffer)
+            Camdims=frameBuffer.shape
+            
+            self.FrameWidth=int(Camdims[1])
+            self.FrameHeight=int(Camdims[0])
+            digH_hpy.digHoloConfigSetFrameDimensions(self.handleIdx,self.FrameWidth,self.FrameHeight)
+        else:
+            adjustedFrameBuffer = []
+            for iframe in range(Camdims[0]):
+                adjustedFrameBuffer.append(adjust_array_dimensions(frameBuffer[iframe,:,:]))
+            frameBuffer = np.asarray(adjustedFrameBuffer,dtype=frameBuffer.dtype)
+            Camdims=frameBuffer.shape
+            if AverageBatch==False:
+                self.digholoProperties["batchCount"]=Camdims[0]
+            else: 
+                self.digholoProperties["batchCount"]=batchCount
+                self.digholoProperties["AvgCount"]=AvgCount
+            self.FrameWidth=Camdims[2]
+            self.FrameHeight=Camdims[1]
+            digH_hpy.digHoloConfigSetFrameDimensions(self.handleIdx,self.FrameWidth,self.FrameHeight)
+
+        self.WavelengthCount=int(wavelengths.shape[0])
+        self.digholoProperties["Wavelength"]=float(wavelengths[0])
+        self.digholoProperties["WavelengthCount"]=self.WavelengthCount
+        self.Metrics=np.zeros((self.MetricCounts,self.WavelengthCount+1))
+        self.digholo_SetProps()
+
+        wavelengthsPtr = wavelengths.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        digH_hpy.digHoloConfigSetWavelengths(self.handleIdx,wavelengthsPtr,self.WavelengthCount)
+        digH_hpy.digHoloConfigSetWavelengthOrdering(self.handleIdx,digH_hpy.DIGHOLO_WAVELENGTHORDER_INPUT,InputWavelengthOrdering)
+        digH_hpy.digHoloConfigSetWavelengthOrdering(self.handleIdx,digH_hpy.DIGHOLO_WAVELENGTHORDER_OUTPUT,OutputWavelengthOrdering)
+        
+        digH_hpy.digHoloConsoleRedirectToFile(self.charPtr)
+        
+        frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))        
+        if AverageBatch:
+           digH_hpy.digHoloSetBatchAvg (self.handleIdx, int(self.digholoProperties["batchCount"]), frameBufferPtr, 
+                                        self.digholoProperties["AvgCount"], AvgMode)   
+        else:
+            digH_hpy.digHoloSetBatch(self.handleIdx,int(self.digholoProperties["batchCount"]),frameBufferPtr)
+        if DoAutoAlgin:
+            digH_hpy.digHoloAutoAlign(self.handleIdx)
+
+        batchCount_c = ctypes.c_int(int(self.digholoProperties["batchCount"]))
+        polCount_c = ctypes.c_int(self.digholoProperties["polCount"])
+        modeCount_c= ctypes.c_int()
+        
+        CoefptrOut = ctypes.POINTER(ctypes.c_float)()
+        CoefptrOut=digH_hpy.digHoloProcessBatchWavelengthSweepArbitrary(self.handleIdx,ctypes.byref(batchCount_c),
+                                                                        ctypes.byref(modeCount_c),ctypes.byref(polCount_c),
+                                                                        wavelengthsPtr,self.WavelengthCount)
+        coefs = np.ctypeslib.as_array(CoefptrOut,shape=(batchCount_c.value,2*modeCount_c.value*polCount_c.value))
+        self.coefs = coefs[:,0::2]+1j*coefs[:,1::2]
+        
+        digH_hpy.digHoloAutoAlignCalcMetrics(self.handleIdx)
+        self.digholo_GetProps()
+       
+        self.SaveBatchFile("Batch",frameBuffer,False)
+        
+        Metrics_ptr = ctypes.POINTER(ctypes.c_float)()
+        for MetricIdx in range(self.MetricCounts):
+            Metrics_ptr = digH_hpy.digHoloAutoAlignGetMetrics(self.handleIdx,int(MetricIdx))
+            self.Metrics[MetricIdx,:]= np.ctypeslib.as_array(Metrics_ptr,shape=(int(self.digholoProperties["WavelengthCount"])+1,))
+        self.digholo_SetProps()
+        
+        return self.coefs,self.Metrics
+
+
+
     # This is if you dont want digiholo to change any of its setting but you want to process some frames
     def digHolo_ProcessBatch(self,frameBuffer,CalculateMetrics=True,AverageBatch=False,batchCount=1,AvgCount=1,AvgMode=digH_hpy.DIGHOLO_AVGMODE_SEQUENTIAL):
         Camdims=frameBuffer.shape
