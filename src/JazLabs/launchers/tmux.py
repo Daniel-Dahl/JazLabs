@@ -114,6 +114,18 @@ def slm_windows_task(config_name):
     )
 
 
+def slm_stack_task(config_name, config):
+    slm = config.get("SLM_STACK_SERVER", {})
+    return (
+        slm.get("name", "slm_stack"),
+        module_command(
+            "JazLabs.launchers.launch_slm_stack_server",
+            [("--config", config_name)],
+            os.environ.get("JAZLABS_SLM_STACK_SERVER_PYTHON", sys.executable),
+        ),
+    )
+
+
 def daq_tasks(config_name, config, daq_name=None):
     daqs = config.get("DAQ_SERVERS", [])
     if daq_name is not None:
@@ -139,7 +151,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Start JazLabs servers in tmux.")
     parser.add_argument(
         "target",
-        choices=("all", "camera", "slm-linux", "slm-windows", "daq"),
+        choices=("all", "camera", "slm-linux", "slm-windows", "slm-stack", "daq"),
         help="Server group to start.",
     )
     parser.add_argument("--config", default="default_lab")
@@ -168,6 +180,8 @@ def main(argv=None):
         tasks.append(slm_linux_task(args.config))
     if args.target == "slm-windows" and config.get("SLM_WINDOWS_SERVER", {}).get("enabled", True):
         tasks.append(slm_windows_task(args.config))
+    if args.target in ("all", "slm-stack") and config.get("SLM_STACK_SERVER", {}).get("enabled", False):
+        tasks.append(slm_stack_task(args.config, config))
     if args.target in ("all", "daq"):
         daq_name = args.name if args.target == "daq" else None
         tasks.extend(daq_tasks(args.config, config, daq_name))

@@ -31,6 +31,12 @@ class SLMObject:
     def __init__(self,board_number_in=1,
                  RefreshRate=500e-3,
                  LutFile=b"C:\\Program Files\\Meadowlark Optics\\Blink OverDrive Plus\\LUT Files\\slm6658_at1550_30C.lut"):
+        if LutFile is None:
+            LutFile = b"C:\\Program Files\\Meadowlark Optics\\Blink OverDrive Plus\\LUT Files\\slm6658_at1550_30C.lut"
+        if isinstance(LutFile, bytes):
+            lut_file_bytes = LutFile
+        else:
+            lut_file_bytes = str(LutFile).encode("utf-8")
         
         UseMeadowlarkSoftware = True
         MeadowlarkSoftwareType = "Blink OverDrive Plus"
@@ -55,7 +61,7 @@ class SLMObject:
         self.NumberOfChannels=1
         
         slm_lib._slm.Create_SDK(bit_depth,byref(num_boards_found),byref(constructed_okay),
-                                self.is_nematic_type,self.RAM_write_enable, self.use_GPU, self.max_transients, None)
+                                self.is_nematic_type,self.RAM_write_enable, self.use_GPU, self.max_transients, c_char_p(lut_file_bytes))
         if constructed_okay.value == 0:
             slm_lib._slm.Get_last_error_message.restype = c_char_p
             msg = slm_lib._slm.Get_last_error_message()
@@ -91,50 +97,99 @@ class SLMObject:
         
 
         
-        
-    def WriteImageToSLM(self,ImageToDisplay,channelIdx=0):
+    
+    def WriteImageToSLM(self, ImageToDisplay, channelIdx=0):
         if ImageToDisplay is None:
-            print("No image sent")
             return 0
-        if ImageToDisplay.shape != (self.monitor_height, self.monitor_width):
-            print("New image incorrect dimensions for screen display. Display not updated")
+
+        # Accept either (H, W) or (H, W, 1)
+        if ImageToDisplay.ndim == 3:
+            if ImageToDisplay.shape[2] != 1:
+                return 0
+            img = ImageToDisplay[:, :, 0]
+        elif ImageToDisplay.ndim == 2:
+            img = ImageToDisplay
+        else:
             return 0
-        if ImageToDisplay.dtype != np.uint8:
-            print("New image incorrect dtype for screen display (must be uint8). Display not updated")
+
+        if img.shape != (self.monitor_height, self.monitor_width):
             return 0
-        # ---- Prime first image (whatever is currently in the buffer) ----
-        SLMDisplaySuccess = 0
-        try:
-            img = ImageToDisplay  # zero-copy
-            rc = slm_lib._slm.Write_image(
+
+        # Make sure pointer is safe for C SDK.
+        # This only copies if needed.
+        if img.dtype != np.uint8 or not img.flags["C_CONTIGUOUS"]:
+            img = np.ascontiguousarray(img, dtype=np.uint8)
+
+        ptr = img.ctypes.data_as(POINTER(c_ubyte))
+
+        rc = slm_lib._slm.Write_image(
                 self.board_number,
-                img.ctypes.data_as(POINTER(c_ubyte)),self.imagesize,
-                self.wait_For_Trigger, self.FlipImmediate, 
-                c_int(self.OutputPulseImageFlip.value), self.OutputPulseImageRefresh, self.timeout_ms)
-            print(f"Write_image returned {rc}")
-            if rc != -1:
-                ok = False
-                attempts = 0
-                while not ok:
-                    wrc = slm_lib._slm.ImageWriteComplete(self.board_number, self.timeout_ms)
-                    if wrc != -1:
-                        ok = True
-                        SLMDisplaySuccess = 1
-                    else:
-                        attempts += 1
-                        print(f"Write_image not complete yet, attempt {attempts}")
-                        if attempts > 10:
-                            SLMDisplaySuccess = 0
-                            break
-            else:
-                SLMDisplaySuccess = 0
-        except Exception as e:
-            print(f"Initial Write_image error: {e}")
-            SLMDisplaySuccess= 0
-            
+                ptr,
+                self.imagesize,
+                self.wait_For_Trigger, 
+                self.FlipImmediate, 
+                self.OutputPulseImageFlip, 
+                self.OutputPulseImageRefresh, 
+                self.timeout_ms)
+
+        SLMDisplaySuccess = 0
+
+        if rc != -1:
+            for _ in range(10):
+                wrc = slm_lib._slm.ImageWriteComplete(self.board_number, self.timeout_ms)
+                if wrc != -1:
+                    SLMDisplaySuccess = 1
+                    break
+
         if self.RefreshRate > 0:
             time.sleep(self.RefreshRate)
+
         return SLMDisplaySuccess
+    
+        
+    # def WriteImageToSLM(self,ImageToDisplay,channelIdx=0):
+    #     if ImageToDisplay is None:
+    #         print("No image sent")
+    #         return 0
+    #     if ImageToDisplay.shape != (self.monitor_height, self.monitor_width):
+    #         print("New image incorrect dimensions for screen display. Display not updated")
+    #         return 0
+    #     if ImageToDisplay.dtype != np.uint8:
+    #         print("New image incorrect dtype for screen display (must be uint8). Display not updated")
+    #         return 0
+    #     # ---- Prime first image (whatever is currently in the buffer) ----
+    #     SLMDisplaySuccess = 0
+    #     try:
+    #         img = ImageToDisplay  # zero-copy
+    #         rc = slm_lib._slm.Write_image(
+    #             self.board_number,
+    #             img.ctypes.data_as(POINTER(c_ubyte)),self.imagesize,
+    #             self.wait_For_Trigger, self.FlipImmediate, 
+    #             c_int(self.OutputPulseImageFlip.value), self.OutputPulseImageRefresh, self.timeout_ms)
+    #         print(f"Write_image returned {rc}")
+    #         if rc != -1:
+    #             ok = False
+    #             attempts = 0
+    #             while not ok:
+    #                 wrc = slm_lib._slm.ImageWriteComplete(self.board_number, self.timeout_ms)
+    #                 if wrc != -1:
+    #                     ok = True
+    #                     SLMDisplaySuccess = 1
+    #                 else:
+    #                     attempts += 1
+    #                     print(f"Write_image not complete yet, attempt {attempts}")
+    #                     if attempts > 10:
+    #                         SLMDisplaySuccess = 0
+    #                         break
+    #         else:
+    #             SLMDisplaySuccess = 0
+    #     except Exception as e:
+    #         print(f"Initial Write_image error: {e}")
+    #         SLMDisplaySuccess= 0
+            
+    #     if self.RefreshRate > 0:
+    #         time.sleep(self.RefreshRate)
+    #     return SLMDisplaySuccess
 
      # return codes
     #  1  = success
@@ -181,9 +236,11 @@ class SLMObject:
             print("TriggerOutputEnabled must be 1 (Enabled) or 0 (Disabled)")
             return
         self.OutputPulseImageFlip.value = int(TriggerOutputEnabled)
+        return self.OutputPulseImageFlip.value
 
     def SetRefreshRate(self, NewRefreshRate):
         self.RefreshRate = float(NewRefreshRate)
+        return self.RefreshRate
             
             
             
