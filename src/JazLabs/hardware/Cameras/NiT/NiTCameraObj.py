@@ -1,263 +1,485 @@
-from Lab_Equipment.Config import config 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-import multiprocessing
-from multiprocessing import shared_memory
-import copy
-import cv2
-import time
-import ctypes
+import atexit
+import importlib
 import os
-import Lab_Equipment.Camera.CameraObject as CamForm   
-# I am not sure if i need to do this but just in case I am going to load the dll in python
-camdllpath=config.CAMERA_LIB_PATH+"CameraSoftware\\NiTcamera\\NITLibrary_x64.dll"
-NiTCamdll= ctypes.cdll.LoadLibrary(camdllpath)
-import Lab_Equipment.Camera.CameraSoftware.NiTcamera.NITLibrary_x64_360_py310  as NITLibrary
+import sys
+import time
+import weakref
+from pathlib import Path
 
-# Function to convert a matplotlib plot to an OpenCV image
-def plot_to_opencv_img(fig):
-    canvas = FigureCanvas(fig)
-    canvas.draw()
-    buf = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-    buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    return cv2.cvtColor(buf, cv2.COLOR_RGB2BGR)
+import numpy as np
 
-class NiTCamraObject():
-    def __init__(self,PixelSize=15e-6):
-            super().__init__() # inherit from parent class  
-            # We are just going to go through and grab a bunch of properties from the camera
-            # and get 1 frame to set up the shared memory space
-            nm = NITLibrary.NITManager.getInstance()
-            dev = nm.openOneDevice()
-            self.Ny =  dev.sensorHeight()
-            self.Nx = dev.sensorWidth() 
-            observer=CustomObserver(self.Ny,self.Nx)
-            dev << observer # this is to overload the functions and be able to save the frame into a numpy array
-            # Display Info of camera
-            print( nm.listDevices() )
-            serialNum="SN"+dev.serialNumber()
-            # NUCFolderLocation=config.CAMERA_LIB_PATH+"CameraSoftware\\NiTcamera\\"+serialNum
-            # if os.path.exists(NUCFolderLocation):
-            #     print("NUC file directory Found for Camera "+serialNum + ". It will be loaded")
-            #     dev.setNucDirectory(NUCFolderLocation)
-                
-            self.Ny =  dev.sensorHeight()
-            self.Nx = dev.sensorWidth() 
-            Exposure=dev.paramValueOf("Exposure Time")
-            SensorResponse=dev.paramValueOf("Sensor Response")
-            Gain=dev.paramValueOf("Analog Gain")
-            capturemode=dev.paramValueOf("Mode")
-            print('Exposure ',Exposure)
-            print('Gain ',Gain)
-            print('Captrue mode ',capturemode)
-            print ('Sensor Response ',SensorResponse)
-            print('sensor height ',self.Ny,' sensor width ',self.Nx) 
-            dev.captureNFrames(1) # Seems like you need to grab 3 frames to be sure it is getting the most upto date frame the buffer on the camera doesnt empty it self
-            dev.waitEndCapture()
-            frame = observer.frametemp
-            FrameBuffer =CamForm.adjust_array_dimensions(np.squeeze( frame))
-            FrameDim=FrameBuffer.shape
-            FrameHeight = int(FrameDim[0])
-            FrameWidth = int(FrameDim[1])
-            Framedtype=FrameBuffer.dtype
-  
-            # # cut the connection to the camera
-            # I am not sure why but any time you want to kill the connection you should wait a little bit to make sure no threads are runnning
-            # hence the 3 sec sleep. I dont think they are being thread safe in their back end
-            time.sleep(3)
-            nm.reset()
-        
 
-            # START the camera Thead
-            self.CamObject=CamForm.GeneralCameraObject("NiTCamera",self.Nx,self.Ny,FrameWidth,FrameHeight,FrameDim,Framedtype,FrameBuffer,PixelSize,Exposure,Gain=Gain,CaptureMode=capturemode)
-            self.CamProcess= CamForm.start_FrameCaptureThread(self.CamObject,NiTCamFrameCaptureThread)
-            print('Thread launched')
-            
+def snap_to_value(value, step, mode="nearest", minimum=0):
+    value = int(value)
+    step = int(step)
+    minimum = int(minimum)
+
+    if step <= 0:
+        return value
+
+    rel = value - minimum
+    if mode == "nearest":
+        snapped = minimum + round(rel / step) * step
+    elif mode == "floor":
+        snapped = minimum + (rel // step) * step
+    elif mode == "ceil":
+        snapped = minimum + ((rel + step - 1) // step) * step
+    else:
+        raise ValueError("mode must be 'nearest', 'floor', or 'ceil'")
+
+    return int(max(snapped, minimum))
+
+
+def _shutdown_camera_ref(camera_ref):
+    camera = camera_ref()
+    if camera is not None:
+        camera.shutdown()
+
+
+def _load_nit_library(sdk_dir=None):
+    """
+    Load the NIT Python module matching the active Python version.
+
+    The SDK ships version-tagged modules such as
+    NITLibrary_x64_360_py310.pyd. Keep this lazy so importing this wrapper does
+    not fail on machines without the camera SDK installed.
+    """
+    if sdk_dir is None:
+        sdk_dir = Path(__file__).resolve().parent
+    else:
+        sdk_dir = Path(sdk_dir).resolve()
+
+    python_tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+    candidates = sorted(sdk_dir.glob(f"NITLibrary_*_{python_tag}.pyd"))
+
+    if not candidates:
+        repo_sdk_dir = Path.cwd() / "NiTcamera"
+        candidates = sorted(repo_sdk_dir.glob(f"NITLibrary_*_{python_tag}.pyd"))
+        if candidates:
+            sdk_dir = repo_sdk_dir
+
+    if not candidates:
+        raise ImportError(
+            f"No NITLibrary module for Python {sys.version_info.major}.{sys.version_info.minor}. "
+            f"Expected a file like NITLibrary_x64_360_{python_tag}.pyd in {sdk_dir}"
+        )
+
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(str(sdk_dir))
+    if str(sdk_dir) not in sys.path:
+        sys.path.insert(0, str(sdk_dir))
+
+    return importlib.import_module(candidates[0].stem)
+
+
+class _FrameObserver:
+    def __init__(self, nit_library):
+        self.NITLibrary = nit_library
+        self._observer = None
+        self.frame = None
+        self.frame_id = None
+
+        class FrameObserver(nit_library.NITUserObserver):
+            def __init__(inner_self, owner):
+                nit_library.NITUserObserver.__init__(inner_self)
+                inner_self.owner = owner
+
+            def onNewFrame(inner_self, frame):
+                inner_self.owner.frame = np.array(frame.data(), copy=True)
+                inner_self.owner.frame_id = frame.id()
+
+        self._observer = FrameObserver(self)
+
+    @property
+    def observer(self):
+        return self._observer
+
+
+class CameraObject:
+    """
+    Simple New Imaging Technologies camera object using the local NIT SDK.
+
+    This intentionally avoids the older multiprocessing/display path. Frames are
+    returned directly as NumPy arrays.
+    """
+
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=15e-6, sdk_dir=None, verbose=False):
+        self.CameraIdx = int(CameraIdx)
+        self.CalibrationFile = CalibrationFile
+        self.PixelSize = PixelSize
+        self.verbose = bool(verbose)
+
+        self._closed = False
+        self._capturing = False
+        self.grab_timeout_ms = 2000
+        self._software_frame_ready = False
+
+        self.NITLibrary = _load_nit_library(sdk_dir=sdk_dir)
+        self.nm = self.NITLibrary.NITManager.getInstance()
+
+        devices = self.nm.listDevices()
+        print("NIT devices:", devices)
+
+        if self.CameraIdx == 0:
+            self.dev = self.nm.openOneDevice()
+        else:
+            self.dev = self.nm.openDevice(self.CameraIdx)
+
+        if self.dev is None:
+            self.shutdown()
+            raise RuntimeError("No NIT camera detected")
+
+        self.observer = _FrameObserver(self.NITLibrary)
+        self.dev << self.observer.observer
+
+        self.sensor_width = int(self.dev.sensorWidth())
+        self.sensor_height = int(self.dev.sensorHeight())
+        self.offset_x = 0
+        self.offset_y = 0
+        self.width = self.sensor_width
+        self.height = self.sensor_height
+        self.Nx = self.width
+        self.Ny = self.height
+
+        self.trigger_mode = "Off"
+        self.trigger_source = "FreeRun"
+        self.trigger_selector = "FrameStart"
+        self.acquisition_mode = "Continuous"
+        self.trigger_polarity = 1
+
+        self.ExposureTime = None
+        self.ExposureTimeMin = 0.0
+        self.ExposureTimeMax = 1e9
+        self.FPSMin = None
+        self.FPSMax = None
+        self.fps = None
+        self.gain = None
+        self.capture_mode = None
+        self.pixel_format = None
+        self.pixel_format_fc2 = None
+        self.frame_id = None
+
+        self._configure_defaults()
+        self.GetROI()
+        self.GetExposureTime()
+        self.GetGain()
+        self.GetFPS()
+        self.GetPixelFormat()
+        self.GetMaxMinFPS_ExposureTime()
+        self.StartAcquisition()
+
+        atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
     def __del__(self):
-        """Destructor to disconnect from camera."""
-        print(self.CamObject.CameraType +" Class has been destroyed")
-        self.CamObject.terminateCamera.set()# stop the camera thread
-        self.CamObject.shm.close() # close access to shared memory
-        self.CamObject.shm.unlink() # clean up the shared memory space
-        time.sleep(5) # just wait for all the threads to be killed before starting a new one
-##############################################        
-# Ok so because the software engineers behind this camera are super dumb you need to make your own onNewFrame function that is NITLibrary.NITUserFilter class
-# this overloads the onNewFrame function and allows you to actually pull a frame by copy the frame into a temp np array
-###############################################
-class CustomObserver(NITLibrary.NITUserFilter):
-    def __init__(self,Ny,Nx):
-        NITLibrary.NITUserObserver.__init__(self)
-        # self.isCaptureStarted = 0
-        # self.frametemp = np.zeros((Ny,Nx),dtype=np.uint8)
-        self.frametemp = np.zeros((Ny,Nx))
-        self.currentFrameId = -1
-    def onNewFrame(self, frame): 
-        # print(self.currentFrameId)
-        self.frametemp =copy.deepcopy(frame.data())
-        # self.frametemp =np.copy(frame.data())
-        self.currentFrameId = frame.id()
-        # print(self.currentFrameId)
+        self.shutdown()
 
-def NiTCamFrameCaptureThread(queue,Cam_Calibtation,SetCalibrationEvent,
-                             GetFrameFlag,GetFrameFlag_digholo,terminateCamFlag,FrameObtained,shared_memory_name,shared_memory_name_digholo,
-                             FrameHeight,FrameWidth,
-                             SetGainFlag,SetExposureFlag,SetCaptureModeFlag,
-                             LogPlot,ContinuesMode,SingleFrameMode,
-                             shared_float,shared_int,shared_flag_int):
-   
-    # Setup Shared memory
-    shm = shared_memory.SharedMemory(name=shared_memory_name)
-    frame_buffer = np.ndarray((FrameHeight, FrameWidth), dtype=np.float64, buffer=shm.buf) 
-    
-    shm_digholo = shared_memory.SharedMemory(name=shared_memory_name_digholo)
-    frame_buffer_digholo = np.ndarray((FrameHeight, FrameWidth), dtype=np.float64, buffer=shm_digholo.buf) 
-    ContinuesMode.set()
-    #make a connection to the camera
-    nm = NITLibrary.NITManager.getInstance()
-    dev = nm.openOneDevice()
+    def shutdown(self):
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
 
-    serialNum="SN"+dev.serialNumber()
-    # NUCFolderLocation=config.CAMERA_LIB_PATH+"CameraSoftware\\NiTcamera\\"+serialNum
-    # if os.path.exists(NUCFolderLocation):
-    #     print("NUC file directory Found for Camera "+serialNum + ". It will be loaded")
-        # dev.setNucDirectory(NUCFolderLocation)
+        try:
+            self.StopAcquisition()
+        finally:
+            if getattr(self, "nm", None) is not None:
+                time.sleep(0.05)
+                try:
+                    self.nm.reset()
+                except Exception:
+                    pass
+                self.nm = None
 
-    Ny =  dev.sensorHeight()
-    Nx = dev.sensorWidth() 
-    observer=CustomObserver(Ny,Nx)
-    dev << observer # this is to overload the functions and be able to save the frame into a numpy array
-    # hard coding the Sensor Response value to linear could be changed to log which would be 0 instead of 1 whcih is linear
-    dev.setParamValueOf("Sensor Response", 1)
-    dev.updateConfig()
-    figScale=FrameWidth/FrameHeight
-    figsize=5
+    def _configure_defaults(self):
+        if self.CalibrationFile:
+            try:
+                self.dev.setNucDirectory(self.CalibrationFile)
+                self.dev.activateNuc(True)
+            except Exception:
+                if self.verbose:
+                    print(f"Could not load NIT calibration/NUC path: {self.CalibrationFile}")
 
-    # fig, ax = plt.subplots(1, 1,figsize=( int(figScale*FrameHeight), int(figScale*FrameWidth)))
-    fig, ax = plt.subplots(1, 1,figsize=(int(figScale*figsize), figsize))
+        try:
+            self.dev.activateBpr(True)
+        except Exception:
+            pass
 
-    cameraFrameFigure=ax.imshow(np.zeros((FrameHeight, FrameWidth),dtype=np.uint8),cmap='gray')
-    cameraFrameFigure.set_cmap('gray')
-    ax.axis('off')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.margins(x=0, y=0)
-    plt.tight_layout()
-    # ax.set_colorbar()
-    # fig.colorbar(cameraFrameFigure, ax=ax, orientation='vertical')  # You can change orientation to 'horizontal' if preferred
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0) 
-    restartContinuousMode=True
+        try:
+            if self.dev.connectorType() == self.NITLibrary.GIGE:
+                self.dev.setParamValueOf("OutputType", "RAW")
+        except Exception:
+            pass
 
-    opencvWindowName="NiT Camera Image"
-    while not terminateCamFlag.is_set():
-        
-        if (ContinuesMode.is_set()):
-            # In the live feed i dont really care if i am droping frames and i think it will be 
-            # faster to just capture frames in continuous mode.
-            if (restartContinuousMode):
-                restartContinuousMode=False
-                dev.start()
-            # dev.captureNFrames(1) # Seems like you need to grab 3 frames to be sure it is getting the most upto date frame the buffer on the camera doesnt empty it self
-            # dev.waitEndCapture() 
-            frame = observer.frametemp
-            
-            Frame_int =CamForm.adjust_array_dimensions(np.squeeze( frame))
-            
-            if (LogPlot.is_set()):   
-                Frame_toplot=np.log10(Frame_int+1)   #Need to add 1 so that np.log10 doesnt get a divide by zero error
+        try:
+            self.dev.updateConfig()
+        except Exception:
+            pass
+
+    def _set_param(self, name, value):
+        self.dev.setParamValueOf(name, value)
+        self.dev.updateConfig()
+        return self._get_param(name)
+
+    def _get_param(self, name, default=None):
+        try:
+            return self.dev.paramValueOf(name)
+        except Exception:
+            if default is not None:
+                return default
+            raise
+
+    def _get_param_str(self, name, default=None):
+        try:
+            return self.dev.paramStrValueOf(name)
+        except Exception:
+            return default
+
+    def StartAcquisition(self):
+        if not self._capturing:
+            self.dev.start()
+            self._capturing = True
+
+    def StopAcquisition(self):
+        if self._capturing:
+            try:
+                self.dev.stop()
+            finally:
+                self._capturing = False
+
+    def ResetCamera(self):
+        self.StopAcquisition()
+        time.sleep(0.05)
+        self.StartAcquisition()
+        self.ResetBuffer()
+
+    def ResetBuffer(self):
+        self.frame_id = None
+        self._software_frame_ready = False
+
+    def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
+        self.ResetBuffer()
+        return 0
+
+    def SetBufferSizeInNumberOfFrames(self, n_frames):
+        raise NotImplementedError("NIT frame buffer sizing is not implemented in this simple wrapper.")
+
+    def GetBufferSizeInNumberOfFrames(self):
+        return None
+
+    def GetNumberOfFramesInBuffer(self):
+        return None
+
+    def GetGrabTimeout(self):
+        return int(self.grab_timeout_ms)
+
+    def SetGrabTimeout(self, timeout_ms):
+        self.grab_timeout_ms = int(timeout_ms)
+        return self.GetGrabTimeout()
+
+    def IsSoftwareTriggerReady(self):
+        return True
+
+    def WaitForSoftwareTriggerReady(self, timeout_ms=1000, poll_interval_s=0.001):
+        return True
+
+    def GetTriggerMode(self):
+        return self.trigger_mode, self.trigger_source
+
+    def SetContinuousMode(self):
+        self.trigger_mode = "Off"
+        self.trigger_source = "FreeRun"
+        self.acquisition_mode = "Continuous"
+        self.StartAcquisition()
+        return self.GetTriggerMode()
+
+    def SetSoftwareTriggerMode(self):
+        self.StopAcquisition()
+        self.trigger_mode = "On"
+        self.trigger_source = "Software"
+        self.acquisition_mode = "SingleFrame"
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def FireSoftwareTrigger(self, wait_ready=True, ready_timeout_ms=1000, drain_stale_frames=True):
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            self.GetTriggerMode()
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            raise RuntimeError("Camera is not in software trigger mode")
+
+        self._capture_one_frame()
+        self._software_frame_ready = True
+        return 0
+
+    def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
+        raise NotImplementedError("Hardware trigger mode is not implemented for the NIT SDK wrapper.")
+
+    def SetExposureTime(self, exposure_time):
+        self.ExposureTime = self._set_param("Exposure Time", exposure_time)
+        return self.ExposureTime
+
+    def GetExposureTime(self):
+        self.ExposureTime = self._get_param("Exposure Time")
+        return self.ExposureTime
+
+    def SetGain(self, gain):
+        self.gain = self._set_param("Analog Gain", int(gain))
+        return self.gain
+
+    def GetGain(self):
+        self.gain = self._get_param("Analog Gain", default=None)
+        return self.gain
+
+    def SetCaptureMode(self, capture_mode):
+        self.capture_mode = self._set_param("Mode", int(capture_mode))
+        return self.capture_mode
+
+    def GetCaptureMode(self):
+        self.capture_mode = self._get_param("Mode", default=None)
+        return self.capture_mode
+
+    def SetFPS(self, fps):
+        self.dev.setFps(float(fps))
+        self.dev.updateConfig()
+        self.fps = self.GetFPS()
+        return self.fps
+
+    def GetFPS(self):
+        self.fps = float(self.dev.fps())
+        return self.fps
+
+    def GetMaxMinFPS_ExposureTime(self):
+        self.ExposureTimeMin = 0.0
+        self.ExposureTimeMax = 1e9
+        try:
+            self.FPSMin = float(self.dev.minFps())
+            self.FPSMax = float(self.dev.maxFps())
+        except Exception:
+            self.FPSMin = None
+            self.FPSMax = None
+        return self.ExposureTimeMin, self.ExposureTimeMax, self.FPSMin, self.FPSMax
+
+    def SetPixelFormat(self, pixel_format):
+        pixel_format_key = str(pixel_format).strip().lower()
+        if pixel_format_key not in ("mono8", "mono16", "float32", "float64"):
+            raise ValueError("NIT pixel_format is inferred from frame dtype; accepted labels are mono8, mono16, float32, float64")
+        self.pixel_format = pixel_format_key
+        return self.GetPixelFormat()
+
+    def GetPixelFormat(self):
+        if self.observer.frame is not None:
+            dtype = self.observer.frame.dtype
+            if dtype == np.uint8:
+                self.pixel_format = "mono8"
+            elif dtype == np.uint16:
+                self.pixel_format = "mono16"
+            elif dtype == np.float32:
+                self.pixel_format = "float32"
+            elif dtype == np.float64:
+                self.pixel_format = "float64"
             else:
-                Frame_toplot=Frame_int 
-            cameraFrameFigure.set_data(Frame_toplot)
-            cameraFrameFigure.set_clim(0, Frame_toplot.max())
-            fig.canvas.draw_idle()
-            imag=plot_to_opencv_img(fig)
-            cv2.imshow(opencvWindowName,imag)
+                self.pixel_format = str(dtype)
+        elif self.pixel_format is None:
+            self.pixel_format = "float64"
 
-            if ( GetFrameFlag.is_set() ):
-                np.copyto(frame_buffer, Frame_int)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-            if ( GetFrameFlag_digholo.is_set() ):
-                np.copyto(frame_buffer_digholo, Frame_int)
-                GetFrameFlag_digholo.clear()
-                # this was the queue way but it isn't consistant interms of when a frame is obatined
-                # so I have moved to shared memory space method.
-                # frame_bytes = Frame_int.tobytes()
-                # queue.put(frame_bytes)
-        elif(SingleFrameMode.is_set()):
-            #Turn off continuous mode of camera and reset the flag to turn it back on
-            if (restartContinuousMode==False):
-                dev.stop()
-                restartContinuousMode=True
-            if ( GetFrameFlag.is_set() ):
-                dev.captureNFrames(3) # Seems like you need to grab 3 frames to be sure it is getting the most upto date frame the buffer on the camera doesnt empty it self
-                dev.waitEndCapture() 
-                frame = observer.frametemp
-                Frame_int =CamForm.adjust_array_dimensions(np.squeeze( frame))                 
-                cv2.imshow(opencvWindowName, Frame_int)
-                np.copyto(frame_buffer, Frame_int)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-            # I am not really worried about getting the latest frame just want to see something updating on the digholo
-            if ( GetFrameFlag_digholo.is_set() ): 
-                np.copyto(frame_buffer_digholo, Frame_int)
-                GetFrameFlag_digholo.clear()
-            
-        
-        # NOTE exposure is pretty safe in that you can pass it any vlaue and library will handle it all
-        if(SetExposureFlag.is_set()):
-            Exposure=shared_float.value
-            dev.setParamValueOf("Exposure Time",(Exposure))
-            dev.updateConfig()
-            shared_float.value=dev.paramValueOf("Exposure Time")
-            shared_flag_int.value=1
-            SetExposureFlag.clear()
+        self.pixel_format_fc2 = self.pixel_format
+        return self.pixel_format
 
-        # NOTE the Gain can only be set to certain value like high or low and it also depends on the 
-        # Sensor Response setting. I dont really understand why but it is kind of explained in the documentation
-        # so if you want to go and try and understand that peice of shit documnet be my guest. 
-        # Future Daniel here and I laugh at this, very good past Daniel.
-        if(SetGainFlag.is_set()):
-            Gain=shared_float.value
-            if (int(dev.paramValueOf("Sensor Response"))==1):# linear mode gain can only be 1 or 3
-                if(int(Gain)==0 or int(Gain)==3):
-                    dev.setParamValueOf("Analog Gain",int(Gain))
-                    dev.updateConfig()
-            elif (int(dev.paramValueOf("Sensor Response"))==0):#log mode gain can be or 2
-                if(int(Gain)==1 or int(Gain)==2):
-                    dev.setParamValueOf("Analog Gain",int(Gain))
-                    dev.updateConfig()
-            
-            shared_float.value=dev.paramValueOf("Analog Gain")
-            shared_flag_int.value=1
-            SetGainFlag.clear()
+    def SetROI(self, offset_x=None, offset_y=None, width=None, height=None, snap_values=True, enable=True, mode="nearest"):
+        if not enable:
+            offset_x = 0
+            offset_y = 0
+            width = self.sensor_width
+            height = self.sensor_height
+        else:
+            offset_x = self.offset_x if offset_x is None else offset_x
+            offset_y = self.offset_y if offset_y is None else offset_y
+            width = self.width if width is None else width
+            height = self.height if height is None else height
 
-        if(SetCaptureModeFlag.is_set()):
-            CaptureMode=shared_float.value
-            if ( (CaptureMode)>=0 and (CaptureMode)<=2):
-                dev.setParamValueOf("Mode",int(CaptureMode))
-                dev.updateConfig()
-            shared_float.value=(dev.paramValueOf("Mode"))
-            shared_flag_int.value=1
-            SetCaptureModeFlag.clear()
-        if(SetCalibrationEvent.is_set()):
-            CalibrationFile=Cam_Calibtation['CalibrationFile']
-            if os.path.exists(CalibrationFile):
-                print("NUC file directory Found for Camera "+serialNum + ". It will be loaded")
-                dev.setNucDirectory(CalibrationFile)
-                shared_int.value=0
-            else:
-                shared_int.value=-1
-            SetCalibrationEvent.clear()
+        if snap_values:
+            offset_x = snap_to_value(offset_x, 1, mode, minimum=0)
+            offset_y = snap_to_value(offset_y, 1, mode, minimum=0)
+            width = snap_to_value(width, 1, mode, minimum=1)
+            height = snap_to_value(height, 1, mode, minimum=1)
 
-            
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
-    cv2.destroyAllWindows()
-    shm.close()
-    shm_digholo.close()
-    time.sleep(3)
-    nm.reset()
- 
+        width = min(int(width), self.sensor_width)
+        height = min(int(height), self.sensor_height)
+        offset_x = min(max(int(offset_x), 0), self.sensor_width - width)
+        offset_y = min(max(int(offset_y), 0), self.sensor_height - height)
+
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+
+        try:
+            self.dev.setRoi(int(width), int(height), int(offset_x), int(offset_y))
+            self.dev.updateConfig()
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        self.offset_x = offset_x
+        self.offset_y = offset_y
+        self.width = width
+        self.height = height
+        self.Nx = width
+        self.Ny = height
+        return self.GetROI()
+
+    def GetROI(self):
+        return self.offset_x, self.offset_y, self.width, self.height
+
+    def GetFrameID(self):
+        return self.frame_id
+
+    def _capture_one_frame(self, n_frames=1):
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+
+        try:
+            self.dev.captureNFrames(int(n_frames))
+            self.dev.waitEndCapture()
+        finally:
+            if was_capturing and self.trigger_mode == "Off":
+                self.StartAcquisition()
+
+        if self.observer.frame is None:
+            raise RuntimeError("NIT camera did not deliver a frame")
+
+        self.frame_id = self.observer.frame_id
+        return np.array(self.observer.frame, copy=True)
+
+    def _wait_for_stream_frame(self, timeout_ms):
+        deadline = time.perf_counter() + (float(timeout_ms) * 1e-3)
+        start_id = self.observer.frame_id
+
+        while self.observer.frame is None or self.observer.frame_id == start_id:
+            if time.perf_counter() >= deadline:
+                if self.observer.frame is not None:
+                    break
+                raise TimeoutError(f"Timed out waiting {timeout_ms} ms for a NIT frame")
+            time.sleep(0.001)
+
+        self.frame_id = self.observer.frame_id
+        return np.array(self.observer.frame, copy=True)
+
+    def GetFrame(self, timeout_ms=None):
+        if timeout_ms is None:
+            timeout_ms = self.grab_timeout_ms
+
+        if self._software_frame_ready and self.observer.frame is not None:
+            self._software_frame_ready = False
+            self.frame_id = self.observer.frame_id
+            return np.array(self.observer.frame, copy=True)
+
+        if self.trigger_mode == "On" and self.trigger_source == "Software":
+            return self._capture_one_frame()
+
+        if self._capturing:
+            return self._wait_for_stream_frame(timeout_ms)
+
+        return self._capture_one_frame()
+
+
+NiTCamraObject = CameraObject
+NiTCameraObject = CameraObject

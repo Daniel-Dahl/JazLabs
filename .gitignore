@@ -227,3 +227,8 @@ data/**
 !data/**/
 !data/.gitkeep
 !data/**/.gitkeep
+
+# digHolo batch output
+src/JazLabs/hardware/digHolo/digHolo_pylibs/Data/**
+!src/JazLabs/hardware/digHolo/digHolo_pylibs/Data/
+!src/JazLabs/hardware/digHolo/digHolo_pylibs/Data/.gitkeep
