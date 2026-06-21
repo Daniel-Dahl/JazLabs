@@ -1,236 +1,417 @@
-from Lab_Equipment.Config import config 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-import multiprocessing
-from multiprocessing import shared_memory
-import copy
-import cv2
-import time
+import atexit
 import ctypes
-import Lab_Equipment.Camera.CameraObject as CamForm   
-from CameraSoftware.QImagCam.qcam import Camera as QImagCamObj
-from CameraSoftware.QImagCam.calibration import get_position, to_wavelength, to_raman 
+import time
+import weakref
 
-# Function to convert a matplotlib plot to an OpenCV image
-def plot_to_opencv_img(fig):
-    canvas = FigureCanvas(fig)
-    canvas.draw()
-    buf = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-    buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    return cv2.cvtColor(buf, cv2.COLOR_RGB2BGR)
+import numpy as np
 
-class QImagCamraObject():
-    def __init__(self,PixelSize=6.45e-6):
-            super().__init__() # inherit from parent class  
-            
-            # We are just going to go through and grab a bunch of properties from the camera
-            # and get 1 frame to set up the shared memory space
-            cam = QImagCamObj()
-            cameraOpened = cam.connect_to_camera()
-            result, model = cam.get_camera_model()
-            if result != 0:  # Replace with your actual success value
-                print(f"Failed to get camera model with error {result}")
-            else:
-                print(f"Camera model: {model}")
+from .oldversion.qcam import Camera as QCamCamera
+from .oldversion.qcam import QCam_CamListItem
 
-            # Display Info & Parameters
-            cam.setup_camera()
-            print(list(cam.info.values()))
-            print(list(cam.parameters.values()))
-            for name, param in cam.parameters.items():
-                print(f"For parameter {name}: min_value is {param.min_value}, max_value is {param.max_value}")
-            
-            
-            self.Ny = cam.QCam_GetInfo(cam.INFO_KEYS["Image Height"])[1]
-            self.Nx =cam.QCam_GetInfo(cam.INFO_KEYS["Image Width"])[1]
-            Exposure=cam.QCam_GetParam(cam.PARAM_KEYS["Exposure"])[1]
-            Gain=cam.QCam_GetParam(cam.PARAM_KEYS["Gain"])[1]
-            Offset=cam.QCam_GetParam(cam.PARAM_KEYS["Offset"])[1]
-            Exposure=cam.QCam_GetParam(cam.PARAM_KEYS["Exposure"])[1]
 
-            print('Exposure ',Exposure)
-            print('Gain ',Gain)
-            print('Offset ',Offset)
-            print(self.Ny,self.Nx)    
+def snap_to_value(value, step, mode="nearest", minimum=0):
+    value = int(value)
+    step = int(step)
+    minimum = int(minimum)
 
-            #Get a frame and see what the size of the frame is
-            Rawframe = cam.grab_frame()
-            pBuffer = ctypes.cast(Rawframe.pBuffer, ctypes.POINTER(ctypes.c_char * Rawframe.size))
-            # Then we create a numpy array from the buffer
-            RawFame_data = np.frombuffer(pBuffer.contents, dtype=np.uint8)
-            # Now reshape it into the correct shape
-            frame = RawFame_data.reshape(Rawframe.height, Rawframe.width) 
+    if step <= 0:
+        return value
 
-            FrameBuffer =CamForm.adjust_array_dimensions(np.squeeze( frame))
-            FrameDim=FrameBuffer.shape
-            FrameHeight = int(FrameDim[0])
-            FrameWidth = int(FrameDim[1])
-            Framedtype=FrameBuffer.dtype
-            # self.PixelSize=PixelSize
-            cam.close_camera()
-            cam.release_driver()
+    rel = value - minimum
+    if mode == "nearest":
+        snapped = minimum + round(rel / step) * step
+    elif mode == "floor":
+        snapped = minimum + (rel // step) * step
+    elif mode == "ceil":
+        snapped = minimum + ((rel + step - 1) // step) * step
+    else:
+        raise ValueError("mode must be 'nearest', 'floor', or 'ceil'")
 
-            # START the camera Thead
-            self.CamObject=CamForm.GeneralCameraObject("QImagCamera",self.Nx,self.Ny,FrameWidth,FrameHeight,FrameDim,Framedtype,FrameBuffer,PixelSize,Exposure,Offset,Gain)
-            self.CamProcess= CamForm.start_FrameCaptureThread(self.CamObject,QImagCamFrameCaptureThread)
-            
-            
-            # self.opencv_display_format = PixelFormat.Bgr8
-        
+    return int(max(snapped, minimum))
+
+
+def _shutdown_camera_ref(camera_ref):
+    camera = camera_ref()
+    if camera is not None:
+        camera.shutdown()
+
+
+class CameraObject:
+    """
+    Simple QImaging camera object using the local QCam ctypes wrapper.
+
+    Exposure is in microseconds, matching the QCam qprmExposure parameter.
+    """
+
+    TRIGGER_FREERUN = 0
+    TRIGGER_EDGE_HIGH = 1
+    TRIGGER_EDGE_LOW = 2
+    TRIGGER_SOFTWARE = 5
+
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=6.45e-6, verbose=False):
+        self.CameraIdx = int(CameraIdx)
+        self.CalibrationFile = CalibrationFile
+        self.PixelSize = PixelSize
+        self.verbose = bool(verbose)
+
+        self._closed = False
+        self._capturing = False
+        self.grab_timeout_ms = None
+
+        self.cam = QCamCamera()
+        self.cam.PARAM_KEYS.setdefault("Trigger Type", 7)
+        self._connect_to_camera(self.CameraIdx)
+        self.cam.setup_camera()
+
+        self.trigger_mode = "Off"
+        self.trigger_source = "FreeRun"
+        self.trigger_selector = "FrameStart"
+        self.acquisition_mode = "Continuous"
+        self.trigger_polarity = 1
+
+        self.offset_x = 0
+        self.offset_y = 0
+        self.width = 0
+        self.height = 0
+        self.Nx = 0
+        self.Ny = 0
+
+        self.ExposureTime = None
+        self.ExposureTimeMin = None
+        self.ExposureTimeMax = None
+        self.FPSMin = None
+        self.FPSMax = None
+        self.fps = None
+        self.gain = None
+        self.offset = None
+        self.pixel_format = None
+        self.pixel_format_fc2 = None
+        self.frame_id = None
+
+        self.SetContinuousMode()
+        self.GetROI()
+        self.GetExposureTime()
+        self.GetGain()
+        self.GetPixelFormat()
+        self.GetMaxMinFPS_ExposureTime()
+        self.StartAcquisition()
+
+        atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
     def __del__(self):
-        """Destructor to disconnect from camera."""
-        print(self.CamObject.CameraType +" Class has been destroyed")
-        self.CamObject.terminateCamera.set()# stop the camera thread
-        self.CamObject.shm.close() # close access to shared memory
-        # self.CamProcess.terminate()
-        self.CamObject.shm.unlink() # clean up the shared memory space
-        # cam = QImagCamObj()
-        # cam.close_camera()
-        # cam.release_driver()
-        time.sleep(5)
-        # cam.close_camera()
-        # cam.release_driver()
-    
-def QImagCamFrameCaptureThread(queue,Cam_Calibtation,SetCalibrationEvent,
-                               GetFrameFlag,GetFrameFlag_digholo,terminateCamFlag,FrameObtained,shared_memory_name,shared_memory_name_digholo,FrameHeight,FrameWidth,
-                               SetGainFlag,SetOffsetFlag,SetExposureFlag,
-                               LogPlot,ContinuesMode,SingleFrameMode,
-                                shared_float,shared_int,shared_flag_int):
-    # Setup Shared memory
-    shm = shared_memory.SharedMemory(name=shared_memory_name)
-    frame_buffer = np.ndarray((FrameHeight, FrameWidth), dtype=np.uint8, buffer=shm.buf) 
-    
-    shm_digholo = shared_memory.SharedMemory(name=shared_memory_name_digholo)
-    frame_buffer_digholo = np.ndarray((FrameHeight, FrameWidth), dtype=np.uint8, buffer=shm_digholo.buf) 
-    
-    
-    ContinuesMode.set()
-    cam = QImagCamObj()
-    cameraOpenedErrorCode = cam.connect_to_camera()
-    cam.setup_camera()
-    figScale=FrameWidth/FrameHeight
-    figsize=10
+        self.shutdown()
 
-    # fig, ax = plt.subplots(1, 1,figsize=( int(figScale*FrameHeight), int(figScale*FrameWidth)))
-    fig, ax = plt.subplots(1, 1,figsize=(int(figScale*figsize), figsize))
+    def _check(self, result, message):
+        if result != 0:
+            raise RuntimeError(f"{message} failed with QCam error {result}")
 
-    cameraFrameFigure=ax.imshow(np.zeros((FrameHeight, FrameWidth),dtype=np.uint8),cmap='gray')
-    cameraFrameFigure.set_cmap('gray')
-    ax.axis('off')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.margins(x=0, y=0)
-    plt.tight_layout()
-    # ax.set_colorbar()
-    # fig.colorbar(cameraFrameFigure, ax=ax, orientation='vertical')  # You can change orientation to 'horizontal' if preferred
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0) 
+    def _connect_to_camera(self, camera_idx):
+        self._check(self.cam.load_driver(), "QCam_LoadDriver")
 
-    opencvWindowName="QImag Camera Image"
-    while not terminateCamFlag.is_set():
-        
-        if (ContinuesMode.is_set()):
-            Rawframe=cam.grab_frame()
-            """
-            Convert frame buffer to image array
-            Windows doesn't like it (i.e. throws a fatal exception)
-            when this takes place in qcam.py for some reason!
-            """
-            # First we need to cast the void pointer to a pointer to a char array
-            pBuffer = ctypes.cast(Rawframe.pBuffer, ctypes.POINTER(ctypes.c_char * Rawframe.size))
-            # Then we create a numpy array from the buffer
-            RawFame_data = np.frombuffer(pBuffer.contents, dtype=np.uint8)
-            # Now reshape it into the correct shape
-            frame = RawFame_data.reshape(Rawframe.height, Rawframe.width) 
-            Frame_int =CamForm.adjust_array_dimensions(np.squeeze( frame))  
-            if (LogPlot.is_set()):   
-                Frame_toplot=np.log10(Frame_int+1)   #Need to add 1 so that np.log10 doesnt get a divide by zero error
+        max_cameras = 10
+        camera_items = (QCam_CamListItem * max_cameras)()
+        camera_count = ctypes.c_uint32(max_cameras)
+        self._check(self.cam.list_cameras(ctypes.byref(camera_items[0]), ctypes.byref(camera_count)), "QCam_ListCameras")
+
+        self.num_cameras = int(camera_count.value)
+        print(f"{self.num_cameras} cameras detected:")
+        for k in range(self.num_cameras):
+            item = camera_items[k]
+            print(f"{k}: QImaging camera id={item.cameraId} unique={item.uniqueId}")
+        print(f"Using camera {camera_idx}")
+
+        if self.num_cameras <= 0:
+            self.cam.release_driver()
+            raise RuntimeError("No QImaging cameras detected")
+        if camera_idx < 0 or camera_idx >= self.num_cameras:
+            self.cam.release_driver()
+            raise IndexError(f"CameraIdx {camera_idx} out of range for {self.num_cameras} cameras")
+
+        self._check(self.cam.open_camera(camera_items[camera_idx].cameraId), "QCam_OpenCamera")
+
+    def shutdown(self):
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
+
+        try:
+            self.StopAcquisition()
+            try:
+                self.cam.QCam_Abort(self.cam.camera_handle)
+            except Exception:
+                pass
+            try:
+                self.cam.close_camera()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.cam.release_driver()
+            except Exception:
+                pass
+
+    def _read_settings(self):
+        result, _ = self.cam.QCam_ReadSettingsFromCam()
+        self._check(result, "QCam_ReadSettingsFromCam")
+
+    def _get_param(self, name):
+        self._read_settings()
+        result, value = self.cam.QCam_GetParam(self.cam.PARAM_KEYS[name])
+        self._check(result, f"QCam_GetParam({name})")
+        return int(value)
+
+    def _set_param(self, name, value, clamp=True):
+        value = int(value)
+        if clamp:
+            min_value, max_value = self._param_limits(name)
+            value = max(min_value, min(value, max_value))
+
+        result = self.cam.QCam_SetParam(self.cam.PARAM_KEYS[name], value)
+        self._check(result, f"QCam_SetParam({name})")
+        result = self.cam.QCam_SendSettingsToCam(self.cam.camera_handle)
+        self._check(result, "QCam_SendSettingsToCam")
+        return self._get_param(name)
+
+    def _param_limits(self, name):
+        param = self.cam.parameters.get(name)
+        if param is not None and param.min_value is not None and param.max_value is not None:
+            return int(param.min_value), int(param.max_value)
+
+        key = self.cam.PARAM_KEYS[name]
+        result, min_value = self.cam.QCam_GetParamMin(key)
+        self._check(result, f"QCam_GetParamMin({name})")
+        result, max_value = self.cam.QCam_GetParamMax(key)
+        self._check(result, f"QCam_GetParamMax({name})")
+        return int(min_value), int(max_value)
+
+    def _get_info(self, name):
+        result, value = self.cam.QCam_GetInfo(self.cam.INFO_KEYS[name])
+        self._check(result, f"QCam_GetInfo({name})")
+        return int(value)
+
+    def StartAcquisition(self):
+        if not self._capturing:
+            try:
+                self.cam.dll.QCam_SetStreaming.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+                self.cam.dll.QCam_SetStreaming.restype = ctypes.c_uint32
+                self._check(self.cam.dll.QCam_SetStreaming(self.cam.camera_handle, 1), "QCam_SetStreaming(1)")
+            except AttributeError:
+                pass
+            self._capturing = True
+
+    def StopAcquisition(self):
+        if self._capturing:
+            try:
+                self.cam.dll.QCam_SetStreaming.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+                self.cam.dll.QCam_SetStreaming.restype = ctypes.c_uint32
+                self.cam.dll.QCam_SetStreaming(self.cam.camera_handle, 0)
+            except Exception:
+                pass
+            self._capturing = False
+
+    def ResetCamera(self):
+        self.StopAcquisition()
+        try:
+            self.cam.QCam_Abort(self.cam.camera_handle)
+        except Exception:
+            pass
+        time.sleep(0.05)
+        self.StartAcquisition()
+        self.ResetBuffer()
+
+    def ResetBuffer(self):
+        self.frame_id = None
+
+    def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
+        try:
+            self.cam.QCam_Abort(self.cam.camera_handle)
+        except Exception:
+            return 0
+        self.frame_id = None
+        return 0
+
+    def SetBufferSizeInNumberOfFrames(self, n_frames):
+        raise NotImplementedError("QCam frame buffer sizing is not implemented in this wrapper.")
+
+    def GetBufferSizeInNumberOfFrames(self):
+        return None
+
+    def GetNumberOfFramesInBuffer(self):
+        return None
+
+    def GetGrabTimeout(self):
+        return self.grab_timeout_ms
+
+    def SetGrabTimeout(self, timeout_ms):
+        self.grab_timeout_ms = None if timeout_ms is None else int(timeout_ms)
+        return self.GetGrabTimeout()
+
+    def IsSoftwareTriggerReady(self):
+        return True
+
+    def WaitForSoftwareTriggerReady(self, timeout_ms=1000, poll_interval_s=0.001):
+        return True
+
+    def GetTriggerMode(self):
+        trigger_type = self._get_param("Trigger Type")
+        if trigger_type == self.TRIGGER_SOFTWARE:
+            self.trigger_mode = "On"
+            self.trigger_source = "Software"
+        elif trigger_type == self.TRIGGER_EDGE_HIGH:
+            self.trigger_mode = "On"
+            self.trigger_source = "line 0"
+            self.trigger_polarity = 1
+        elif trigger_type == self.TRIGGER_EDGE_LOW:
+            self.trigger_mode = "On"
+            self.trigger_source = "line 0"
+            self.trigger_polarity = -1
+        else:
+            self.trigger_mode = "Off"
+            self.trigger_source = "FreeRun"
+        return self.trigger_mode, self.trigger_source
+
+    def SetContinuousMode(self):
+        self._set_param("Trigger Type", self.TRIGGER_FREERUN, clamp=False)
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def SetSoftwareTriggerMode(self):
+        self._set_param("Trigger Type", self.TRIGGER_SOFTWARE, clamp=False)
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def FireSoftwareTrigger(self, wait_ready=True, ready_timeout_ms=1000, drain_stale_frames=True):
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            self.GetTriggerMode()
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            raise RuntimeError("Camera is not in software trigger mode")
+        self._check(self.cam.QCam_Trigger(self.cam.camera_handle), "QCam_Trigger")
+        return 0
+
+    def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
+        trigger_type = self.TRIGGER_EDGE_HIGH if RiseEdgeOrFallEdge == 1 else self.TRIGGER_EDGE_LOW
+        self._set_param("Trigger Type", trigger_type, clamp=False)
+        self.trigger_polarity = 1 if RiseEdgeOrFallEdge == 1 else -1
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def SetExposureTime(self, exposure_time):
+        self.ExposureTime = self._set_param("Exposure", exposure_time)
+        return self.ExposureTime
+
+    def GetExposureTime(self):
+        self.ExposureTime = self._get_param("Exposure")
+        return self.ExposureTime
+
+    def SetGain(self, gain):
+        self.gain = self._set_param("Gain", gain)
+        return self.gain
+
+    def GetGain(self):
+        self.gain = self._get_param("Gain")
+        return self.gain
+
+    def SetOffset(self, offset):
+        self.offset = self._set_param("Offset", offset)
+        return self.offset
+
+    def GetOffset(self):
+        self.offset = self._get_param("Offset")
+        return self.offset
+
+    def SetFPS(self, fps):
+        raise NotImplementedError("QCam does not expose frame-rate control through this simple wrapper.")
+
+    def GetFPS(self):
+        return self.fps
+
+    def GetMaxMinFPS_ExposureTime(self):
+        self.ExposureTimeMin, self.ExposureTimeMax = self._param_limits("Exposure")
+        self.FPSMin = None
+        self.FPSMax = None
+        return self.ExposureTimeMin, self.ExposureTimeMax, self.FPSMin, self.FPSMax
+
+    def SetPixelFormat(self, pixel_format):
+        if isinstance(pixel_format, str):
+            pixel_format_key = pixel_format.strip().lower()
+            if pixel_format_key == "mono8":
+                image_format = 2
+            elif pixel_format_key == "mono16":
+                image_format = 3
             else:
-                Frame_toplot=Frame_int 
-            cameraFrameFigure.set_data(Frame_toplot)
-            # cameraFrameFigure.set_clim(Frame_toplot.min(), Frame_toplot.max())
-            cameraFrameFigure.set_clim(0, Frame_toplot.max())
-            fig.canvas.draw_idle()
-            imag=plot_to_opencv_img(fig)
-            cv2.imshow(opencvWindowName,imag)
+                raise ValueError("pixel_format must be one of: mono8, mono16")
+        else:
+            image_format = int(pixel_format)
 
-            if ( GetFrameFlag.is_set() ):
-                np.copyto(frame_buffer, Frame_int)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-                # this was the queue way but it isn't consistant interms of when a frame is obatined
-                # so I have moved to shared memory space method.
-                # frame_bytes = Frame_int.tobytes()
-                # queue.put(frame_bytes)
-            if ( GetFrameFlag_digholo.is_set() ):
-                np.copyto(frame_buffer_digholo, Frame_int)
-                GetFrameFlag_digholo.clear()
-                
-        elif(SingleFrameMode.is_set()):
-            if ( GetFrameFlag.is_set() ):
-                Rawframe = cam.grab_frameSingle()    
-                """
-                Convert frame buffer to image array
-                Windows doesn't like it (i.e. throws a fatal exception)
-                when this takes place in qcam.py for some reason!
-                """
-                # First we need to cast the void pointer to a pointer to a char array
-                pBuffer = ctypes.cast(Rawframe.pBuffer, ctypes.POINTER(ctypes.c_char * Rawframe.size))
-                # Then we create a numpy array from the buffer
-                RawFame_data = np.frombuffer(pBuffer.contents, dtype=np.uint8)
-                # Now reshape it into the correct shape
-                frame = RawFame_data.reshape(Rawframe.height, Rawframe.width) 
-                Frame_int =CamForm.adjust_array_dimensions(np.squeeze( frame))                    
-                cv2.imshow(opencvWindowName, Frame_int)
-                np.copyto(frame_buffer, Frame_int)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-            # I am not really worried about getting the latest frame just want to see something updating on the digholo
-                if ( GetFrameFlag_digholo.is_set() ):
-                    np.copyto(frame_buffer_digholo, Frame_int)
-                    GetFrameFlag_digholo.clear()
+        self.pixel_format_fc2 = self._set_param("Image Format", image_format, clamp=False)
+        return self.GetPixelFormat()
 
-        if(SetExposureFlag.is_set()):
-            Exposure=shared_float.value
-            if ( (Exposure)>=10 and (Exposure)<=1073741823 ):
-                cam.set_camera_param("Exposure", int(Exposure))
-            shared_float.value=int(cam.QCam_GetParam(cam.PARAM_KEYS["Exposure"])[1])
-            shared_flag_int.value=1
-            SetExposureFlag.clear()
+    def GetPixelFormat(self):
+        self.pixel_format_fc2 = self._get_param("Image Format")
+        bit_depth = self._get_info("Bit Depth")
+        self.pixel_format = "mono8" if bit_depth <= 8 else "mono16"
+        return self.pixel_format
 
-        if(SetGainFlag.is_set()):
-            Gain=shared_float.value
-            if ( (Gain)>=115 and (Gain)<=4095):
-                cam.set_camera_param("Gain", int(Gain))
-            shared_float.value=int(cam.QCam_GetParam(cam.PARAM_KEYS["Gain"])[1])
-            shared_flag_int.value=1
-            SetGainFlag.clear()
+    def SetROI(self, offset_x=None, offset_y=None, width=None, height=None, snap_values=True, enable=True, mode="nearest"):
+        ccd_width = self._get_info("CCD Width")
+        ccd_height = self._get_info("CCD Height")
 
-        if(SetOffsetFlag.is_set()):
-            Offset=shared_float.value
-            if ( (Offset)>=0 and (Offset)<=4095):
-                cam.set_camera_param("Offset", int(Offset))
-            shared_float.value=int(cam.QCam_GetParam(cam.PARAM_KEYS["Offset"])[1])
-            shared_flag_int.value=1
-            SetOffsetFlag.clear()
-        if(SetCalibrationEvent.is_set()):
-            CalibrationFile=Cam_Calibtation['CalibrationFile']
-            if os.path.exists(CalibrationFile):
-                shared_int.value=0
-            else:
-                shared_int.value=-1
-            # I am not sure how to set the calibration file on this camera i will work it out when i need to
-            shared_int.value=-1
-            SetCalibrationEvent.clear()
-            
+        if not enable:
+            offset_x = 0
+            offset_y = 0
+            width = ccd_width
+            height = ccd_height
+        else:
+            offset_x = self.offset_x if offset_x is None else offset_x
+            offset_y = self.offset_y if offset_y is None else offset_y
+            width = self.width if width is None else width
+            height = self.height if height is None else height
 
-            
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
-    cv2.destroyAllWindows()
-    shm.close()
-    cam.close_camera()
-    cam.release_driver()
- 
+        if snap_values:
+            offset_x = snap_to_value(offset_x, 1, mode, minimum=0)
+            offset_y = snap_to_value(offset_y, 1, mode, minimum=0)
+            width = snap_to_value(width, 1, mode, minimum=1)
+            height = snap_to_value(height, 1, mode, minimum=1)
+
+        width = min(int(width), ccd_width)
+        height = min(int(height), ccd_height)
+        offset_x = min(max(int(offset_x), 0), ccd_width - width)
+        offset_y = min(max(int(offset_y), 0), ccd_height - height)
+
+        self._set_param("ROI X", offset_x, clamp=False)
+        self._set_param("ROI Y", offset_y, clamp=False)
+        self._set_param("ROI Width", width, clamp=False)
+        self._set_param("ROI Height", height, clamp=False)
+        self.cam.setup_camera()
+        return self.GetROI()
+
+    def GetROI(self):
+        self.offset_x = self._get_param("ROI X")
+        self.offset_y = self._get_param("ROI Y")
+        self.width = self._get_info("Image Width")
+        self.height = self._get_info("Image Height")
+        self.Nx = self.width
+        self.Ny = self.height
+        return self.offset_x, self.offset_y, self.width, self.height
+
+    def GetFrameID(self):
+        return self.frame_id
+
+    def GetFrame(self, timeout_ms=None):
+        raw_frame = self.cam.grab_frame()
+        if raw_frame is None:
+            raise RuntimeError("QCam_GrabFrame returned no frame")
+
+        self.frame_id = int(raw_frame.frameNumber)
+        byte_count = int(raw_frame.size or raw_frame.bufferSize)
+        pixel_count = int(raw_frame.width * raw_frame.height)
+        bytes_per_pixel = max(1, byte_count // max(1, pixel_count))
+        dtype = np.uint16 if int(raw_frame.bits) > 8 or bytes_per_pixel > 1 else np.uint8
+
+        p_buffer = ctypes.cast(raw_frame.pBuffer, ctypes.POINTER(ctypes.c_char * byte_count))
+        frame = np.frombuffer(p_buffer.contents, dtype=dtype, count=pixel_count)
+        return frame.reshape(int(raw_frame.height), int(raw_frame.width)).copy()
+
+
+QImagCamraObject = CameraObject
+QImagCameraObject = CameraObject

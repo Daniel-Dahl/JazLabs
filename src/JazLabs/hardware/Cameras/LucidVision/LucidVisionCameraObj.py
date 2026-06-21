@@ -1,409 +1,470 @@
-# import Lab_Equipment.Config.config as config
-from Lab_Equipment.Config import config 
-import numpy as np
-import matplotlib.pyplot as plt
-import multiprocessing
-from multiprocessing import shared_memory
-import copy
-import cv2
-import time
+import atexit
 import ctypes
-import Lab_Equipment.Camera.CameraObject as CamForm
-import os
-import sys
-import pip
-import arena_api
-import arena_api.system
+import time
+import weakref
 
-# from vimba import * this is the old version 
-class LucidVisCameraObject():
-    def __init__(self,CameraIdx=0,CalibrationFile=None,PixelSize=5e-6):
-        super().__init__() # inherit from parent class  
-        devices = arena_api.system.system.create_device()
-        device = devices[CameraIdx]
-        CameraProperties = device.nodemap
-        self.Nx=CameraProperties['Width'].max
-        self.Ny=CameraProperties['Height'].max
-        
-        # set the frame grabing properties
-        CameraProperties["AcquisitionMode"].value = "Continuous"
-        CameraProperties["TriggerMode"].value = "On"
-        CameraProperties["TriggerSource"].value = "Software"
+import numpy as np
 
-        CameraProperties["ExposureAuto"].value = "Off"
-        min_exp = CameraProperties["ExposureTime"].min
-        max_exp = CameraProperties["ExposureTime"].max
-        print("Min Exposure= ",min_exp)
-        print("Max Exposure= ",max_exp)
 
-        CameraProperties["ExposureTime"].value = (min_exp + max_exp) / 2
-        ExposureTime=CameraProperties["ExposureTime"].value
-        CameraProperties['PixelFormat'].value = 'Mono12'
-        
-        device.start_stream()
-        
-        CameraProperties["TriggerSoftware"].execute()   # camera takes one exposure
-        image_buffer = device.get_buffer()
-        if CameraProperties['PixelFormat'].value == 'Mono12':
-            frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ushort))
-        else :
-            frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ubyte))
-            
-        nparray_reshaped = np.ctypeslib.as_array(frame_ptr,(image_buffer.height, image_buffer.width))
-        frame=copy.deepcopy(nparray_reshaped)
-        device.requeue_buffer(image_buffer)
-        
-        frame =CamForm.adjust_array_dimensions(frame)
-        Framedtype=frame.dtype
-        FrameDim=frame.shape
-        FrameHeight = int(FrameDim[0])
-        FrameWidth = int(FrameDim[1])
-        FrameBuffer =CamForm.adjust_array_dimensions(np.squeeze((frame)))
-        plt.imshow(FrameBuffer, cmap='gray')
-        device.stop_stream()
-        arena_api.system.system.destroy_device()
-   
-        
+def snap_to_value(value, step, mode="nearest", minimum=0):
+    value = int(value)
+    step = int(step)
+    minimum = int(minimum)
 
-        self.CamObject=CamForm.GeneralCameraObject("LucidVisionCamera",CalibrationFile,self.Nx,self.Ny,FrameWidth,FrameHeight,FrameDim,Framedtype,FrameBuffer,PixelSize,ExposureTime,0,0,0,0,CameraName=CameraIdx)
-        self.CamProcess= CamForm.start_FrameCaptureThread(self.CamObject,LucidVisionFrameCaptureThread)
-        
-                          
-       
-    def __del__(self):
-        """Destructor to disconnect from camera."""
-        print(self.CamObject.CameraType +" Class has been destroyed")
-        self.CamObject.terminateCamera.set()# stop the camera thread
-        self.CamObject.shm.close() # close access to shared memory
-        self.CamObject.shm_digholo.close() # close access to shared memory
-        self.CamProcess.terminate()
-        self.CamObject.shm.unlink() # clean up the shared memory space
-        self.CamObject.shm_digholo.unlink() # clean up the shared memory space
+    if step <= 0:
+        return value
 
-# so this camera SDK is so fucking shit interms of examples and I have no idea how to chnage
-# the tigger so had to look at the text commands in the gui and these were the commands
-# so put them in a function like a normal person  
-def GetTriggerMode(CameraProperties):
-    # set external trigger
-    response=CameraProperties["TriggerSource"].value
-    if  response == 'Software':
-        mode=0   
+    rel = value - minimum
+    if mode == "nearest":
+        snapped = minimum + round(rel / step) * step
+    elif mode == "floor":
+        snapped = minimum + (rel // step) * step
+    elif mode == "ceil":
+        snapped = minimum + ((rel + step - 1) // step) * step
     else:
-        mode=1
-    return mode
+        raise ValueError("mode must be 'nearest', 'floor', or 'ceil'")
 
-def SetTriggerMode(device,CameraProperties,triggermode):
-    device.stop_stream()
-    if triggermode==0:
-        # set software trigger
-        CameraProperties["AcquisitionMode"].value = "Continuous"
-        CameraProperties["TriggerMode"].value = "On"
-        CameraProperties["TriggerSource"].value = "Software"
-    elif triggermode==1:
-        # set external trigger
-        CameraProperties["AcquisitionMode"].value = "Continuous"
-        CameraProperties["TriggerMode"].value = "On"
-        CameraProperties["TriggerSource"].value = "Line0"
-        
-    elif triggermode==-1:
-        CameraProperties["TriggerMode"].value = "Off"
-    device.start_stream()
-    
-def snap_to_value(x,snap_value, mode='nearest'):
+    return int(max(snapped, minimum))
+
+
+def _shutdown_camera_ref(camera_ref):
+    camera = camera_ref()
+    if camera is not None:
+        camera.shutdown()
+
+
+class CameraObject:
     """
-    Snap x to a multiple of 32.
-    mode: 'nearest' (ties up), 'up' (ceiling), or 'down' (floor).
-    Returns int.
+    Simple Lucid Vision camera object using the Arena Python API.
+
+    This follows the public API style used by the FLIR and PointGrey wrappers:
+    direct camera control, NumPy frames, and no multiprocessing/display code.
     """
-    x = float(x)
-    if mode == 'up':
-        return int(snap_value * np.ceil(x / snap_value))
-    if mode == 'down':
-        return int(snap_value * np.floor(x / snap_value))
-    # nearest (ties go up)
-    down = snap_value * np.floor(x / snap_value)
-    up   = down + snap_value
-    return int(up if (x - down) >= (up - x) else down)
 
-        
-def LucidVisionFrameCaptureThread(queue,Cam_Calibtation,SetCalibrationEvent,
-                             CameraIdx,GetFrameFlag,GetFrameFlag_digholo,terminateCamFlag,FrameObtained,
-                             shared_memory_name,shared_memory_name_digholo,FrameHeight,FrameWidth,RIO_xpoint,RIO_ypoint,ClipFrame,
-                             ResetFrameMemFlag,CleanFrameMemFlag,SetRIOFlag,SetDisplayWindowScaleFlag,
-                                   SetExposureFlag,SetfpsFlag,SetTriggerFlag,SetGainFlag,SetBiasStateFlag,SetClearCamBufferFlag,
-                                   SetInternalFrameBufferSizeFlag,SetReSetCameraFlag,
-                                   SetFrameClipingMinFlag,SetFrameClipingMaxFlag,
-                                   SetFrameCaptureDelayFlag,ContinuesMode,SingleFrameMode,DoorBell,FrameCaptured,
-                                   shared_float,shared_int,shared_flag_int):
-    # Setup Shared memory
-    # queue.put("testa")   
-    shm = shared_memory.SharedMemory(name=shared_memory_name)
-    frame_buffer = np.ndarray((FrameHeight.value, FrameWidth.value), dtype=np.uint16, buffer=shm.buf) 
-    
-    shm_digholo = shared_memory.SharedMemory(name=shared_memory_name_digholo)
-    frame_buffer_digholo = np.ndarray((FrameHeight.value, FrameWidth.value), dtype=np.uint16, buffer=shm_digholo.buf) 
-    # Need to make a empty array so that a pointer can be made to get the frame from Xenics getframe
-    frame= np.zeros((FrameHeight.value, FrameWidth.value),dtype=np.uint16)
-    devices = arena_api.system.system.create_device()
-    device = devices[CameraIdx]
-    CameraProperties = device.nodemap
-    
-    # Set up the intial properties of the camera
-    CameraProperties["AcquisitionMode"].value = "Continuous"
-    CameraProperties["TriggerMode"].value = "Off"
-    CameraProperties["TriggerSource"].value = "Software"
-    CameraProperties["ExposureAuto"].value = "Off"
-    ExposureTimeMin=CameraProperties["ExposureTime"].min 
-    ExposureTimeMax=CameraProperties["ExposureTime"].max 
-    
-    minfps=CameraProperties["AcquisitionFrameRate"].min 
-    maxfps=CameraProperties["AcquisitionFrameRate"].max
+    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=5e-6, verbose=False):
+        self.CameraIdx = int(CameraIdx)
+        self.CalibrationFile = CalibrationFile
+        self.PixelSize = PixelSize
+        self.verbose = bool(verbose)
 
-    ContinuesMode.set()
-    opencvWindowName="Lucid Vision Camera Image"
-    settriggermode=0
-    frameMinClip=0
-    frameMaxClip=0
-    scale=1
-    DisplayFrameInSingleCapature=True
-    device.start_stream(10)
-    
-    while not terminateCamFlag.is_set():
-        if (ContinuesMode.is_set()):
-            device.stop_stream()
-            CameraProperties["TriggerMode"].value = "Off"
-            device.start_stream(10)
-            image_buffer = device.get_buffer()
-            if CameraProperties['PixelFormat'].value == 'Mono12':
-                frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ushort))
-            else :
-                frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ubyte))
-                
-            nparray_reshaped = np.ctypeslib.as_array(frame_ptr,(image_buffer.height, image_buffer.width))
-            frame=copy.deepcopy(nparray_reshaped)
-            device.requeue_buffer(image_buffer)
-            Frame_int =CamForm.adjust_array_dimensions(frame)
-            if ClipFrame.value:
-                Frame_int =CamForm.clip_frame(Frame_int,
-                                              vmin_percent=frameMinClip,
-                                              vmax_percent=frameMaxClip)
-                Frame_intFordisplay = CamForm.rescaleFrame_256(Frame_int)
+        self._closed = False
+        self._capturing = False
+        self.grab_timeout_ms = 1000
+
+        from arena_api.system import system
+
+        self.system = system
+        self.devices = self.system.create_device()
+        self.num_cameras = len(self.devices)
+
+        print(f"{self.num_cameras} cameras detected:")
+        for k, device in enumerate(self.devices):
+            print(f"{k}: Lucid Vision camera {k}")
+        print(f"Using camera {self.CameraIdx}")
+
+        if self.num_cameras <= 0:
+            self.shutdown()
+            raise RuntimeError("No Lucid Vision cameras detected")
+        if self.CameraIdx < 0 or self.CameraIdx >= self.num_cameras:
+            self.shutdown()
+            raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
+
+        self.device = self.devices[self.CameraIdx]
+        self.node_map = self.device.nodemap
+
+        self.trigger_mode = "Off"
+        self.trigger_source = "FreeRun"
+        self.trigger_selector = "FrameStart"
+        self.acquisition_mode = "Continuous"
+        self.trigger_polarity = 1
+
+        self.offset_x = 0
+        self.offset_y = 0
+        self.width = 0
+        self.height = 0
+        self.Nx = 0
+        self.Ny = 0
+
+        self.ExposureTime = None
+        self.ExposureTimeMin = None
+        self.ExposureTimeMax = None
+        self.FPSMin = None
+        self.FPSMax = None
+        self.fps = None
+        self.gain = None
+        self.pixel_format = None
+        self.pixel_format_fc2 = None
+        self.frame_id = None
+
+        self.SetContinuousMode()
+        self.GetROI()
+        self.GetExposureTime()
+        self.GetGain()
+        self.GetFPS()
+        self.GetPixelFormat()
+        self.GetMaxMinFPS_ExposureTime()
+        self.SetPixelFormat("mono16")
+        self.StartAcquisition()
+
+        atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
+    def __del__(self):
+        self.shutdown()
+
+    def shutdown(self):
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
+
+        try:
+            self.StopAcquisition()
+        finally:
+            try:
+                self.system.destroy_device(self.device)
+            except TypeError:
+                self.system.destroy_device()
+            except Exception:
+                pass
+
+    def _node(self, name):
+        return self.node_map[name]
+
+    def _get_value(self, name):
+        return self._node(name).value
+
+    def _set_value(self, name, value):
+        self._node(name).value = value
+
+    def _execute(self, name):
+        self._node(name).execute()
+
+    def _limits(self, name, default_step=1):
+        node = self._node(name)
+        minimum = int(getattr(node, "min", 0))
+        maximum = int(getattr(node, "max", node.value))
+        step = int(getattr(node, "inc", default_step) or default_step)
+        return minimum, maximum, step
+
+    def StartAcquisition(self):
+        if not self._capturing:
+            self.device.start_stream()
+            self._capturing = True
+
+    def StopAcquisition(self):
+        if self._capturing:
+            self.device.stop_stream()
+            self._capturing = False
+
+    def ResetCamera(self):
+        self.StopAcquisition()
+        time.sleep(0.05)
+        self.StartAcquisition()
+        self.ResetBuffer()
+
+    def ResetBuffer(self):
+        self.frame_id = None
+
+    def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
+        if not self._capturing:
+            return 0
+
+        drained = 0
+        for _ in range(int(max_frames)):
+            image_buffer = None
+            try:
+                image_buffer = self.device.get_buffer(timeout=timeout_ms)
+                drained += 1
+            except TypeError:
+                try:
+                    image_buffer = self.device.get_buffer()
+                    drained += 1
+                except Exception:
+                    break
+            except Exception:
+                break
+            finally:
+                if image_buffer is not None:
+                    self.device.requeue_buffer(image_buffer)
+
+        self.frame_id = None
+        return drained
+
+    def SetBufferSizeInNumberOfFrames(self, n_frames):
+        raise NotImplementedError("Arena stream buffer sizing is not implemented in this wrapper.")
+
+    def GetBufferSizeInNumberOfFrames(self):
+        return None
+
+    def GetNumberOfFramesInBuffer(self):
+        return None
+
+    def GetGrabTimeout(self):
+        return int(self.grab_timeout_ms)
+
+    def SetGrabTimeout(self, timeout_ms):
+        self.grab_timeout_ms = int(timeout_ms)
+        return self.GetGrabTimeout()
+
+    def IsSoftwareTriggerReady(self):
+        try:
+            return bool(self._get_value("SoftwareTriggerIsBusy") is False)
+        except Exception:
+            return True
+
+    def WaitForSoftwareTriggerReady(self, timeout_ms=1000, poll_interval_s=0.001):
+        deadline = time.perf_counter() + (float(timeout_ms) * 1e-3)
+        while True:
+            if self.IsSoftwareTriggerReady():
+                return True
+            if timeout_ms is not None and time.perf_counter() >= deadline:
+                raise TimeoutError(f"Timed out waiting {timeout_ms} ms for Lucid software trigger ready")
+            time.sleep(poll_interval_s)
+
+    def GetTriggerMode(self):
+        self.trigger_mode = self._get_value("TriggerMode")
+        self.trigger_selector = self._get_value("TriggerSelector")
+        self.acquisition_mode = self._get_value("AcquisitionMode")
+
+        if self.trigger_mode == "Off":
+            self.trigger_source = "FreeRun"
+        else:
+            source = self._get_value("TriggerSource")
+            self.trigger_source = "line " + source[4:] if source.startswith("Line") else source
+
+        return self.trigger_mode, self.trigger_source
+
+    def SetContinuousMode(self):
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set_value("AcquisitionMode", "Continuous")
+            self._set_value("TriggerSelector", "FrameStart")
+            self._set_value("TriggerMode", "Off")
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def SetSoftwareTriggerMode(self):
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set_value("AcquisitionMode", "Continuous")
+            self._set_value("TriggerSelector", "FrameStart")
+            self._set_value("TriggerSource", "Software")
+            self._set_value("TriggerMode", "On")
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        self.ResetBuffer()
+        self.DrainImageBuffer()
+        return self.GetTriggerMode()
+
+    def FireSoftwareTrigger(self, wait_ready=True, ready_timeout_ms=1000, drain_stale_frames=True):
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            self.GetTriggerMode()
+        if self.trigger_mode != "On" or self.trigger_source != "Software":
+            raise RuntimeError("Camera is not in software trigger mode")
+
+        if drain_stale_frames:
+            self.DrainImageBuffer()
+        if wait_ready:
+            self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
+
+        self._execute("TriggerSoftware")
+        return 0
+
+    def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set_value("AcquisitionMode", "Continuous")
+            self._set_value("TriggerSelector", "FrameStart")
+            self._set_value("TriggerSource", f"Line{int(lineNumber)}")
+            self._set_value("TriggerMode", "On")
+            self._set_value("TriggerActivation", "RisingEdge" if RiseEdgeOrFallEdge == 1 else "FallingEdge")
+            self.trigger_polarity = 1 if RiseEdgeOrFallEdge == 1 else -1
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        self.ResetBuffer()
+        return self.GetTriggerMode()
+
+    def SetExposureTime(self, exposure_time):
+        self.GetMaxMinFPS_ExposureTime()
+        exposure_time = max(self.ExposureTimeMin, min(float(exposure_time), self.ExposureTimeMax))
+
+        try:
+            self._set_value("ExposureAuto", "Off")
+        except Exception:
+            pass
+        self._set_value("ExposureTime", exposure_time)
+        self.ExposureTime = self.GetExposureTime()
+        return self.ExposureTime
+
+    def GetExposureTime(self):
+        self.ExposureTime = float(self._get_value("ExposureTime"))
+        return self.ExposureTime
+
+    def SetGain(self, gain):
+        gain_min = float(getattr(self._node("Gain"), "min", gain))
+        gain_max = float(getattr(self._node("Gain"), "max", gain))
+        gain = max(gain_min, min(float(gain), gain_max))
+
+        try:
+            self._set_value("GainAuto", "Off")
+        except Exception:
+            pass
+        self._set_value("Gain", gain)
+        self.gain = self.GetGain()
+        return self.gain
+
+    def GetGain(self):
+        self.gain = float(self._get_value("Gain"))
+        return self.gain
+
+    def SetFPS(self, fps):
+        self.GetMaxMinFPS_ExposureTime()
+        fps = max(self.FPSMin, min(float(fps), self.FPSMax))
+
+        try:
+            self._set_value("AcquisitionFrameRateEnable", True)
+        except Exception:
+            pass
+        self._set_value("AcquisitionFrameRate", fps)
+        self.fps = self.GetFPS()
+        return self.fps
+
+    def GetFPS(self):
+        self.fps = float(self._get_value("AcquisitionFrameRate"))
+        return self.fps
+
+    def GetMaxMinFPS_ExposureTime(self):
+        exp_node = self._node("ExposureTime")
+        fps_node = self._node("AcquisitionFrameRate")
+        self.ExposureTimeMin = float(getattr(exp_node, "min", 0.0))
+        self.ExposureTimeMax = float(getattr(exp_node, "max", self.ExposureTimeMin))
+        self.FPSMin = float(getattr(fps_node, "min", 0.0))
+        self.FPSMax = float(getattr(fps_node, "max", self.FPSMin))
+        return self.ExposureTimeMin, self.ExposureTimeMax, self.FPSMin, self.FPSMax
+
+    def SetPixelFormat(self, pixel_format):
+        if isinstance(pixel_format, str):
+            pixel_format_key = pixel_format.strip().lower()
+            formats = {
+                "mono8": "Mono8",
+                "mono10": "Mono10",
+                "mono12": "Mono12",
+                "mono16": "Mono16",
+            }
+            if pixel_format_key not in formats:
+                raise ValueError("pixel_format must be one of: mono8, mono10, mono12, mono16")
+            pixel_format_symbol = formats[pixel_format_key]
+        else:
+            raise TypeError("pixel_format must be a string")
+
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set_value("PixelFormat", pixel_format_symbol)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        return self.GetPixelFormat()
+
+    def GetPixelFormat(self):
+        self.pixel_format_fc2 = self._get_value("PixelFormat")
+        self.pixel_format = str(self.pixel_format_fc2).lower()
+        return self.pixel_format
+
+    def SetROI(self, offset_x=None, offset_y=None, width=None, height=None, snap_values=True, enable=True, mode="nearest"):
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+
+        try:
+            width_min, width_max, width_step = self._limits("Width")
+            height_min, height_max, height_step = self._limits("Height")
+            offset_x_min, offset_x_max, offset_x_step = self._limits("OffsetX")
+            offset_y_min, offset_y_max, offset_y_step = self._limits("OffsetY")
+
+            if not enable:
+                offset_x = offset_x_min
+                offset_y = offset_y_min
+                width = width_max
+                height = height_max
             else:
-                Frame_intFordisplay=np.copy(Frame_int)
-            if scale!=1:
-                Frame_intFordisplay = cv2.resize(Frame_intFordisplay, 
-                                                (int(FrameWidth.value*scale), int(FrameHeight.value*scale)), interpolation=cv2.INTER_LINEAR)
-            cv2.imshow(opencvWindowName, Frame_intFordisplay)
+                offset_x = self._get_value("OffsetX") if offset_x is None else offset_x
+                offset_y = self._get_value("OffsetY") if offset_y is None else offset_y
+                width = self._get_value("Width") if width is None else width
+                height = self._get_value("Height") if height is None else height
 
-            if ( GetFrameFlag.is_set() ):
-                np.copyto(frame_buffer, Frame_int)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-            # I am not really worried about getting the latest frame just want to see something updating on the digholo
-            if ( GetFrameFlag_digholo.is_set() ):
-                np.copyto(frame_buffer_digholo, Frame_int)
-                GetFrameFlag_digholo.clear()
-                
-        elif(SingleFrameMode.is_set()):
-            # DoorBell.wait()
-            # DoorBell.clear()
-            device.stop_stream()
-            CameraProperties["TriggerMode"].value = "On"
-            device.start_stream()
-            if ( GetFrameFlag.is_set() ):
-                if settriggermode==0:
-                    CameraProperties["TriggerSoftware"].execute()   # camera takes one exposure
-                    image_buffer = device.get_buffer()
-                    if CameraProperties['PixelFormat'].value == 'Mono12':
-                        frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ushort))
-                    else :
-                        frame_ptr = ctypes.cast(image_buffer.pdata,ctypes.POINTER(ctypes.c_ubyte))
-                        
-                    nparray_reshaped = np.ctypeslib.as_array(frame_ptr,(image_buffer.height, image_buffer.width))
-                    frame=copy.deepcopy(nparray_reshaped)
-                    device.requeue_buffer(image_buffer)
-                    Frame_int =CamForm.adjust_array_dimensions(frame)
-                elif settriggermode==1:
-                    # I am not implementing this today but will get around to it. should do it in a similar way to the firstlight camera which resets the buffer count to the number of triggered frames
-                    pass
-                
-                np.copyto(frame_buffer, Frame_int)
-                
-                if DisplayFrameInSingleCapature:
-                    Frame_intFordisplay = cv2.resize(Frame_int, 
-                                                (int(FrameWidth.value*scale), int(FrameHeight.value*scale)), 
-                                                interpolation=cv2.INTER_LINEAR)
-                    cv2.imshow(opencvWindowName, Frame_intFordisplay)
-                FrameObtained.value=1
-                GetFrameFlag.clear()
-            # FrameCaptured.set()
-                
+            if snap_values:
+                width = snap_to_value(width, width_step, mode, minimum=width_min)
+                height = snap_to_value(height, height_step, mode, minimum=height_min)
+                width = min(width, width_max)
+                height = min(height, height_max)
 
-            if ( GetFrameFlag_digholo.is_set() ):
-                np.copyto(frame_buffer_digholo, Frame_int)
-                GetFrameFlag_digholo.clear()
-                
-                
-        if(SetClearCamBufferFlag.is_set()):
-            # not sure if there is a eviqualent command for lucid vision cameras but this is to clear the buffer
-            SetClearCamBufferFlag.clear()
-            
-        if(SetExposureFlag.is_set()):
-            ExposureTime=shared_float.value
-            # if ( (ExposureTime)>=ExposureTimeMin and (ExposureTime)<ExposureTimeMax ):
-                #Need to set some prameters up 
-            if ExposureTime<ExposureTimeMin:
-                ExposureTime=ExposureTimeMin
-            if ExposureTime>ExposureTimeMax:
-                ExposureTime=ExposureTimeMax    
-            CameraProperties["ExposureTime"].value = ExposureTime
-            shared_float.value=CameraProperties["ExposureTime"].value
-            SetExposureFlag.clear()
-            
-        if(SetfpsFlag.is_set()):
-            fps=shared_float.value
-            if fps<minfps:
-                fps=minfps
-            if fps>maxfps:
-                fps=maxfps    
-            CameraProperties["AcquisitionFrameRate"].value = fps
-            shared_float.value=CameraProperties["AcquisitionFrameRate"].value
-            SetfpsFlag.clear()
-        
-        if(SetFrameClipingMinFlag.is_set()):
-            # frameMinClip=shared_int.value
-            # shared_int.value=frameMinClip
-            frameMinClip=shared_float.value
-            shared_float.value=frameMinClip
-            SetFrameClipingMinFlag.clear()
-            
-        if(SetFrameClipingMaxFlag.is_set()):
-            # frameMaxClip=shared_int.value
-            # shared_int.value=frameMaxClip
-            frameMaxClip=shared_float.value
-            shared_float.value=frameMaxClip
-            
-            SetFrameClipingMaxFlag.clear()
-            
-        if(SetTriggerFlag.is_set()):
-            triggermode=shared_int.value
-            SetTriggerMode(device,CameraProperties,triggermode)
-            settriggermode=GetTriggerMode(CameraProperties)
-            shared_int.value=settriggermode
-            # if we are setting the trigger mode to external we need to clear the buffer as this at the end 
-            # of a external trigger sequence of images we call the getframe to grab the 
-            if settriggermode==1:
-                # FliSdk_V2.ResetBuffer(cam_context)
-                # need to set the camera to single frame mode
-                # this is so that it does burn through the buffer and you lose frames that where externally triggered
-                ContinuesMode.clear()
-                SingleFrameMode.set()
+                max_offset_x = min(offset_x_max, width_max - width)
+                max_offset_y = min(offset_y_max, height_max - height)
+                offset_x = snap_to_value(offset_x, offset_x_step, mode, minimum=offset_x_min)
+                offset_y = snap_to_value(offset_y, offset_y_step, mode, minimum=offset_y_min)
+                offset_x = min(offset_x, snap_to_value(max_offset_x, offset_x_step, "floor", minimum=offset_x_min))
+                offset_y = min(offset_y, snap_to_value(max_offset_y, offset_y_step, "floor", minimum=offset_y_min))
 
-            SetTriggerFlag.clear()
-            
-        if(SetFrameCaptureDelayFlag.is_set()):
-            FrameCaptureDelay=shared_float.value
-            # commandstr="set syncdelay "+ str(FrameCaptureDelay)
-            # errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(cam_context, commandstr) 
-            # commandstr="syncdelay raw"
-            # _,SetFrameCaptureDelay = FliSdk_V2.FliSerialCamera.SendCommand(cam_context, commandstr)
-            shared_float.value=-1.0#float(SetFrameCaptureDelay)
+            self._set_value("OffsetX", offset_x_min)
+            self._set_value("OffsetY", offset_y_min)
+            self._set_value("Width", int(width))
+            self._set_value("Height", int(height))
+            self._set_value("OffsetX", int(offset_x))
+            self._set_value("OffsetY", int(offset_y))
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
 
-            SetFrameCaptureDelayFlag.clear()
-            
-        if(SetGainFlag.is_set()):
-            NewGain=shared_float.value
-            CameraProperties["GainAuto"].value = "Off"
-            CameraProperties["Gain"].value = NewGain
-            shared_float.value= CameraProperties["Gain"].value
-            SetGainFlag.clear()
-            
-                
-        if(SetBiasStateFlag.is_set()):
-            NewBias=shared_int.value
-            shared_int.value= -1
-            SetBiasStateFlag.clear()
-    
-        # I dont think this camera has internal frame buffer size setting but leaving here for now
-        if(SetInternalFrameBufferSizeFlag.is_set()):
-            NewInternalFrameBufferSize=shared_int.value
-            # FliSdk_V2.SetBufferSizeInImages(cam_context, NewInternalFrameBufferSize)
-            SetInternalFrameBufferSizeFlag.clear()
-            
-        if(SetReSetCameraFlag.is_set()):
-            # FliSdk_V2.Stop(cam_context)
-                    
-            # FliSdk_V2.Start(cam_context)
-            SetReSetCameraFlag.clear()
-            
-        if(CleanFrameMemFlag.is_set()):
-            shm.close()   
-            del frame_buffer
-            shm_digholo.close() 
-            del frame_buffer_digholo
-            del frame
-            CleanFrameMemFlag.clear()   
-        
-        if(SetRIOFlag.is_set()):
-            # This camera has certian value the the RIO points and frame size can be set to, it is very common in cameras for this.
-            # the x points and FrameHeight can only be int 32 values and y points be FrameWidth be int 4
-            RIO_xpoint.value=snap_to_value(RIO_xpoint.value,4, mode='nearest')
-            RIO_ypoint.value=snap_to_value(RIO_ypoint.value,2, mode='nearest')
-            FrameHeight.value=snap_to_value(FrameHeight.value,4, mode='nearest')
-            FrameWidth.value=snap_to_value(FrameWidth.value,2, mode='nearest')
-            
-            device.stop_stream()
-            CameraProperties['Width'].value=FrameWidth.value
-            CameraProperties['Height'].value=FrameHeight.value
-            CameraProperties['OffsetX'].value=RIO_xpoint.value
-            CameraProperties['OffsetY'].value=RIO_ypoint.value
-            device.start_stream()
-            
-            SetRIOFlag.clear() 
-        
-        if(ResetFrameMemFlag.is_set()):
-            shm = shared_memory.SharedMemory(name=shared_memory_name)
-            frame_buffer = np.ndarray((FrameHeight.value, FrameWidth.value), dtype=np.uint16, buffer=shm.buf) 
-            
-            shm_digholo = shared_memory.SharedMemory(name=shared_memory_name_digholo)
-            frame_buffer_digholo = np.ndarray((FrameHeight.value, FrameWidth.value), dtype=np.uint16, buffer=shm_digholo.buf) 
-            # Need to make a empty array so that a pointer can be made to get the frame from Xenics getframe
-            frame= np.zeros((FrameHeight.value, FrameWidth.value),dtype=np.uint16)
-            
-            ResetFrameMemFlag.clear() 
-        if(SetDisplayWindowScaleFlag.is_set()):
-            scale=shared_float.value
-            cv2.resizeWindow(opencvWindowName, int(FrameHeight.value*scale), int(FrameWidth.value*scale))
-            SetDisplayWindowScaleFlag.clear()
+        return self.GetROI()
 
-       
-          
+    def GetROI(self):
+        self.offset_x = int(self._get_value("OffsetX"))
+        self.offset_y = int(self._get_value("OffsetY"))
+        self.width = int(self._get_value("Width"))
+        self.height = int(self._get_value("Height"))
+        self.Nx = self.width
+        self.Ny = self.height
+        return self.offset_x, self.offset_y, self.width, self.height
 
-        
-            
-        # if(SetCalibrationEvent.is_set()):
-        #     CalibrationFile=Cam_Calibtation["CalibrationFilename"]
-        #     # queue.put(CalibrationFile)
-        #     if os.path.exists(CalibrationFile):
-        #         load_calibration(Cam_handdle,CalibrationFile)
-        #         shared_int.value=0
-        #     else:
-        #         shared_int.value=-1
-        #     SetCalibrationEvent.clear()
+    def GetFrameID(self):
+        return self.frame_id
+
+    def GetFrame(self, timeout_ms=None):
+        image_buffer = None
+        if timeout_ms is None:
+            timeout_ms = self.grab_timeout_ms
+
+        try:
+            try:
+                image_buffer = self.device.get_buffer(timeout=int(timeout_ms))
+            except TypeError:
+                image_buffer = self.device.get_buffer()
+
+            self.frame_id = getattr(image_buffer, "frame_id", None)
+            pixel_format = self.GetPixelFormat()
+            c_type = ctypes.c_ubyte if pixel_format == "mono8" else ctypes.c_ushort
+            frame_ptr = ctypes.cast(image_buffer.pdata, ctypes.POINTER(c_type))
+            frame = np.ctypeslib.as_array(frame_ptr, (image_buffer.height, image_buffer.width)).copy()
+            return frame
+        finally:
+            if image_buffer is not None:
+                self.device.requeue_buffer(image_buffer)
 
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
-    cv2.destroyAllWindows()
-    device.stop_stream()
-    arena_api.system.system.destroy_device()
-
-
-    shm.close() 
-    shm_digholo.close() 
-    
-
-    # XC_SetPropertyValueF(handle, "SETTLE", (double)temperatureGoal, "k");
-	# 	XC_SetPropertyValueL(handle, "Fan", (long)tecEnabled, "bool");
+LucidVisCameraObject = CameraObject

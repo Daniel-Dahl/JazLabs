@@ -79,11 +79,21 @@ class SLMZMQServer:
 
     def _open_slm(self):
         slmobj = self._load_slm_module()
-        return slmobj.SLMObject(
-            board_number_in=1,
-            RefreshRate=self.RefreshRate,
-            LutFile=self.LutFile,
-        )
+        slm_kwargs = {
+            "board_number_in": 1,
+            "RefreshRate": self.RefreshRate,
+        }
+        if self.LutFile is not None:
+            slm_kwargs["LutFile"] = self.LutFile
+        return slmobj.SLMObject(**slm_kwargs)
+
+    @staticmethod
+    def _int_from_ctypes_or_int(value, default=0):
+        if value is None:
+            return int(default)
+        if hasattr(value, "value"):
+            return int(value.value)
+        return int(value)
 
     def run_forever(self):
         context = None
@@ -118,7 +128,9 @@ class SLMZMQServer:
             viewer_arr.fill(0)
 
             active_controller = None
-            output_pulse_image_flip = 0
+            output_pulse_image_flip = self._int_from_ctypes_or_int(
+                getattr(slmOBJ, "OutputPulseImageFlip", 0)
+            )
             last_display_success = False
             last_frame_id = 0
             last_write_time_ns = 0
@@ -265,7 +277,6 @@ class SLMZMQServer:
                         image_cube = np.ascontiguousarray(image_cube, dtype=np.uint8)
 
                         write_start_ns = time.perf_counter_ns()
-                        slmOBJ.OutputPulseImageFlip = int(output_pulse_image_flip)
                         display_ok = bool(slmOBJ.WriteImageToSLM(image_cube, channelIdx))
                         write_done_ns = time.perf_counter_ns()
 
@@ -298,7 +309,7 @@ class SLMZMQServer:
                             [
                                 self.display_topic.encode("utf-8"),
                                 json.dumps(publish_header).encode("utf-8"),
-                                memoryview(viewer_arr),
+                                viewer_arr.tobytes(),
                             ]
                         )
 

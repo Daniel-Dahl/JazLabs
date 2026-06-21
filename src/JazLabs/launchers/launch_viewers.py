@@ -4,12 +4,14 @@ import multiprocessing as mp
 import time
 
 from JazLabs.launchers.launch_camera_viewer import start_camera_viewers
+from JazLabs.launchers.config import load_config
 from JazLabs.launchers.launch_slm_viewer import start_slm_viewer
+from JazLabs.launchers.launch_slm_stack_viewer import start_slm_stack_viewer
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Open configured JazLabs viewers.")
-    parser.add_argument("target", choices=("all", "camera", "slm"))
+    parser.add_argument("target", choices=("all", "camera", "slm", "slm-stack"))
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--name", "--camera", dest="name", default=None)
     parser.add_argument("--viewer", action=argparse.BooleanOptionalAction, default=True)
@@ -36,6 +38,7 @@ def wait_for_processes(processes):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     mp.freeze_support()
+    config = load_config(args.config)
 
     processes = []
     if args.target in ("all", "camera"):
@@ -52,9 +55,22 @@ def main(argv=None):
             )
         )
 
-    if args.target in ("all", "slm"):
+    if args.target == "slm" or (
+        args.target == "all" and config.get("SLM_LINUX_SERVER", {}).get("enabled", True)
+    ):
         processes.extend(
             start_slm_viewer(
+                config_name=args.config,
+                zoom=args.slm_zoom,
+                fps=args.slm_fps,
+            )
+        )
+
+    if args.target == "slm-stack" or (
+        args.target == "all" and config.get("SLM_STACK_SERVER", {}).get("enabled", False)
+    ):
+        processes.extend(
+            start_slm_stack_viewer(
                 config_name=args.config,
                 zoom=args.slm_zoom,
                 fps=args.slm_fps,
