@@ -874,8 +874,15 @@ from pathlib import Path
 def get_digholo_library_path() -> str:
     """
     Return the absolute path to the digHolo shared library on the current OS.
-    On Windows we look in 'bin/Win64/digHolo.dll', on Linux in 'bin/Linux/digHolo.so'.
+    Set DIGHOLO_LIBRARY_PATH to override auto-detection.
     """
+    override = os.environ.get("DIGHOLO_LIBRARY_PATH")
+    if override:
+        override_path = Path(override).expanduser().resolve()
+        if override_path.exists():
+            return str(override_path)
+        raise FileNotFoundError(f"DIGHOLO_LIBRARY_PATH does not exist: {override_path}")
+
     base_dir = Path(__file__).resolve().parent.parent / "digHolo_v1.0.0" / "bin"
     system = platform.system()
     if system == "Windows":
@@ -899,10 +906,16 @@ def get_digholo_library_path() -> str:
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
-    raise FileNotFoundError(
-        "Could not find the digHolo shared library. Checked: "
-        + ", ".join(str(candidate) for candidate in candidates)
+    message = "Could not find the digHolo shared library. Checked: " + ", ".join(
+        str(candidate) for candidate in candidates
     )
+    if system == "Darwin":
+        message += (
+            ". On macOS, build it with "
+            "src/JazLabs/hardware/digHolo/digHolo_v1.0.0/build_macos_arm64_dylib.py "
+            "or set DIGHOLO_LIBRARY_PATH."
+        )
+    raise FileNotFoundError(message)
 
 dll_path = get_digholo_library_path()
 dll_dir = os.path.dirname(dll_path)
