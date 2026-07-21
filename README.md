@@ -88,7 +88,9 @@ The package defines launchers for common lab processes:
 
 ```text
 jazlabs-server-camera
+jazlabs-server-laser
 jazlabs-server-daq
+jazlabs-server-optical-switch
 jazlabs-server-slm-linux
 jazlabs-server-slm-windows
 jazlabs-server-slm-stack
@@ -96,8 +98,10 @@ jazlabs-bridge-camera
 jazlabs-bridge-daq
 jazlabs-view
 jazlabs-view-camera
+jazlabs-view-optical-switch
 jazlabs-view-slm
 jazlabs-view-slm-stack
+jazlabs-view-laser
 jazlabs-tmux
 ```
 
@@ -132,3 +136,35 @@ the same network.
 The exact client constructor depends on the instrument stack, so use the current
 examples and launcher configs as the reference until the examples are cleaned
 up.
+
+### Laser server and remote control
+
+Configure a laser entry in `src/JazLabs/launchers/configs/HDStokes.py`. Run the
+server on the computer connected to the laser (use `host="0.0.0.0"` when a
+remote client must connect):
+
+```bash
+jazlabs-server-laser --name tunable_laser
+```
+
+On the control computer, open the GUI by pointing it at that machine's address:
+
+```bash
+jazlabs-view-laser --name tunable_laser --host 192.168.1.25
+```
+
+The same controls are available from Python through `LaserClient`:
+
+```python
+from JazLabs.hardware.Lasers.Laser_Client import LaserClient
+
+with LaserClient(host="192.168.1.25", command_port=50931) as laser:
+    laser.set_wavelength_nm(1550.0)
+    laser.set_power_dbm(-10.0)
+    laser.laser_on()
+```
+
+The server supports the Anritsu MG963x, JDS tunable, Santec swept, and FYLA
+Horizon drivers. Drivers that do not implement wavelength or power control
+report those controls as unavailable in the GUI; the physical laser's
+interlock and operating procedures remain authoritative.

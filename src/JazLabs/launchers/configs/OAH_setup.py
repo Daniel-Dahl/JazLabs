@@ -36,6 +36,33 @@ CAMERA_SERVERS = [
     },
 ]
 
+OPTICAL_SWITCH_HOST = "127.0.0.1"
+
+OPTICAL_SWITCH_SERVERS = [
+    {
+        "name": "pol_switch",
+        "switch_type": "JDS_Pol",
+        "host": OPTICAL_SWITCH_HOST,
+        "command_port": 50835,
+        "serial_port": "/dev/ttyUSB0",
+        "serial_timeout": 2.0,
+        "rtscts": True,
+        "dsrdtr": True,
+        "enabled": True,
+    },
+    {
+        "name": "optical_switch",
+        "switch_type": "JDS_SC",
+        "host": OPTICAL_SWITCH_HOST,
+        "command_port": 50836,
+        "serial_port": "/dev/ttyUSB1",
+        "serial_timeout": 2.0,
+        "rtscts": True,
+        "dsrdtr": True,
+        "enabled": True,
+    },
+]
+
 SLM_SHM_NAME = "slm_linux_shared"
 
 SLM_LINUX_SERVER = {

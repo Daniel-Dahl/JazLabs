@@ -147,15 +147,53 @@ def daq_tasks(config_name, config, daq_name=None):
             )
 
 
+def optical_switch_tasks(config_name, config, switch_name=None):
+    switches = config.get("OPTICAL_SWITCH_SERVERS", [])
+    if switch_name is not None:
+        switches = [
+            switch for switch in switches if switch.get("name") == switch_name
+        ]
+        if not switches:
+            raise ValueError(f"No optical switch named {switch_name!r}")
+
+    python = os.environ.get("JAZLABS_OPTICAL_SWITCH_SERVER_PYTHON", sys.executable)
+    for switch in switches:
+        if switch.get("enabled", True):
+            name = switch["name"]
+            yield (
+                name,
+                module_command(
+                    "JazLabs.launchers.launch_optical_switch_server",
+                    [("--config", config_name), ("--name", name)],
+                    python,
+                ),
+            )
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Start JazLabs servers in tmux.")
     parser.add_argument(
         "target",
-        choices=("all", "camera", "slm-linux", "slm-windows", "slm-stack", "daq"),
+        choices=(
+            "all",
+            "camera",
+            "slm-linux",
+            "slm-windows",
+            "slm-stack",
+            "daq",
+            "optical-switch",
+        ),
         help="Server group to start.",
     )
     parser.add_argument("--config", default="default_lab")
-    parser.add_argument("--name", "--camera", "--daq", dest="name", default=None)
+    parser.add_argument(
+        "--name",
+        "--camera",
+        "--daq",
+        "--switch",
+        dest="name",
+        default=None,
+    )
     parser.add_argument("--session", default=None)
     parser.add_argument("--restart", action="store_true")
     return parser
@@ -170,7 +208,9 @@ def main(argv=None):
         tmux("kill-session", "-t", session)
 
     if args.target == "all" and args.name is not None:
-        raise SystemExit("--name can only be used when target is camera or daq.")
+        raise SystemExit(
+            "--name can only be used with camera, daq, or optical-switch."
+        )
 
     tasks = []
     if args.target in ("all", "camera"):
@@ -185,6 +225,9 @@ def main(argv=None):
     if args.target in ("all", "daq"):
         daq_name = args.name if args.target == "daq" else None
         tasks.extend(daq_tasks(args.config, config, daq_name))
+    if args.target in ("all", "optical-switch"):
+        switch_name = args.name if args.target == "optical-switch" else None
+        tasks.extend(optical_switch_tasks(args.config, config, switch_name))
 
     if not tasks:
         raise SystemExit("No enabled server tasks matched the request.")
