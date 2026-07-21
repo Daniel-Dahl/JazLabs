@@ -45,7 +45,7 @@ class LaserControlWindow:
         self.power_readback_var = tk.StringVar(value="--")
         self.wavelength_set_var = tk.StringVar()
         self.power_set_var = tk.StringVar()
-        self.power_units_var = tk.StringVar(value="dBm")
+        self.power_units_var = tk.StringVar(value="mW")
         self.wavelength_limits_var = tk.StringVar(value="Range: unknown")
 
         self._build_layout()
@@ -176,8 +176,9 @@ class LaserControlWindow:
             self.power_readback_var.set(
                 f"-- {units}" if power is None else f"{power:.6f} {units}"
             )
-            if units in ("dBm", "mW"):
-                self.power_units_var.set(units)
+            # Keep the user's selected setpoint units stable.  The hardware's
+            # readback units are shown beside the measured value, but polling
+            # must not overwrite the combobox selection every second.
             if output_enabled is None:
                 self.output_var.set("Output: unknown")
             elif output_enabled:

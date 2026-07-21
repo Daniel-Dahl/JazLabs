@@ -34,7 +34,9 @@ class LaserZMQServer:
         self.PollTimeoutMS = int(PollTimeoutMS)
         self.LaserFactory = LaserFactory
         self.Process = None
-        self.power_units = "dBm"
+        # Use mW as the initial display/setpoint unit.  Drivers that expose
+        # their actual hardware units may still report those in get_status().
+        self.power_units = "mW"
 
     def startProcess(self):
         if self.Process is not None and self.Process.is_alive():
