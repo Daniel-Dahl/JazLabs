@@ -210,6 +210,9 @@ __marimo__/
 .DS_Store
 **/.DS_Store
 
+# FFTW generated plan cache files
+FFTW_WISDOM*.txt
+
 /.claude/
 /temp/
 
