@@ -272,6 +272,7 @@ def plotSpots(icenter,frame,Centers,radiusApp,RelPwrOfSpots):
 
     # --- subplot 3
     ax3 = plt.subplot(1,4,3)
+    # frame[0:4,:]=0
     ax3.imshow(frame, cmap="gray")
     ax3.add_patch(mpatches.Circle((cx, cy), np.max(radiusApp),
                                 fill=False, edgecolor='red', linewidth=2))

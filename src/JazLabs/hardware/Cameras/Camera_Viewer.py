@@ -46,6 +46,35 @@ def GetHardwareRangeFromPixelFormat(pixel_format, frame=None):
     return 0, 65535
 
 
+def CountSaturatedPixels(frame, hw_max, image_x0=0, image_y0=0):
+    """
+    Count saturated image pixels while ignoring FirstLight frame-info pixels.
+
+    The CRED cameras can put metadata in the first 4 pixels of the first row.
+    Those values are not image intensity and can exceed the display saturation
+    threshold, so they should not drive the viewer saturation warning.
+    """
+    saturated = frame >= hw_max
+    valid = np.ones(frame.shape, dtype=bool)
+
+    frame_h, frame_w = frame.shape[:2]
+    ignore_y = -int(image_y0)
+
+    if 0 <= ignore_y < frame_h:
+        ignore_x0 = max(0, -int(image_x0))
+        ignore_x1 = min(frame_w, 4 - int(image_x0))
+
+        if ignore_x0 < ignore_x1:
+            valid[ignore_y, ignore_x0:ignore_x1] = False
+
+    valid_count = int(np.sum(valid))
+    if valid_count <= 0:
+        return 0, 0, 0.0
+
+    saturated_count = int(np.sum(saturated & valid))
+    return saturated_count, valid_count, saturated_count / valid_count
+
+
 def MapFrameToDisplay(
     frame,
     hw_min,
@@ -192,8 +221,7 @@ def AddInfoPanel(
     raw_min = np.min(raw_frame)
     raw_max = np.max(raw_frame)
 
-    saturated_pixels = int(np.sum(raw_frame >= hw_max))
-    saturated_fraction = saturated_pixels / raw_frame.size
+    saturated_pixels, _, saturated_fraction = CountSaturatedPixels(raw_frame, hw_max)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.45
@@ -254,8 +282,12 @@ def AddInfoPanel(
             )
 
             if roi_frame.size > 0:
-                roi_sat = int(np.sum(roi_frame >= hw_max))
-                roi_sat_frac = roi_sat / roi_frame.size
+                roi_sat, _, roi_sat_frac = CountSaturatedPixels(
+                    roi_frame,
+                    hw_max,
+                    image_x0=x0,
+                    image_y0=y0,
+                )
 
                 lines.append(
                     f"ROI x={x0}:{x1}, y={y0}:{y1} | "
@@ -264,9 +296,9 @@ def AddInfoPanel(
                     f"sat={100 * roi_sat_frac:.4f}%"
                 )
 
-    lines.append("q quit | +/- zoom | 0 reset | l log | a contrast | r reset contrast")
+    lines.append("q quit | +/- zoom | 0 reset | l log | v contrast | r reset contrast")
     lines.append("[/] min cap | ;/' max cap | c clear ROI")
-    lines.append("arrows move ROI | i/o x-size | y/u y-size | drag mouse ROI")
+    lines.append("wasd move ROI | i/o x-size | y/u y-size | drag mouse ROI")
 
     panel_height = margin * 2 + line_height * len(lines)
     panel = np.zeros((panel_height, image.shape[1], 3), dtype=np.uint8)
@@ -586,7 +618,7 @@ def CameraViewerProcess(
             elif key == ord("l"):
                 use_log_scale = not use_log_scale
 
-            elif key == ord("a"):
+            elif key == ord("v"):
                 use_manual_contrast = not use_manual_contrast
 
             elif key == ord("r"):
@@ -652,25 +684,22 @@ def CameraViewerProcess(
                 contrast_range = display_max - display_min
                 display_max += 0.05 * contrast_range
 
-            # Arrow keys.
-            # These key codes work on many Linux/OpenCV builds.
-            # Some systems may return different codes.
-            elif key in [81, 2424832]:  # left
+            elif key == ord("a"):  # left
                 if roi_centre is not None:
                     cy, cx = roi_centre
                     roi_centre = (cy, max(0, cx - roi_move_step))
 
-            elif key in [83, 2555904]:  # right
+            elif key == ord("d"):  # right
                 if roi_centre is not None:
                     cy, cx = roi_centre
                     roi_centre = (cy, min(frame_w - 1, cx + roi_move_step))
 
-            elif key in [82, 2490368]:  # up
+            elif key == ord("w"):  # up
                 if roi_centre is not None:
                     cy, cx = roi_centre
                     roi_centre = (max(0, cy - roi_move_step), cx)
 
-            elif key in [84, 2621440]:  # down
+            elif key == ord("s"):  # down
                 if roi_centre is not None:
                     cy, cx = roi_centre
                     roi_centre = (min(frame_h - 1, cy + roi_move_step), cx)

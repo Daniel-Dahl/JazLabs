@@ -1,4 +1,3 @@
-from Lab_Equipment.Config import config
 
 import cv2
 import numpy as np
@@ -55,7 +54,7 @@ def CovertCont2Desc(contValue,Distarr):
 # Start with unimodal f(x) and minimum in [a,b]
 # Input: function f, interval [a,b], number of steps k
 # Output: approximate minimum y
-def GoldenSelectionSearch(bracketVal_a,bracketVal_b,dspace_Tol,FuncToMinamise):
+def GoldenSelectionSearch(bracketVal_a,bracketVal_b,dspace_Tol,FuncToMinamise,Verbose=False):
     # xArr= TotalSpaceArr#= FieldSuperPixel(FieldToProb, PixelIdxRange,PhaseValue)
     iNumIterations=0
     goldenRation=(np.sqrt(5)-1)/2;
@@ -74,7 +73,8 @@ def GoldenSelectionSearch(bracketVal_a,bracketVal_b,dspace_Tol,FuncToMinamise):
     
     x1,f1=FuncToMinamise(x1);
     x2,f2=FuncToMinamise(x2);
-    print(f1,f2)
+    if Verbose:
+        print(f1,f2)
     # dspace = np.abs(x1Idx-x2Idx);
     dspace = np.abs(x1 - x2)
     dspace_Tol=1;
@@ -99,7 +99,8 @@ def GoldenSelectionSearch(bracketVal_a,bracketVal_b,dspace_Tol,FuncToMinamise):
             x2,f2=FuncToMinamise(x2);  # single function evaluation
         
         dspace = abs(x2-x1)
-        print(f1,f2,x1,x2,dspace)
+        if Verbose:
+            print(f1,f2,x1,x2,dspace)
         iNumIterations=iNumIterations+1 
           
     #Work out which one is the best value to take. This is kind of doing a y=(a+b)/2 but since we are dealing with integer we are not doing a half thing we are 

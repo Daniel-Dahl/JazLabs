@@ -17,13 +17,13 @@ plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
 from typing import List
 
-import pwi_inst.utils.camera_utils as cam_utils
-import pwi_inst.hardware.SLM.SLM_ServerLinux as SLM_Serverlib
-import pwi_inst.hardware.Cameras.Camera_Client as CamClientlib
-import pwi_inst.hardware.SLM.PhaseMaskClass as PhaseMaskClass
-import pwi_inst.utils.GenerateSimplePhaseMasks as SimpMaskLib
-import  pwi_inst.utils.AlignmentFunctions as AlignFunc
-import pwi_inst.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
+import JazLabs.utils.camera_utils as cam_utils
+import JazLabs.hardware.SLM.SLM_ServerLinux as SLM_Serverlib
+import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
+import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
+import JazLabs.utils.GenerateSimplePhaseMasks as SimpMaskLib
+import  JazLabs.utils.AlignmentFunctions as AlignFunc
+import JazLabs.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
 
 
 def periodic_strip_mask_1(mask_shape, strip_width=10, strip_value=1, orientation='x'):
