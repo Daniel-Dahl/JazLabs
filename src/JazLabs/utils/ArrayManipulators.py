@@ -1,5 +1,5 @@
 import numpy as np
-def apply_circular_aperture(array, center, radius, fill_value=0):
+def apply_circular_aperture(array, center, radius, fill_value=0,Invert=False):
     """
     Apply a circular aperture to a 2D numpy array.
     
@@ -23,8 +23,10 @@ def apply_circular_aperture(array, center, radius, fill_value=0):
     y, x = np.ogrid[:rows, :cols]
     
     cy, cx = center
-    # mask = (x - cx)**2 + (y - cy)**2 <= radius**2
-    mask = (x - cx)**2 + (y - cy)**2 >= radius**2
+    if Invert:
+        mask = (x - cx)**2 + (y - cy)**2 <= radius**2
+    else:
+        mask = (x - cx)**2 + (y - cy)**2 >= radius**2
 
     
     masked_array = np.full_like(array, fill_value)

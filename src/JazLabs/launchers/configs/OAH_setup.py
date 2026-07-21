@@ -10,7 +10,7 @@ CAMERA_SERVERS = [
         "command_port": 50731,
         "frame_pub_port": 50732,
         "frame_topic": "camera.frame",
-        "poll_sleep": 1e-12,
+        "poll_sleep": 1e-6,
         "verbose": False,
     },
     {

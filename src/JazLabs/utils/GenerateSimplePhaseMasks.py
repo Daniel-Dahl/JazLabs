@@ -18,7 +18,8 @@ def TiltPhaseProf(tiltXdeg,tiltYdeg,wavelength,XGrid,YGrid):
     
     ky0 = k0*np.sin(tiltYdeg* np.pi/180)
     kx0 = k0*np.sin(tiltXdeg* np.pi/180) 
-    tiltProf=np.exp(1j*(( (kx0)*XGrid) + (ky0)*YGrid))
+    tiltProf=np.ones(np.shape(XGrid),dtype=np.csingle)
+    tiltProf=tiltProf*np.exp(1j*(( (kx0)*XGrid) + (ky0)*YGrid))
     return tiltProf
 
 def PiFlipMasks(Nx,Ny,planeCount,PlotMasks):
@@ -90,7 +91,8 @@ def TiltMask(tiltXdeg,tiltYdeg,wavelength,Nx,Ny,pixelSize,PlotMasks):
         plt.figure()
         plt.imshow((np.angle(TiltPhase)))
         plt.figure()
-        plt.imshow((abs(TiltPhase)))
+        plt.imshow((abs(TiltPhase)**2))
+    
     Masks=np.ones((1,1,Ny,Nx),dtype=np.csingle)
     Masks[0,0,:,:]=TiltPhase
     return Masks 

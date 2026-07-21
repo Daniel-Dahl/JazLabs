@@ -796,7 +796,8 @@ class digholoObject():
             self.TransformMat = matrix_candidates[0]
         else:
             self.TransformMat= np.load(str(FileToLoad))
-        plt.imshow(cmplxplt.ComplexArrayToRgb(self.TransformMat))
+            # self.TransformMat=np.conj(self.TransformMat)
+        # plt.imshow(cmplxplt.ComplexArrayToRgb(self.TransformMat))
         self.digHolo_ConfigSetBasisTypeCustom(self.TransformMat)
         return self.TransformMat
     

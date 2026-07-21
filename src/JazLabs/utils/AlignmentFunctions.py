@@ -1,4 +1,4 @@
-from Lab_Equipment.Config import config
+
 
 import cv2
 import numpy as np
