@@ -36,6 +36,23 @@ CAMERA_SERVERS = [
     },
 ]
 
+# Laser server configuration.  Set the host to "0.0.0.0" on the machine
+# connected to the laser when clients will connect from another computer.
+# Change laser_type and laser_kwargs to match the instrument and connection.
+LASER_HOST = "127.0.0.1"
+
+LASER_SERVERS = [
+    {
+        "name": "tunable_laser_oah",
+        "laser_type": "Anritsu MG963x",
+        "laser_kwargs": {"port": "COM3"},
+        "command_port": 50931,
+        "poll_timeout_ms": 100,
+        # Keep disabled until the correct laser connection details are set.
+        "enabled": False,
+    },
+]
+
 OPTICAL_SWITCH_HOST = "127.0.0.1"
 
 OPTICAL_SWITCH_SERVERS = [
@@ -44,7 +61,7 @@ OPTICAL_SWITCH_SERVERS = [
         "switch_type": "JDS_Pol",
         "host": OPTICAL_SWITCH_HOST,
         "command_port": 50835,
-        "serial_port": "/dev/ttyUSB0",
+        "serial_port": "COM4",
         "serial_timeout": 2.0,
         "rtscts": True,
         "dsrdtr": True,
@@ -55,7 +72,7 @@ OPTICAL_SWITCH_SERVERS = [
         "switch_type": "JDS_SC",
         "host": OPTICAL_SWITCH_HOST,
         "command_port": 50836,
-        "serial_port": "/dev/ttyUSB1",
+        "serial_port": "COM12",
         "serial_timeout": 2.0,
         "rtscts": True,
         "dsrdtr": True,

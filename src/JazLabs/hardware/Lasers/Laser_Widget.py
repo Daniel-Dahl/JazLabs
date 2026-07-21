@@ -1,4 +1,5 @@
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 
 
 class LaserControlWindow:
@@ -21,6 +22,11 @@ class LaserControlWindow:
         self.refresh_ms = int(refresh_ms)
         self.refresh_after_id = None
         self.closed = False
+        self.status_request_pending = False
+        # Laser reads can block while a serial/VISA instrument answers.  Keep
+        # all client I/O off Tk's event thread; one worker also preserves the
+        # request/reply ordering required by the ZMQ REQ socket.
+        self.io_executor = ThreadPoolExecutor(max_workers=1)
 
         self.laser = LaserClient(
             host=host,
@@ -125,18 +131,18 @@ class LaserControlWindow:
         )
 
     def _load_properties_and_limits(self):
-        try:
-            properties = self.laser.get_properties()
+        def read_properties_and_limits():
+            return self.laser.get_properties(), self.laser.get_limits()
+
+        def apply_properties_and_limits(result):
+            properties, limits = result
             self.root.title(f"Laser Control - {properties['laser_type']}")
-            limits = self.laser.get_limits()
             minimum = limits.get("min_wavelength_nm")
             maximum = limits.get("max_wavelength_nm")
             if minimum is not None and maximum is not None:
-                self.wavelength_limits_var.set(
-                    f"Range: {minimum:g} to {maximum:g} nm"
-                )
-        except Exception as exc:
-            self._show_error(exc)
+                self.wavelength_limits_var.set(f"Range: {minimum:g} to {maximum:g} nm")
+
+        self._submit_io(read_properties_and_limits, apply_properties_and_limits)
 
     def _show_error(self, exc):
         self.connection_var.set(f"ERROR: {type(exc).__name__}: {exc}")
@@ -148,8 +154,16 @@ class LaserControlWindow:
     def refresh_status(self):
         if self.closed:
             return
-        try:
-            status = self.laser.get_status()
+        if self.status_request_pending:
+            self.refresh_after_id = self.root.after(self.refresh_ms, self.refresh_status)
+            return
+
+        self.status_request_pending = True
+
+        def read_status():
+            return self.laser.get_status()
+
+        def apply_status(status):
             wavelength_nm = status.get("wavelength_nm")
             power = status.get("power")
             units = status.get("power_units", self.power_units_var.get())
@@ -176,20 +190,52 @@ class LaserControlWindow:
                 self.connection_var.set(
                     "Connected; some readbacks unavailable: " + ", ".join(errors)
                 )
-        except Exception as exc:
+
+        def status_failed(exc):
             self._show_error(exc)
-        finally:
+
+        def status_finished():
+            self.status_request_pending = False
             if not self.closed:
-                self.refresh_after_id = self.root.after(
-                    self.refresh_ms, self.refresh_status
-                )
+                self.refresh_after_id = self.root.after(self.refresh_ms, self.refresh_status)
+
+        self._submit_io(read_status, apply_status, status_failed, status_finished)
+
+    def _submit_io(self, operation, on_success, on_error=None, on_finished=None):
+        """Run one blocking laser operation and marshal its result back to Tk."""
+        if self.closed:
+            return
+        future = self.io_executor.submit(operation)
+
+        def deliver_result(completed_future):
+            if self.closed:
+                return
+            try:
+                on_success(completed_future.result())
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+                else:
+                    self._show_error(exc)
+            finally:
+                if on_finished is not None:
+                    on_finished()
+
+        future.add_done_callback(
+            lambda completed: self.root.after(0, deliver_result, completed)
+        )
 
     def set_wavelength(self):
         try:
             wavelength_nm = float(self.wavelength_set_var.get())
-            self.laser.set_wavelength_nm(wavelength_nm, wait=False)
-            self.connection_var.set(f"Wavelength setpoint sent: {wavelength_nm:g} nm")
-            self.refresh_status()
+            self.connection_var.set(f"Setting wavelength to {wavelength_nm:g} nm...")
+            self._submit_io(
+                lambda: self.laser.set_wavelength_nm(wavelength_nm, wait=False),
+                lambda result: self.connection_var.set(
+                    f"Wavelength setpoint sent: {wavelength_nm:g} nm"
+                ),
+                on_finished=self.refresh_status,
+            )
         except Exception as exc:
             self._show_error(exc)
 
@@ -197,12 +243,18 @@ class LaserControlWindow:
         try:
             power = float(self.power_set_var.get())
             units = self.power_units_var.get()
+            self.connection_var.set(f"Setting power to {power:g} {units}...")
             if units == "dBm":
-                self.laser.set_power_dbm(power)
+                operation = lambda: self.laser.set_power_dbm(power)
             else:
-                self.laser.set_power_mw(power)
-            self.connection_var.set(f"Power setpoint sent: {power:g} {units}")
-            self.refresh_status()
+                operation = lambda: self.laser.set_power_mw(power)
+            self._submit_io(
+                operation,
+                lambda result: self.connection_var.set(
+                    f"Power setpoint sent: {power:g} {units}"
+                ),
+                on_finished=self.refresh_status,
+            )
         except Exception as exc:
             self._show_error(exc)
 
@@ -214,18 +266,12 @@ class LaserControlWindow:
         )
         if not confirmed:
             return
-        try:
-            self.laser.laser_on()
-            self.refresh_status()
-        except Exception as exc:
-            self._show_error(exc)
+        self.connection_var.set("Enabling laser output...")
+        self._submit_io(self.laser.laser_on, lambda result: self.refresh_status())
 
     def disable_output(self):
-        try:
-            self.laser.laser_off()
-            self.refresh_status()
-        except Exception as exc:
-            self._show_error(exc)
+        self.connection_var.set("Disabling laser output...")
+        self._submit_io(self.laser.laser_off, lambda result: self.refresh_status())
 
     def run(self):
         self.root.mainloop()
@@ -239,6 +285,7 @@ class LaserControlWindow:
                 self.root.after_cancel(self.refresh_after_id)
             except Exception:
                 pass
+        self.io_executor.shutdown(wait=False, cancel_futures=True)
         self.laser.close()
         self.root.destroy()
 
