@@ -106,7 +106,7 @@ def LPMode_free(l=0, m=1, ab='a',
 
     # Smooth taper outside the "core" so it doesn't just hard-cut:
     # (you can comment this out if you want a strict top-hat core)
-    taper = np.exp(-(r / (1.0 * core_radius + 1e-32))**8)
+    taper = np.exp(-(r / (1.0 * core_radius + 1e-32))**10)
     # taper =1# np.exp(-(r / (1.1 * core_radius + 1e-32))**8)
 
     radial = core_field * taper

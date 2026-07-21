@@ -17,6 +17,9 @@ class CameraZMQServer:
         CameraType="FLIR Point Grey",
         CameraKwargs=None,
         PollSleep=0.0,
+        ContinuousPublishFPS=None,
+        FrameWatchdogTimeout=None,
+        FrameWatchdogAction="reset",
         PublishFramesOverZMQ=False,
         frame_topic="camera.frame",
     ):
@@ -26,6 +29,17 @@ class CameraZMQServer:
         self.CameraType = CameraType
         self.CameraKwargs = CameraKwargs or {}
         self.PollSleep = float(PollSleep)
+        self.ContinuousPublishFPS = (
+            None if ContinuousPublishFPS is None else float(ContinuousPublishFPS)
+        )
+        self.FrameWatchdogTimeout = (
+            None if FrameWatchdogTimeout is None else float(FrameWatchdogTimeout)
+        )
+        self.FrameWatchdogAction = str(FrameWatchdogAction).lower()
+        if self.FrameWatchdogAction not in ("pause", "stop", "reset"):
+            raise ValueError(
+                "FrameWatchdogAction must be one of: 'pause', 'stop', or 'reset'"
+            )
         self.PublishFramesOverZMQ = bool(PublishFramesOverZMQ)
         self.frame_topic = str(frame_topic)
 
@@ -38,6 +52,26 @@ class CameraZMQServer:
 
         self.frame_shape = None
         self.frame_dtype = None
+
+    def _continuous_publish_period_s(self):
+        if self.ContinuousPublishFPS is None or self.ContinuousPublishFPS <= 0:
+            return 0.0
+
+        return 1.0 / float(self.ContinuousPublishFPS)
+
+    def _get_camera_frame_marker(self, camOBJ):
+        for method_name in ("GetFrameID", "GetNumberOfFramesInBuffer"):
+            method = getattr(camOBJ, method_name, None)
+            if method is None:
+                continue
+            try:
+                value = method()
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+
+        return None
 
     def startProcess(self):
         if self.Process is not None and self.Process.is_alive():
@@ -161,6 +195,11 @@ class CameraZMQServer:
             print(f"Frame PUB socket: tcp://{self.host}:{self.frame_pub_port}")
             print(f"Publish frames over ZMQ: {self.PublishFramesOverZMQ}")
             print(f"CameraType: {self.CameraType}")
+            print(f"Continuous publish FPS: {self.ContinuousPublishFPS}")
+            print(
+                "Frame watchdog: "
+                f"timeout={self.FrameWatchdogTimeout}, action={self.FrameWatchdogAction}"
+            )
             print(f"Frame SHM name: {self.frame_shm.name}")
             print(f"Meta SHM name:  {self.meta_shm.name}")
             print(f"Frame shape:    {self.frame_shape}")
@@ -168,6 +207,11 @@ class CameraZMQServer:
 
             acquisition_running = True
             running = True
+            last_continuous_publish_time = 0.0
+            last_frame_marker = self._get_camera_frame_marker(camOBJ)
+            last_frame_marker_change_time = time.monotonic()
+            frame_watchdog_tripped = False
+            frame_watchdog_trip_count = 0
 
             # Give already-created subscribers a brief chance to finish connecting.
             time.sleep(0.1)
@@ -211,6 +255,11 @@ class CameraZMQServer:
                                         "last_write_time_ns": int(self.meta_arr[2]),
                                         "acquisition_running": acquisition_running,
                                         "server_alive": bool(self.meta_arr[3]),
+                                        "continuous_publish_fps": self.ContinuousPublishFPS,
+                                        "frame_watchdog_timeout": self.FrameWatchdogTimeout,
+                                        "frame_watchdog_action": self.FrameWatchdogAction,
+                                        "frame_watchdog_tripped": frame_watchdog_tripped,
+                                        "frame_watchdog_trip_count": frame_watchdog_trip_count,
                                     },
                                     "client_id": client_id,
                                 }
@@ -221,7 +270,49 @@ class CameraZMQServer:
 
                             elif cmd == "resume_acquisition":
                                 acquisition_running = True
+                                frame_watchdog_tripped = False
+                                last_frame_marker = self._get_camera_frame_marker(camOBJ)
+                                last_frame_marker_change_time = time.monotonic()
                                 reply = {"ok": True, "result": None, "client_id": client_id}
+
+                            elif cmd == "set_continuous_publish_fps":
+                                fps = msg.get("fps", None)
+                                self.ContinuousPublishFPS = (
+                                    None if fps is None else float(fps)
+                                )
+                                reply = {
+                                    "ok": True,
+                                    "result": self.ContinuousPublishFPS,
+                                    "client_id": client_id,
+                                }
+
+                            elif cmd == "set_frame_watchdog":
+                                timeout_s = msg.get("timeout_s", self.FrameWatchdogTimeout)
+                                action = msg.get("action", self.FrameWatchdogAction)
+                                self.FrameWatchdogTimeout = (
+                                    None if timeout_s is None else float(timeout_s)
+                                )
+                                self.FrameWatchdogAction = str(action).lower()
+                                if self.FrameWatchdogAction not in (
+                                    "pause",
+                                    "stop",
+                                    "reset",
+                                ):
+                                    raise ValueError(
+                                        "Watchdog action must be one of: "
+                                        "'pause', 'stop', or 'reset'"
+                                    )
+                                frame_watchdog_tripped = False
+                                last_frame_marker = self._get_camera_frame_marker(camOBJ)
+                                last_frame_marker_change_time = time.monotonic()
+                                reply = {
+                                    "ok": True,
+                                    "result": {
+                                        "timeout_s": self.FrameWatchdogTimeout,
+                                        "action": self.FrameWatchdogAction,
+                                    },
+                                    "client_id": client_id,
+                                }
 
                             elif cmd == "shutdown":
                                 running = False
@@ -233,6 +324,9 @@ class CameraZMQServer:
                             elif cmd == "start_acquisition":
                                 result = camOBJ.StartAcquisition()
                                 acquisition_running = True
+                                frame_watchdog_tripped = False
+                                last_frame_marker = self._get_camera_frame_marker(camOBJ)
+                                last_frame_marker_change_time = time.monotonic()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
 
                             elif cmd == "stop_acquisition":
@@ -261,6 +355,14 @@ class CameraZMQServer:
                                 result = camOBJ.GetNumberOfFramesInBuffer()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
 
+                            elif cmd == "get_camera_health":
+                                if not hasattr(camOBJ, "GetCameraHealth"):
+                                    raise NotImplementedError(
+                                        f"{self.CameraType} does not expose GetCameraHealth"
+                                    )
+                                result = camOBJ.GetCameraHealth()
+                                reply = {"ok": True, "result": result, "client_id": client_id}
+
                             elif cmd == "get_trigger_mode":
                                 result = camOBJ.GetTriggerMode()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
@@ -268,6 +370,9 @@ class CameraZMQServer:
                             elif cmd == "set_continuous_mode":
                                 result = camOBJ.SetContinuousMode()
                                 acquisition_running = True
+                                frame_watchdog_tripped = False
+                                last_frame_marker = self._get_camera_frame_marker(camOBJ)
+                                last_frame_marker_change_time = time.monotonic()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
 
                             elif cmd == "set_software_trigger_mode":
@@ -406,29 +511,77 @@ class CameraZMQServer:
                     # 2. Publish latest frame
                     # ------------------------------------------------
                     if acquisition_running:
-                        try:
-                            # This is intentionally the timing throttle. There is no
-                            # artificial polling sleep when PollSleep is 0; the next
-                            # loop begins as soon as the camera returns a frame.
-                            frame = np.asarray(camOBJ.GetFrame())
+                        now = time.monotonic()
+                        publish_period_s = self._continuous_publish_period_s()
+                        should_publish = (
+                            publish_period_s <= 0
+                            or now - last_continuous_publish_time >= publish_period_s
+                        )
 
-                            if frame.shape != self.frame_shape:
-                                raise ValueError(
-                                    f"Camera frame shape changed from {self.frame_shape} to {frame.shape}. "
-                                    "Use set_roi so the server can recreate shared memory."
+                        if (
+                            self.FrameWatchdogTimeout is not None
+                            and self.FrameWatchdogTimeout > 0
+                        ):
+                            current_marker = self._get_camera_frame_marker(camOBJ)
+                            if current_marker is None:
+                                last_frame_marker_change_time = now
+                            elif current_marker != last_frame_marker:
+                                last_frame_marker = current_marker
+                                last_frame_marker_change_time = now
+                                frame_watchdog_tripped = False
+                            elif now - last_frame_marker_change_time >= self.FrameWatchdogTimeout:
+                                frame_watchdog_tripped = True
+                                frame_watchdog_trip_count += 1
+                                print(
+                                    "Camera frame watchdog tripped: "
+                                    f"no frame marker change for {self.FrameWatchdogTimeout:.3f}s "
+                                    f"(marker={current_marker}, action={self.FrameWatchdogAction})"
                                 )
 
-                            if frame.dtype != self.frame_dtype:
-                                frame = frame.astype(self.frame_dtype, copy=False)
+                                if self.FrameWatchdogAction == "reset":
+                                    try:
+                                        camOBJ.ResetCamera()
+                                        if hasattr(camOBJ, "SetContinuousMode"):
+                                            camOBJ.SetContinuousMode()
+                                        acquisition_running = True
+                                    except Exception:
+                                        print("Camera frame watchdog reset failed:")
+                                        print(traceback.format_exc())
+                                        acquisition_running = False
+                                elif self.FrameWatchdogAction in ("stop", "pause"):
+                                    try:
+                                        if hasattr(camOBJ, "StopAcquisition"):
+                                            camOBJ.StopAcquisition()
+                                    except Exception:
+                                        pass
+                                    acquisition_running = False
 
-                            self.WriteFrameToSharedMemory(frame)
-                            self.PublishNewFrame(frame_pub_socket)
+                                last_frame_marker = self._get_camera_frame_marker(camOBJ)
+                                last_frame_marker_change_time = time.monotonic()
+                                should_publish = False
 
-                        except Exception as e:
-                            print("Camera frame acquisition error:")
-                            print(f"{type(e).__name__}: {e}")
-                            print(traceback.format_exc())
-                            time.sleep(0.01)
+                        if should_publish and acquisition_running:
+                            try:
+                                frame = np.asarray(camOBJ.GetFrame())
+
+                                if frame.shape != self.frame_shape:
+                                    raise ValueError(
+                                        f"Camera frame shape changed from {self.frame_shape} to {frame.shape}. "
+                                        "Use set_roi so the server can recreate shared memory."
+                                    )
+
+                                if frame.dtype != self.frame_dtype:
+                                    frame = frame.astype(self.frame_dtype, copy=False)
+
+                                self.WriteFrameToSharedMemory(frame)
+                                self.PublishNewFrame(frame_pub_socket)
+                                last_continuous_publish_time = time.monotonic()
+
+                            except Exception as e:
+                                print("Camera frame acquisition error:")
+                                print(f"{type(e).__name__}: {e}")
+                                print(traceback.format_exc())
+                                time.sleep(0.01)
 
                     if self.PollSleep > 0:
                         time.sleep(self.PollSleep)

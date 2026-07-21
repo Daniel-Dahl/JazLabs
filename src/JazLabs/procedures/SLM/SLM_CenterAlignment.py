@@ -18,12 +18,12 @@ plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
 from typing import List
 
-import pwi_inst.utils.camera_utils as cam_utils
-import pwi_inst.hardware.Cameras.Camera_Client as CamClientlib
-import pwi_inst.hardware.SLM.PhaseMaskClass as PhaseMaskClass
-import pwi_inst.utils.GenerateSimplePhaseMasks as SimpMaskLib
-import  pwi_inst.utils.AlignmentFunctions as AlignFunc
-import pwi_inst.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
+import JazLabs.utils.camera_utils as cam_utils
+import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
+import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
+import JazLabs.utils.GenerateSimplePhaseMasks as SimpMaskLib
+import  JazLabs.utils.AlignmentFunctions as AlignFunc
+import JazLabs.utils.SpotArrayAnalysis.SpotArrayAnalysis as SpotAnlys_lib
 
 
 def apply_circular_aperture(array, center, radius, fill_value=0):
@@ -101,6 +101,102 @@ def FindFactors(num):
             factors=np.append(factors,[i])
     #print(factors)
     return factors
+
+
+def FindPlateauStart(x_values,metric_values,smoothing_window=15,plateau_tail_fraction=0.20,
+                     PlotResults=True,xlabel="SLM aperture radius [pixels]",
+                     ylabel="Alignment metric"):
+    """Find the first measured-data intersection with a final plateau estimate.
+
+    The final plateau is the median of the last ``plateau_tail_fraction`` of a
+    Savitzky-Golay-smoothed curve.  The returned start is linearly interpolated
+    at the earliest point where the measured data crosses that plateau.
+    """
+    x_values=np.asarray(x_values,dtype=float).reshape(-1)
+    metric_values=np.asarray(metric_values,dtype=float).reshape(-1)
+
+    if len(x_values) != len(metric_values):
+        raise ValueError("x_values and metric_values must have the same length")
+    if smoothing_window < 3:
+        raise ValueError("smoothing_window must be at least 3")
+    if plateau_tail_fraction <= 0 or plateau_tail_fraction > 1:
+        raise ValueError("plateau_tail_fraction must be greater than 0 and no greater than 1")
+
+    valid_values=np.isfinite(x_values) & np.isfinite(metric_values)
+    x_values=x_values[valid_values]
+    metric_values=metric_values[valid_values]
+
+    sort_order=np.argsort(x_values)
+    x_values=x_values[sort_order]
+    metric_values=metric_values[sort_order]
+
+    if len(x_values) < 3:
+        raise ValueError("At least three valid measurements are required")
+
+    smoothing_window=min(int(smoothing_window),len(metric_values))
+    if smoothing_window % 2 == 0:
+        smoothing_window-=1
+
+    smoothed_metric=signal.savgol_filter(
+        metric_values,
+        window_length=smoothing_window,
+        polyorder=min(2,smoothing_window-1),
+    )
+
+    plateau_count=max(3,int(np.ceil(plateau_tail_fraction*len(smoothed_metric))))
+    plateau_count=min(plateau_count,len(smoothed_metric))
+    plateau_level=np.median(smoothed_metric[-plateau_count:])
+
+    points_above_plateau=np.flatnonzero(metric_values >= plateau_level)
+    plateau_start=None
+
+    if len(points_above_plateau) == 0:
+        print("The measured curve does not intersect the plateau level.")
+    else:
+        crossing_index=points_above_plateau[0]
+
+        if crossing_index == 0:
+            plateau_start=x_values[0]
+        else:
+            x_before=x_values[crossing_index-1]
+            x_after=x_values[crossing_index]
+            metric_before=metric_values[crossing_index-1]
+            metric_after=metric_values[crossing_index]
+
+            if metric_after == metric_before:
+                plateau_start=x_after
+            else:
+                plateau_start=x_before+(
+                    (plateau_level-metric_before)
+                    *(x_after-x_before)
+                    /(metric_after-metric_before)
+                )
+
+        print(f"Final plateau level: {plateau_level:.6g}")
+        print(f"First intersection: {plateau_start:.2f} pixels")
+
+    if PlotResults:
+        plt.figure(figsize=(8,5))
+        plt.plot(x_values,metric_values,alpha=0.7,label="Measured")
+        plt.plot(x_values,smoothed_metric,color="khaki",label="Smoothed")
+        plt.axhline(plateau_level,color="white",linestyle="--",label="Final plateau")
+
+        if plateau_start is not None:
+            plt.axvline(
+                plateau_start,
+                color="tab:red",
+                linestyle="--",
+                label=f"First intersection: {plateau_start:.1f} px",
+            )
+            plt.scatter(plateau_start,plateau_level,color="tab:red",zorder=5)
+
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        plt.grid(alpha=0.3)
+        plt.legend()
+        plt.show()
+
+    return plateau_start,plateau_level
 
 
 ########
@@ -281,12 +377,15 @@ class AlginmentObj():
                 denominator=np.sqrt(np.sum(self.Ref_Metric**2)*np.sum(NewFrame**2))
                 metric=numerator/denominator
             
-        elif self.MetricType=="POWER":
+        elif self.MetricType=="POWERMinusHalfRef":
             if CalulateRefMetric:
                 metric=0
                 for iframe in range(avgframeCount):
                     self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
                     frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
+                    # self.ifig+=1
+                    # plt.figure(self.ifig)
+                    # plt.imshow(frame)
                     metric=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
                 metric += metric
                 metric=metric/avgframeCount
@@ -298,7 +397,28 @@ class AlginmentObj():
                     pwr=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
                 pwr += pwr
                 pwr=pwr/avgframeCount
-                metric = np.abs(pwr - self.Ref_Metric//2)
+                metric = np.abs(pwr - self.Ref_Metric/2)
+        elif self.MetricType=="POWER":
+            if CalulateRefMetric:
+                metric=0
+                for iframe in range(avgframeCount):
+                    self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
+                    frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
+                    self.ifig+=1
+                    plt.figure(self.ifig)
+                    plt.imshow(frame)
+                    metric=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
+                metric += metric
+                metric=metric/avgframeCount
+            else:
+                pwr=0
+                for iframe in range(avgframeCount):
+                    self.CamObjs[self.CamObjIdx].FireSoftwareTrigger()
+                    frame=np.copy(self.CamObjs[self.CamObjIdx].GetFrame())
+                    pwr=cam_utils.get_relative_power(frame=frame,centre=[self.ixCamCenter,self.iyCamCenter],x_half_width=self.x_half_width,y_half_width=self.y_half_width)
+                pwr += pwr
+                pwr=pwr/avgframeCount
+                metric = np.abs(pwr)
         else:
             print("Incorrect Metric selected. You must select either POWER or SPATIAL")
         return metric
@@ -336,9 +456,9 @@ class AlginmentObj():
         print(self.MetricType)
         
         self.slmObjs[ObjIdx].Clear_Display(channel=channel)
-        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
         self.CamObjIdx=ObjIdx
-        
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
+
         self.avgFrameCount=avgFrameCount
         self.ispot=ispot
         self.radiusApp=camradiusApp
@@ -427,13 +547,16 @@ class AlginmentObj():
                                             ixCamCenter=None,
                                     iyCamCenter=None,
                                     x_half_width=None,
-                                    y_half_width=None ):
+                                    y_half_width=None,
+                                    Verbose=False ):
         self.ixCamCenter=ixCamCenter
         self.iyCamCenter=iyCamCenter
         self.x_half_width=x_half_width
         self.y_half_width=y_half_width
         self.stripe_width=stripe_width
         self.MetricType=MetricType
+
+        self.ifig=1
         if (self.ixCamCenter is not None and self.iyCamCenter is not None and self.x_half_width is not None and self.y_half_width is not None):
             self.ApatureFrame = True
         else:
@@ -446,8 +569,7 @@ class AlginmentObj():
             channel=self.slmObjs[ObjIdx].ActiveRGBChannels[0]
         if MaskSize is  None:
             MaskSize=self.slmObjs[ObjIdx].polProps[channel][pol].masksize
-        else:
-            self.MaskSize=MaskSize
+        self.MaskSize=MaskSize
         self.CamObjIdx=ObjIdx
         self.ObjIdx=ObjIdx
 
@@ -474,49 +596,110 @@ class AlginmentObj():
         
         MinXCenter=np.zeros(MaskCount)
         MinYCenter=np.zeros(MaskCount)
-        ifig=0
         
         for imask in range(MaskCount): 
             self.imask=imask
             oldxCenter=self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[1]
             oldyCenter=self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[0]
-            print("Old X Center: ",oldxCenter)
-            print("Old Y Center: ",oldyCenter)
+
+            if Verbose:
+                print(f"Mask {imask} original centre: X={oldxCenter}, Y={oldyCenter}")
+
+            if self.PlotTracking:
+                tracking_figure,tracking_axes=plt.subplots(
+                    1,
+                    2,
+                    figsize=(12,4.5),
+                    constrained_layout=True,
+                )
+
             for iDirection in range(2): # This is for the X and Y direction Centers NOTE 0=Y and 1=X
-                if (self.PlotTracking):
-                    ifig=ifig+1
-                    plt.figure(ifig+100)
-                    plt.clf()
-                # self.xValTrack=np.empty((0))
-                # self.yValTrack=np.empty((0))
                 self.iDirection=iDirection
                 self.BoundMin=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[iDirection])-self.PixelsCountFromCenters
                 self.BoundMax=int(self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][self.imask].center[iDirection])+self.PixelsCountFromCenters
                 self.DiscretisedSpace_arr= np.arange(self.BoundMin,self.BoundMax,1)
                 CenterAvg=0
                 iphaseFlipCount=0
+
                 for iPhaseFlip in range(2):#Need to do 2 flips in the same direction for a better center one has the flip reversed
                     self.xValTrack=np.empty((0))
                     self.yValTrack=np.empty((0))
                     self.Phasedir=iPhaseFlip # flipdir X
-                    minVal_1,minIdx_1=AlignFunc.GoldenSelectionSearch(self.BoundMin,self.BoundMax,dspace_Tol=1,FuncToMinamise=self.ChangePiFlipTakeMetric)
-                    CenterAvg=CenterAvg+minIdx_1
+                    AlignFunc.GoldenSelectionSearch(
+                        self.BoundMin,
+                        self.BoundMax,
+                        dspace_Tol=1,
+                        FuncToMinamise=self.ChangePiFlipTakeMetric,
+                        Verbose=Verbose,
+                    )
+
+                    lowest_metric_index=np.nanargmin(self.yValTrack)
+                    measured_minimum_position=self.xValTrack[lowest_metric_index]
+                    CenterAvg=CenterAvg+measured_minimum_position
                     iphaseFlipCount=iphaseFlipCount+1
-                    if (self.PlotTracking):
-                        if iPhaseFlip==0:
-                            plt.scatter(self.xValTrack,self.yValTrack,c="red")
-                        else:
-                            plt.scatter(self.xValTrack,self.yValTrack,c="green")
-                if (self.PlotTracking):
-                    plt.show()
-        
-                if (iDirection==0):# Xdirection
-                    MinYCenter[imask]=CenterAvg//iphaseFlipCount
-                else:# Ydirection
-                    MinXCenter[imask]=CenterAvg//iphaseFlipCount
+
+                    if self.PlotTracking:
+                        tracking_axis=tracking_axes[iDirection]
+                        phase_color=("tab:red","tab:green")[iPhaseFlip]
+                        tracking_axis.scatter(
+                            self.xValTrack,
+                            self.yValTrack,
+                            color=phase_color,
+                            s=28,
+                            alpha=0.85,
+                            label=f"Phase flip {iPhaseFlip+1}",
+                        )
+                        tracking_axis.axvline(
+                            measured_minimum_position,
+                            color=phase_color,
+                            linestyle="--",
+                            linewidth=1.2,
+                            alpha=0.9,
+                            label=f"Flip {iPhaseFlip+1} minimum: {measured_minimum_position:.0f} px",
+                        )
+
+                selected_center=int(np.rint(CenterAvg/iphaseFlipCount))
+                if (iDirection==0):# Y direction
+                    MinYCenter[imask]=selected_center
+                    direction_name="Y"
+                    old_center=oldyCenter
+                else:# X direction
+                    MinXCenter[imask]=selected_center
+                    direction_name="X"
+                    old_center=oldxCenter
+
+                if self.PlotTracking:
+                    tracking_axis=tracking_axes[iDirection]
+                    tracking_axis.axvline(
+                        old_center,
+                        color="0.65",
+                        linestyle="--",
+                        label=f"Original: {old_center:.0f} px",
+                    )
+                    tracking_axis.axvline(
+                        selected_center,
+                        color="white",
+                        linestyle="--",
+                        linewidth=1.5,
+                        label=f"Selected: {selected_center:.0f} px",
+                    )
+                    tracking_axis.set_title(f"{direction_name} centre alignment")
+                    tracking_axis.set_xlabel(f"SLM {direction_name} position [pixels]")
+                    tracking_axis.set_ylabel("Alignment metric")
+                    tracking_axis.grid(alpha=0.3)
+                    tracking_axis.legend()
+
+            if self.PlotTracking:
+                tracking_figure.suptitle(f"Mask {imask} centre alignment")
+                plt.show()
+
+            if Verbose:
+                print(
+                    f"Mask {imask} selected centre: "
+                    f"X={MinXCenter[imask]:.0f}, Y={MinYCenter[imask]:.0f}"
+                )
         
         self.slmObjs[ObjIdx].Clear_Display(channel)
-        print("Setting new masks Centers")
         for imask in range(MaskCount):
             self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][imask].center[1] = MinXCenter[imask]
             self.slmObjs[ObjIdx].AllMaskProperties[channel][pol][imask].center[0] = MinYCenter[imask]
@@ -525,8 +708,6 @@ class AlginmentObj():
         self.slmObjs[ObjIdx].backgroundPattern_int =np.copy(OriginialBackground_int)
         self.slmObjs[ObjIdx].setmask(channel,0)
 
-        print("New X Centers: ",MinXCenter)
-        print("New Y Centers: ",MinYCenter)
         # self.CamObjs[ObjIdx].SetContinousFrameCapMode()
         self.CamObjs[self.CamObjIdx].SetContinuousMode()
         
@@ -812,6 +993,105 @@ class AlginmentObj():
         
         
         return RefSigPWR,RefSigPWR_log,PixelFlipStep
+
+    def SweepAcrossSLM_StripProfile(self,ObjIdx=0,channel=None,stepCount=10,StartingSweepPoint=0,strip_width=10,
+                                    avgFrameCount=1,
+                                    ixCamCenter=None,iyCamCenter=None,x_half_width=None,y_half_width=None,
+                                    MetricType="POWER"):
+        """Reveal a full-SLM striped pattern in Y and X while recording the metric.
+
+        The SLM begins blank.  Direction index 0 moves a horizontal edge in Y,
+        filling the area behind it with horizontal stripes.  Direction index 1
+        moves a vertical edge in X, filling the area behind it with vertical
+        stripes.  The completed pattern fills the entire SLM.  The returned
+        arrays use the same
+        ``[direction, sample, 0]`` layout as
+        ``SweepAcrossSLM_Mask_binaryGrating``.  Because the SLM height and width
+        can differ, unused samples at the end of the shorter sweep are NaN.
+        """
+        if stepCount <= 0:
+            raise ValueError("stepCount must be greater than zero")
+        if StartingSweepPoint < 0:
+            raise ValueError("StartingSweepPoint must be zero or greater")
+        if strip_width <= 0:
+            raise ValueError("strip_width must be greater than zero")
+
+        self.MetricType=MetricType
+        self.ixCamCenter=ixCamCenter
+        self.iyCamCenter=iyCamCenter
+        self.x_half_width=x_half_width
+        self.y_half_width=y_half_width
+        self.ObjIdx=ObjIdx
+        self.CamObjIdx=ObjIdx
+        self.avgFrameCount=avgFrameCount
+        self.ifig=1
+        self.ApatureFrame=(
+            self.ixCamCenter is not None
+            and self.iyCamCenter is not None
+            and self.x_half_width is not None
+            and self.y_half_width is not None
+        )
+
+        if channel is None:
+            channel=self.slmObjs[ObjIdx].ActiveRGBChannels[0]
+        self.channel=channel
+
+        slm_height=int(self.slmObjs[ObjIdx].slmHeigth)
+        slm_width=int(self.slmObjs[ObjIdx].slmWidth)
+        if StartingSweepPoint >= slm_height or StartingSweepPoint >= slm_width:
+            raise ValueError("StartingSweepPoint must be inside both SLM dimensions")
+
+        y_sweep_positions=np.arange(StartingSweepPoint,slm_height,stepCount,dtype=int)
+        x_sweep_positions=np.arange(StartingSweepPoint,slm_width,stepCount,dtype=int)
+        y_sweep_positions=np.append(y_sweep_positions,slm_height)
+        x_sweep_positions=np.append(x_sweep_positions,slm_width)
+        max_sample_count=max(len(y_sweep_positions),len(x_sweep_positions))
+
+        StripSweepStep=np.full((2,max_sample_count,1),np.nan,dtype=float)
+        RefSigPWR=np.full((2,max_sample_count,1),np.nan,dtype=float)
+
+        self.slmObjs[ObjIdx].Clear_Display(channel)
+        self.CamObjs[self.CamObjIdx].SetSoftwareTriggerMode()
+
+        try:
+            self.Ref_Metric=self.CalulateMetric(avgframeCount=self.avgFrameCount,CalulateRefMetric=True)
+
+            horizontal_stripe_profile=periodic_strip_mask_1(
+                mask_shape=[slm_height,slm_width],
+                strip_width=strip_width,
+                strip_value=128,
+                orientation="x",
+            )
+            vertical_stripe_profile=periodic_strip_mask_1(
+                mask_shape=[slm_height,slm_width],
+                strip_width=strip_width,
+                strip_value=128,
+                orientation="y",
+            )
+
+            # Y sweep: reveal horizontal stripes behind a downward-moving edge.
+            for sample_index,stripe_edge in enumerate(y_sweep_positions):
+                displayed_stripe_profile=np.zeros((slm_height,slm_width),dtype=np.uint8)
+                displayed_stripe_profile[StartingSweepPoint:stripe_edge,:]=horizontal_stripe_profile[StartingSweepPoint:stripe_edge,:]
+
+                self.slmObjs[ObjIdx].WriteImageToSLM(displayed_stripe_profile,channel)
+                RefSigPWR[0,sample_index,0]=self.CalulateMetric(avgframeCount=self.avgFrameCount)
+                StripSweepStep[0,sample_index,0]=stripe_edge
+
+            # X sweep: reveal vertical stripes behind a right-moving edge.
+            for sample_index,stripe_edge in enumerate(x_sweep_positions):
+                displayed_stripe_profile=np.zeros((slm_height,slm_width),dtype=np.uint8)
+                displayed_stripe_profile[:,StartingSweepPoint:stripe_edge]=vertical_stripe_profile[:,StartingSweepPoint:stripe_edge]
+
+                self.slmObjs[ObjIdx].WriteImageToSLM(displayed_stripe_profile,channel)
+                RefSigPWR[1,sample_index,0]=self.CalulateMetric(avgframeCount=self.avgFrameCount)
+                StripSweepStep[1,sample_index,0]=stripe_edge
+        finally:
+            self.slmObjs[ObjIdx].Clear_Display(channel)
+            self.CamObjs[self.CamObjIdx].SetContinuousMode()
+
+        RefSigPWR_log=10*np.log10(np.maximum(RefSigPWR,np.finfo(float).tiny))
+        return RefSigPWR,RefSigPWR_log,StripSweepStep
     
 
         

@@ -63,7 +63,9 @@ class Zernikes:
         y = np.linspace(-1, 1, Ny)
         X, Y = np.meshgrid(x, y)
         rho, phi = cart2pol(X, Y)
-        rho = np.clip(rho, 0, 1)
+        rho = np.where(rho <= 1, rho, 0)
+        
+        # rho = np.clip(rho, 0, 1)
 
         self.Dims = [Nx,Ny] # Defines the array size on which we calculate the Zernikes (same as mask_size_x_in_pixels & mask_size_y_in_pixels if square)
         self.Nx=Nx
@@ -83,7 +85,7 @@ class Zernikes:
         if load_modelab == True:
             # self.load_modelab_coefs()
             print("modelab is dead to me may it burn in hell")
-  
+        self.TiltdefocusReal= True
         self.make_zernike_fields()
 
 
@@ -123,9 +125,9 @@ class Zernikes:
         zern_phase = np.zeros((self.Ny,self.Nx), dtype = np.float32)
         # calculate the phase coming from Zernikes and modelab coefficients (piston, tilt_x and tilt_y are not part of this, that's why there is  (-3) in the loop)
         for izern in range(self.zernCount):
-            if izern == ZernCoefs.TILTX or izern == ZernCoefs.TILTY:
+            if self.TiltdefocusReal and (izern == ZernCoefs.TILTX or izern == ZernCoefs.TILTY):
                 zernikeWieght = (2*np.pi*self.aperture_radius_in_m/self.wavelength)*np.deg2rad(self.zern_coefs[izern] )
-            elif izern == ZernCoefs.DEFOCUS:
+            elif self.TiltdefocusReal and (izern == ZernCoefs.DEFOCUS):
                 if self.zern_coefs[izern] != 0:
                     zernikeWieght = (np.pi*self.aperture_radius_in_m**2)/(self.wavelength*(self.zern_coefs[izern]))
                 else:

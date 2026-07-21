@@ -32,7 +32,7 @@ class CameraClient:
         host="127.0.0.1",
         command_port=50731,
         frame_pub_port=50732,
-        timeout_ms=20000,
+        timeout_ms=60000,
         client_id="camera_client",
     ):
         self.host = host
@@ -271,6 +271,19 @@ class CameraClient:
     def ResumeAcquisition(self):
         return self.SendCommand({"cmd": "resume_acquisition"})
 
+    def SetContinuousPublishFPS(self, fps):
+        return self.SendCommand({
+            "cmd": "set_continuous_publish_fps",
+            "fps": fps,
+        })
+
+    def SetFrameWatchdog(self, timeout_s=None, action="pause"):
+        return self.SendCommand({
+            "cmd": "set_frame_watchdog",
+            "timeout_s": timeout_s,
+            "action": action,
+        })
+
     def ShutdownServer(self):
         return self.SendCommand({"cmd": "shutdown"})
 
@@ -304,6 +317,11 @@ class CameraClient:
     def GetNumberOfFramesInBuffer(self):
         return self.SendCommand({
             "cmd": "get_number_of_frames_in_buffer",
+        })
+
+    def GetCameraHealth(self):
+        return self.SendCommand({
+            "cmd": "get_camera_health",
         })
 
     def GetTriggerMode(self):

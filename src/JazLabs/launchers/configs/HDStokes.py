@@ -16,7 +16,7 @@ CAMERA_SERVERS = [
     {
         "name": "cam_slm",
         "camera_type": "First Light C-Red3_2Lite",
-        "camera_idx": 0,
+        "camera_idx": 1,
         "command_port": 50733,
         "frame_pub_port": 50734,
         "frame_topic": "camera.frame",

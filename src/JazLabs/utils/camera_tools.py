@@ -13,11 +13,14 @@ def take_darkframe(camera_object, num_frames=10, save_path=None, wait_time=None)
         save_path: Path to save the dark frame as a npy file (None to not save).
         wait_time: Time to wait between frames in seconds (None for no wait).
     """
-    darkframe_accum = np.zeros((camera_object.Ny, camera_object.Nx),
+    dumbframe=camera_object.GetFrame()
+    darkframe_accum = np.zeros((dumbframe.shape[0], dumbframe.shape[1]),
         dtype=np.float64)
 
     frames = []
+    camera_object.SetSoftwareTriggerMode()
     for i in range(num_frames):
+        frame = camera_object.FireSoftwareTrigger()
         frame = camera_object.GetFrame()
         frames.append(frame)
         darkframe_accum += frame.astype(np.float64)
@@ -42,5 +45,6 @@ def take_darkframe(camera_object, num_frames=10, save_path=None, wait_time=None)
         # darkframe_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(darkframe_path, darkframe)
         print(f"Dark frame saved to: {darkframe_path}")
+    camera_object.SetContinuousMode()
 
     return darkframe

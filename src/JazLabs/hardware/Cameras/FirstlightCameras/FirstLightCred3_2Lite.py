@@ -138,6 +138,65 @@ class CameraObject:
     def GetNumberOfFramesInBuffer(self):
         return FliSdk_V2.GetBufferFilling(self.cam_context)
 
+    def GetCameraHealth(self):
+        def read_value(name, func):
+            try:
+                return func()
+            except Exception as e:
+                return {
+                    "error": f"{type(e).__name__}: {e}",
+                }
+
+        status = read_value(
+            "status",
+            lambda: FliSdk_V2.FliCred.GetStatus(self.cam_context),
+        )
+        status_detailed = read_value(
+            "status_detailed",
+            lambda: FliSdk_V2.FliCred.GetStatusDetailed(self.cam_context),
+        )
+
+        return {
+            "sdk_started": read_value(
+                "sdk_started",
+                lambda: bool(FliSdk_V2.IsStarted(self.cam_context)),
+            ),
+            "status": status,
+            "status_detailed": status_detailed,
+            "image_received_rate": read_value(
+                "image_received_rate",
+                lambda: float(FliSdk_V2.GetImageReceivedRate(self.cam_context)),
+            ),
+            "buffer_filling": read_value(
+                "buffer_filling",
+                lambda: int(FliSdk_V2.GetBufferFilling(self.cam_context)),
+            ),
+            "buffer_size_frames": read_value(
+                "buffer_size_frames",
+                self.GetBufferSizeInNumberOfFrames,
+            ),
+            "frame_id": read_value(
+                "frame_id",
+                self.GetFrameID,
+            ),
+            "count_errors": read_value(
+                "count_errors",
+                lambda: int(FliSdk_V2.GetNbCountError(self.cam_context)),
+            ),
+            "trigger_mode": read_value(
+                "trigger_mode",
+                self.GetTriggerMode,
+            ),
+            "fps": read_value(
+                "fps",
+                self.GetFPS,
+            ),
+            "exposure_time_us": read_value(
+                "exposure_time_us",
+                self.GetExposureTime,
+            ),
+        }
+
     # ----------------------------
     # trigger / mode configuration
     # ----------------------------
@@ -200,17 +259,90 @@ class CameraObject:
     
         self.GetTriggerMode()
 
-    def FireSoftwareTrigger(self):
+    
+    def _estimate_software_trigger_timing(self, timeout_s=None, poll_interval_s=None, fire_retry_delay_s=None):
+        exposure_s = max(float(getattr(self, "ExposureTime", 0.0)) * 1e-6, 0.0)
+
+        fps = float(getattr(self, "fps", 0.0) or 0.0)
+        if fps <= 0:
+            try:
+                fps = float(self.GetFPS())
+            except Exception:
+                fps = 0.0
+        frame_period_s = (1.0 / fps) if fps > 0 else 0.0
+        expected_frame_s = max(exposure_s, frame_period_s)
+        if expected_frame_s <= 0:
+            expected_frame_s = 0.05
+
+        if fire_retry_delay_s is None:
+            fire_retry_delay_s = expected_frame_s + max(0.005, 0.2 * expected_frame_s)
+
+        if poll_interval_s is None:
+            poll_interval_s = min(max(float(fire_retry_delay_s) / 20.0, 0.001), 0.01)
+
+        if timeout_s is None:
+            timeout_s = max(5.0, 3.0 * float(fire_retry_delay_s))
+
+        return float(timeout_s), float(poll_interval_s), float(fire_retry_delay_s)
+    
+    def FireSoftwareTrigger(self,
+        timeout_s=None,
+        poll_interval_s=None,
+        max_fire_attempts=100,
+        fire_retry_delay_s=None,):
         """
-        Fire one software trigger. Call GetFrame separately to retrieve the frame.
+        Fire one software trigger and wait until the camera frame marker changes.
+
+        The serial ``swtrig`` command acknowledges that the trigger command was
+        accepted. The frame marker changing is the confirmation that a new frame
+        has actually arrived in the SDK buffer.
         """
         if self.trigger_mode != "On" or self.trigger_source != "Software":
             self.GetTriggerMode()
 
         if self.trigger_mode != "On" or self.trigger_source != "Software":
             raise RuntimeError("Camera is not in software trigger mode")
+        
+        timeout_s, poll_interval_s, fire_retry_delay_s = self._estimate_software_trigger_timing(
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            fire_retry_delay_s=fire_retry_delay_s,
+        )
+        for iAttempt in range(3):
 
-        return FliSdk_V2.FliCredThree.SoftwareTrig(self.cam_context)
+            start_frame_id = self.GetFrameID()
+            deadline = time.monotonic() + float(timeout_s)
+            last_errorval = None
+            last_response = None
+
+            for attempt_idx in range(int(max_fire_attempts)):
+                errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(
+                    self.cam_context,
+                    "swtrig",
+                )
+                last_errorval = errorval
+                last_response = response
+
+                attempt_deadline = min(
+                    deadline,
+                    time.monotonic() + float(fire_retry_delay_s),
+                )
+                while time.monotonic() < attempt_deadline:
+                    current_frame_id = self.GetFrameID()
+                    if current_frame_id != start_frame_id:
+                        return errorval, response
+
+                    time.sleep(float(poll_interval_s))
+
+                if time.monotonic() >= deadline:
+                    break
+            self.ResetCamera()
+
+        raise TimeoutError(
+            "Timed out waiting for software-triggered frame "
+            f"(frame_id={start_frame_id}, "
+            f"last_errorval={last_errorval}, last_response={last_response})"
+        )
         
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=-1, lineNumber=0):
         commandstr='set swsynchro off'

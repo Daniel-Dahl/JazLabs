@@ -15,7 +15,7 @@ def build_parser():
     parser.add_argument("--viewer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--widget", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--initial-scale", type=float, default=1.0)
-    parser.add_argument("--timeout-ms", type=int, default=5000)
+    parser.add_argument("--timeout-ms", type=int, default=60000)
     parser.add_argument("--refresh-ms", type=int, default=500)
     return parser
 

@@ -5,8 +5,57 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "JazLabs"
 version = "0.1.0"
-description = "JazLabs is a playgroud to build experiments and bring in new and different instruments together like JAZZ"
+description = "JazLabs is a playground for building experiments and bringing different instruments together like jazz."
 requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "opencv-python",
+    "pyzmq",
+    "Pillow",
+    "numexpr",
+    "numba",
+    "screeninfo",
+]
+
+[project.optional-dependencies]
+notebooks = [
+    "ipython",
+    "ipykernel",
+    "jupyter",
+    "ipywidgets",
+]
+serial = [
+    "pyserial",
+]
+visa = [
+    "pyvisa",
+]
+ni = [
+    "nidaqmx",
+]
+zaber = [
+    "zaber-motion",
+]
+optimization = [
+    "cma",
+]
+powermeters = [
+    "ThorlabsPM100",
+]
+all-pip = [
+    "ipython",
+    "ipykernel",
+    "jupyter",
+    "ipywidgets",
+    "pyserial",
+    "pyvisa",
+    "nidaqmx",
+    "zaber-motion",
+    "cma",
+    "ThorlabsPM100",
+]
 
 [project.scripts]
 jazlabs-server-camera = "JazLabs.launchers.launch_camera_server:main"
