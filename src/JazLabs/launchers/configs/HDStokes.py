@@ -1,6 +1,11 @@
+from pathlib import Path
+
+
 TMUX_SESSION = "jazlabs_servers"
 
 CAMERA_HOST = "127.0.0.1"
+
+HDSTOKES_WORKSPACE = Path(__file__).resolve().parents[5]
 
 CAMERA_SERVERS = [
     {
@@ -33,6 +38,27 @@ CAMERA_SERVERS = [
         "poll_sleep": 1e-12,
         "verbose": False,
         "enabled": False,
+    },
+]
+
+SPOT_POWER_VIEWERS = [
+    {
+        "name": "cam_backref_spots",
+        "camera_name": "cam_backref",
+        "centres": (
+            HDSTOKES_WORKSPACE
+            / "Data"
+            / "HDStokes"
+            / "OrderedSpotCenters__Vgroove_HandAdjustment.npy"
+        ),
+        "radius_y": 3,
+        "radius_x": 3,
+        "dark_frame": (
+            HDSTOKES_WORKSPACE
+            / "Data"
+            / "darkframe_1000frames_vgroovecam_exp20ms_64x256.npy"
+        ),
+        "refresh_ms": 100,
     },
 ]
 
