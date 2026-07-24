@@ -59,7 +59,9 @@ all-pip = [
 
 [project.scripts]
 jazlabs-server-camera = "JazLabs.launchers.launch_camera_server:main"
+jazlabs-server-laser = "JazLabs.launchers.launch_laser_server:main"
 jazlabs-server-daq = "JazLabs.launchers.launch_daq_server:main"
+jazlabs-server-optical-switch = "JazLabs.launchers.launch_optical_switch_server:main"
 jazlabs-server-slm-linux = "JazLabs.launchers.launch_slm_linux_server:main"
 jazlabs-server-slm-windows = "JazLabs.launchers.launch_slm_windows_server:main"
 jazlabs-server-slm-stack = "JazLabs.launchers.launch_slm_stack_server:main"
@@ -68,6 +70,8 @@ jazlabs-bridge-daq = "JazLabs.launchers.launch_daq_bridge:main"
 jazlabs-tmux = "JazLabs.launchers.tmux:main"
 jazlabs-view = "JazLabs.launchers.launch_viewers:main"
 jazlabs-view-camera = "JazLabs.launchers.launch_camera_viewer:main"
+jazlabs-view-laser = "JazLabs.launchers.launch_laser_widget:main"
+jazlabs-view-optical-switch = "JazLabs.launchers.launch_optical_switch_widget:main"
 jazlabs-view-slm = "JazLabs.launchers.launch_slm_viewer:main"
 jazlabs-view-slm-stack = "JazLabs.launchers.launch_slm_stack_viewer:main"
 

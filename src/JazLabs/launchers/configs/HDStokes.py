@@ -36,6 +36,22 @@ CAMERA_SERVERS = [
     },
 ]
 
+# Set host to "0.0.0.0" on the laser computer to accept remote clients.
+# Change laser_type/laser_kwargs here if the connected laser is not the
+# Anritsu MG963x on COM3. Kept disabled so `jazlabs-tmux all` is unchanged.
+LASER_HOST = "127.0.0.1"
+
+LASER_SERVERS = [
+    {
+        "name": "tunable_laser",
+        "laser_type": "Anritsu MG963x",
+        "laser_kwargs": {"port": "COM3"},
+        "command_port": 50931,
+        "poll_timeout_ms": 100,
+        "enabled": False,
+    },
+]
+
 SLM_STACK_SERVER = {
     "name": "slm_stack",
     "host": "0.0.0.0",
