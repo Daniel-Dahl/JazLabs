@@ -14,8 +14,8 @@ import JazLabs.procedures.SLM.SLM_CenterAlignment as SLM_CenterAlignment
 
 
 # Camera measurement window, determined using the camera viewer.
-X_BEAM_CENTER_ON_CAMERA = 66
-Y_BEAM_CENTER_ON_CAMERA = 62
+X_BEAM_CENTER_ON_CAMERA = 64
+Y_BEAM_CENTER_ON_CAMERA = 64
 X_BEAM_WINDOW_WIDTH = 30
 Y_BEAM_WINDOW_WIDTH = 30
 

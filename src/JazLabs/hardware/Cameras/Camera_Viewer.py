@@ -369,6 +369,7 @@ def CameraViewerProcess(
     view_h = None
 
     last_frame_counter = None
+    previous_frame_shape = None
 
     try:
         pixel_format = cam.GetPixelFormat()
@@ -385,10 +386,19 @@ def CameraViewerProcess(
 
         frame_h, frame_w = frame_shape[:2]
 
-        if anchor_raw_x is None:
-            anchor_raw_x = view_x0 + (view_w or frame_w) / 2
-        if anchor_raw_y is None:
-            anchor_raw_y = view_y0 + (view_h or frame_h) / 2
+        old_view_w = view_w or frame_w
+        old_view_h = view_h or frame_h
+
+        if anchor_raw_x is None or not 0 <= anchor_raw_x < frame_w:
+            anchor_raw_x = view_x0 + old_view_w / 2
+        if anchor_raw_y is None or not 0 <= anchor_raw_y < frame_h:
+            anchor_raw_y = view_y0 + old_view_h / 2
+
+        # Keep the selected raw pixel at the same screen position while zooming.
+        # Recentring the anchor on every zoom makes rectangular frames jump as
+        # soon as one dimension reaches its window-size limit.
+        anchor_screen_x = (anchor_raw_x - view_x0) * old_scale
+        anchor_screen_y = (anchor_raw_y - view_y0) * old_scale
 
         scale = new_scale
 
@@ -398,8 +408,8 @@ def CameraViewerProcess(
         view_w = int(max(1, min(frame_w, target_display_w / scale)))
         view_h = int(max(1, min(frame_h, target_display_h / scale)))
 
-        view_x0 = int(anchor_raw_x - view_w / 2)
-        view_y0 = int(anchor_raw_y - view_h / 2)
+        view_x0 = int(round(anchor_raw_x - anchor_screen_x / scale))
+        view_y0 = int(round(anchor_raw_y - anchor_screen_y / scale))
 
         view_x0 = max(0, min(view_x0, frame_w - view_w))
         view_y0 = max(0, min(view_y0, frame_h - view_h))
@@ -496,8 +506,14 @@ def CameraViewerProcess(
 
             mouse_param["frame_shape"] = frame.shape
 
-            if view_w is None or view_h is None:
+            current_frame_shape = (frame_h, frame_w)
+            if (
+                view_w is None
+                or view_h is None
+                or current_frame_shape != previous_frame_shape
+            ):
                 ResetView(frame.shape)
+                previous_frame_shape = current_frame_shape
 
             if update_pixel_format_every_frame:
                 try:

@@ -44,6 +44,14 @@ class LaserClient:
         try:
             self.socket.send_json(request)
             reply = self.socket.recv_json()
+        except zmq.Again as exc:
+            self.reset_command_socket()
+            raise TimeoutError(
+                f"No reply from laser server at {self.host}:{self.command_port} "
+                f"within {self.timeout_ms} ms. Check that the server is running, "
+                "is bound to this computer's LAN interface (not only 127.0.0.1), "
+                "and that the command port is allowed through the firewall."
+            ) from exc
         except zmq.ZMQError:
             self.reset_command_socket()
             raise
