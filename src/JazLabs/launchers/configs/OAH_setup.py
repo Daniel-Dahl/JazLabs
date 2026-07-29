@@ -18,14 +18,16 @@ CAMERA_SERVERS = [
 # Laser server configuration.  Set the host to "0.0.0.0" on the machine
 # connected to the laser when clients will connect from another computer.
 # Change laser_type and laser_kwargs to match the instrument and connection.
-LASER_HOST = "127.0.0.1"
+# LASER_HOST = "127.0.0.1"
+LASER_HOST = "10.196.64.172"
+
 
 LASER_SERVERS = [
     {
         "name": "tunable_laser_oah",
         "laser_type": "Anritsu MG963x",
         "laser_kwargs": {"port": "COM3"},
-        "command_port": 50931,
+        "command_port": 5555,
         "poll_timeout_ms": 100,
         # Keep disabled until the correct laser connection details are set.
         "enabled": False,
