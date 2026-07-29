@@ -135,6 +135,9 @@ class CameraClient:
             except zmq.Again:
                 return latest
 
+    def DrainFrameNotifications(self):
+        return self._drain_frame_notifications()
+
     def WaitForFrameNotification(self, LastFrameCounter=None):
         while True:
             self.RefreshFrameSharedMemoryIfNeeded()
@@ -270,18 +273,15 @@ class CameraClient:
 
     def ResumeAcquisition(self):
         return self.SendCommand({"cmd": "resume_acquisition"})
-
+    def SetPollSleep(self, poll_sleep):
+        return self.SendCommand({
+            "cmd": "set_poll_sleep",
+            "poll_sleep": poll_sleep,
+        })
     def SetContinuousPublishFPS(self, fps):
         return self.SendCommand({
             "cmd": "set_continuous_publish_fps",
             "fps": fps,
-        })
-
-    def SetFrameWatchdog(self, timeout_s=None, action="pause"):
-        return self.SendCommand({
-            "cmd": "set_frame_watchdog",
-            "timeout_s": timeout_s,
-            "action": action,
         })
 
     def ShutdownServer(self):

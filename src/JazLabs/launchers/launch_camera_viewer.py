@@ -70,6 +70,7 @@ def start_camera_viewers(
                 frame_pub_port=camera["frame_pub_port"],
                 timeout_ms=timeout_ms,
                 refresh_ms=refresh_ms,
+                window_name=f"{camera_name} controls",
             )
             widget.startProcess()
             processes.append((f"{camera_name} widget", widget))

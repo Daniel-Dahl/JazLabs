@@ -33,6 +33,7 @@ class CameraControlWindow:
         frame_pub_port=50732,
         timeout_ms=5000,
         refresh_ms=500,
+        window_name="Camera Control",
     ):
         import tkinter as tk
         from tkinter import ttk
@@ -42,7 +43,9 @@ class CameraControlWindow:
         self.tk = tk
         self.ttk = ttk
         self.refresh_ms = int(refresh_ms)
+        self.window_name = str(window_name)
         self.status_after_id = None
+        self.client_polling_paused = False
 
         self.cam = CameraClient(
             host=host,
@@ -53,7 +56,7 @@ class CameraControlWindow:
         )
 
         self.root = tk.Tk()
-        self.root.title("Camera Control")
+        self.root.title(self.window_name)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         self.status_var = tk.StringVar(value="Connected")
@@ -177,10 +180,24 @@ class CameraControlWindow:
 
         server = ttk.LabelFrame(main, text="Server", padding=8)
         server.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        server.columnconfigure(0, weight=1)
+        for col in range(3):
+            server.columnconfigure(col, weight=1)
         ttk.Button(server, text="Refresh Status", command=self.refresh_status).grid(row=0, column=0, sticky="ew", padx=2, pady=2)
         ttk.Button(server, text="Shutdown Server", command=self.shutdown_server).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
         ttk.Button(server, text="Close Window", command=self.close).grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+        self.client_polling_button = ttk.Button(
+            server,
+            text="Pause This GUI",
+            command=self.toggle_client_polling,
+        )
+        self.client_polling_button.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            padx=2,
+            pady=2,
+        )
 
     def _add_setting_row(self, parent, row, label, var, get_command, set_command):
         ttk = self.ttk
@@ -241,8 +258,29 @@ class CameraControlWindow:
         self.get_roi()
 
     def _schedule_status_refresh(self):
+        self.status_after_id = None
+        if self.client_polling_paused:
+            return
+
         self.refresh_status()
         self.status_after_id = self.root.after(self.refresh_ms, self._schedule_status_refresh)
+
+    def toggle_client_polling(self):
+        if self.client_polling_paused:
+            self.client_polling_paused = False
+            self.client_polling_button.configure(text="Pause This GUI")
+            self.set_status("GUI polling resumed")
+            self._schedule_status_refresh()
+            return
+
+        self.client_polling_paused = True
+        if self.status_after_id is not None:
+            self.root.after_cancel(self.status_after_id)
+            self.status_after_id = None
+        self.client_polling_button.configure(text="Resume This GUI")
+        self.set_status(
+            "GUI polling paused; camera acquisition continues for other clients"
+        )
 
     def get_frame(self):
         try:
@@ -425,6 +463,7 @@ def CameraWidgetProcess(
     frame_pub_port=50732,
     timeout_ms=5000,
     refresh_ms=500,
+    window_name="Camera Control",
 ):
     try:
         window = CameraControlWindow(
@@ -433,6 +472,7 @@ def CameraWidgetProcess(
             frame_pub_port=frame_pub_port,
             timeout_ms=timeout_ms,
             refresh_ms=refresh_ms,
+            window_name=window_name,
         )
         window.run()
     except Exception:
@@ -449,12 +489,14 @@ class CameraWidget:
         frame_pub_port=50732,
         timeout_ms=5000,
         refresh_ms=500,
+        window_name="Camera Control",
     ):
         self.host = host
         self.command_port = int(command_port)
         self.frame_pub_port = int(frame_pub_port)
         self.timeout_ms = int(timeout_ms)
         self.refresh_ms = int(refresh_ms)
+        self.window_name = str(window_name)
         self.Process = None
 
     def startProcess(self):
@@ -470,6 +512,7 @@ class CameraWidget:
                 "frame_pub_port": self.frame_pub_port,
                 "timeout_ms": self.timeout_ms,
                 "refresh_ms": self.refresh_ms,
+                "window_name": self.window_name,
             },
             daemon=False,
         )

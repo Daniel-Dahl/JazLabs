@@ -14,7 +14,7 @@ def build_parser():
     parser.add_argument("--frame-pub-port", type=int, default=None)
     parser.add_argument("--frame-topic", default=None)
     parser.add_argument("--camera-type", default=None)
-    parser.add_argument("--camera-idx", type=int, default=None)
+    parser.add_argument("--camera_serial_number", type=any, default=None)
     parser.add_argument("--poll-sleep", type=float, default=None)
     parser.add_argument("--verbose", action="store_true", default=None)
     return parser
@@ -32,14 +32,14 @@ def main(argv=None):
             "frame_pub_port": args.frame_pub_port,
             "frame_topic": args.frame_topic,
             "camera_type": args.camera_type,
-            "camera_idx": args.camera_idx,
+            "camera_serial_number": args.camera_serial_number,
             "poll_sleep": args.poll_sleep,
             "verbose": args.verbose,
         },
     )
     camera.setdefault("host", config.get("CAMERA_HOST", "127.0.0.1"))
     camera.setdefault("frame_topic", "camera.frame")
-    camera.setdefault("poll_sleep", 0.0)
+    camera.setdefault("poll_sleep", 0.0001)
     camera.setdefault("verbose", False)
 
     mp.freeze_support()
@@ -52,7 +52,7 @@ def main(argv=None):
         frame_pub_port=camera["frame_pub_port"],
         CameraType=camera["camera_type"],
         CameraKwargs={
-            "CameraIdx": camera["camera_idx"],
+            "CameraSerialNumber": camera["camera_serial_number"],
             "verbose": camera["verbose"],
         },
         PollSleep=camera["poll_sleep"],
@@ -66,7 +66,7 @@ def main(argv=None):
     print(f"Frame PUB port: {camera['frame_pub_port']}")
     print(f"Frame topic: {camera['frame_topic']}")
     print(f"Camera type: {camera['camera_type']}")
-    print(f"Camera index: {camera['camera_idx']}")
+    print(f"Camera serial number: {camera['camera_serial_number']}")
     server.run_forever()
 
 

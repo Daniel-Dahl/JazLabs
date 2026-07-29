@@ -9,6 +9,7 @@ import numpy as np
 
 from JazLabs.hardware.SpotPower.SpotPower_Analysis import (
     analyse_spot_powers,
+    average_spot_power_history,
     normalise_aperture_radii,
     parse_spot_centres,
     prepare_analysis_frame,
@@ -129,6 +130,8 @@ class SpotPowerWindow:
         self.latest_frame_counter = None
         self.selected_spot_index = 0
         self.last_error_message = None
+        self.rolling_average_window = 10
+        self.absolute_power_history = []
 
         self.frame_queue = queue.Queue(maxsize=1)
         self.error_queue = queue.Queue()
@@ -142,10 +145,20 @@ class SpotPowerWindow:
 
         self.status_var = tk.StringVar(value="Connecting to camera server...")
         self.total_power_var = tk.StringVar(value="Total spot power: --")
+        self.selected_raw_power_var = tk.StringVar(
+            value="Selected spot raw power: --"
+        )
+        self.selected_normalised_power_var = tk.StringVar(
+            value="Selected spot normalized power: --"
+        )
         self.aperture_y_var = tk.StringVar(value=f"{self.aperture_radii[0]:g}")
         self.aperture_x_var = tk.StringVar(value=f"{self.aperture_radii[1]:g}")
         self.use_dark_frame_var = tk.BooleanVar(value=False)
         self.normalise_bars_var = tk.BooleanVar(value=True)
+        self.rolling_average_enabled_var = tk.BooleanVar(value=False)
+        self.rolling_average_window_var = tk.StringVar(
+            value=str(self.rolling_average_window)
+        )
         self.selected_spot_var = tk.IntVar(value=1)
 
         self.figure = Figure(figsize=(12, 6))
@@ -273,6 +286,29 @@ class SpotPowerWindow:
             variable=self.normalise_bars_var,
             command=self._redraw_current_frame,
         ).grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(
+            selection_group,
+            text="Rolling average powers",
+            variable=self.rolling_average_enabled_var,
+            command=self.apply_rolling_average,
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Label(selection_group, text="Average frames").grid(
+            row=3, column=0, sticky="w"
+        )
+        self.rolling_average_spinbox = ttk.Spinbox(
+            selection_group,
+            from_=1,
+            to=1000,
+            textvariable=self.rolling_average_window_var,
+            width=8,
+            command=self.apply_rolling_average,
+        )
+        self.rolling_average_spinbox.grid(row=3, column=1, sticky="ew")
+        self.rolling_average_spinbox.bind("<Return>", self.apply_rolling_average)
+        self.rolling_average_spinbox.bind(
+            "<FocusOut>",
+            self.apply_rolling_average,
+        )
 
         dark_group = ttk.LabelFrame(controls, text="Dark frame", padding=8)
         dark_group.grid(row=3, column=0, sticky="ew", pady=(8, 0))
@@ -285,7 +321,7 @@ class SpotPowerWindow:
             dark_group,
             text="Subtract loaded dark frame",
             variable=self.use_dark_frame_var,
-            command=self._redraw_current_frame,
+            command=self._reset_power_history_and_redraw,
         ).grid(row=1, column=0, sticky="w")
 
         ttk.Label(
@@ -295,9 +331,17 @@ class SpotPowerWindow:
         ).grid(row=4, column=0, sticky="w", pady=(12, 0))
         ttk.Label(
             controls,
+            textvariable=self.selected_raw_power_var,
+        ).grid(row=5, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(
+            controls,
+            textvariable=self.selected_normalised_power_var,
+        ).grid(row=6, column=0, sticky="w")
+        ttk.Label(
+            controls,
             textvariable=self.status_var,
             wraplength=260,
-        ).grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(6, 0))
 
     def _write_centres_to_editor(self):
         self.centres_text.delete("1.0", self.tk.END)
@@ -390,7 +434,7 @@ class SpotPowerWindow:
         if not self.stop_event.is_set():
             self._schedule_refresh()
 
-    def _analyse_and_draw_latest_frame(self):
+    def _analyse_and_draw_latest_frame(self, record_power_sample=True):
         try:
             analysis_frame = prepare_analysis_frame(
                 self.latest_frame,
@@ -398,15 +442,42 @@ class SpotPowerWindow:
                 use_dark_frame=self.use_dark_frame_var.get(),
             )
             (
-                absolute_powers,
-                relative_powers,
-                total_power,
+                measured_absolute_powers,
+                measured_relative_powers,
+                measured_total_power,
                 aperture_views,
             ) = analyse_spot_powers(
                 analysis_frame,
                 self.spot_centres,
                 self.aperture_radii,
             )
+
+            if self.rolling_average_enabled_var.get():
+                if (
+                    self.absolute_power_history
+                    and self.absolute_power_history[0].shape
+                    != measured_absolute_powers.shape
+                ):
+                    self.absolute_power_history.clear()
+
+                if record_power_sample or not self.absolute_power_history:
+                    self.absolute_power_history.append(
+                        measured_absolute_powers.copy()
+                    )
+                    self.absolute_power_history = self.absolute_power_history[
+                        -self.rolling_average_window:
+                    ]
+
+                (
+                    absolute_powers,
+                    relative_powers,
+                    total_power,
+                ) = average_spot_power_history(self.absolute_power_history)
+            else:
+                self.absolute_power_history.clear()
+                absolute_powers = measured_absolute_powers
+                relative_powers = measured_relative_powers
+                total_power = measured_total_power
         except Exception as error:
             error_text = str(error)
             if error_text != self.last_error_message:
@@ -420,7 +491,36 @@ class SpotPowerWindow:
             f"Frame {self.latest_frame_counter} | "
             f"{len(self.spot_centres)} spots | dark subtraction {dark_state}"
         )
-        self.total_power_var.set(f"Total spot power: {total_power:.6g}")
+        if self.rolling_average_enabled_var.get():
+            averaged_frame_count = len(self.absolute_power_history)
+            self.total_power_var.set(
+                f"Total spot power ({averaged_frame_count}-frame average): "
+                f"{total_power:.6g}"
+            )
+        else:
+            self.total_power_var.set(f"Total spot power: {total_power:.6g}")
+        if len(absolute_powers):
+            selected_power_index = min(
+                self.selected_spot_index,
+                len(absolute_powers) - 1,
+            )
+            selected_spot_number = selected_power_index + 1
+            selected_raw_power = absolute_powers[selected_power_index]
+            selected_normalised_power = relative_powers[selected_power_index]
+            self.selected_raw_power_var.set(
+                f"Spot {selected_spot_number} raw power: "
+                f"{selected_raw_power:.6g}"
+            )
+            self.selected_normalised_power_var.set(
+                f"Spot {selected_spot_number} normalized power: "
+                f"{selected_normalised_power:.6g} "
+                f"({100 * selected_normalised_power:.3f}%)"
+            )
+        else:
+            self.selected_raw_power_var.set("Selected spot raw power: --")
+            self.selected_normalised_power_var.set(
+                "Selected spot normalized power: --"
+            )
 
         frame_height, frame_width = analysis_frame.shape
         frame_minimum = float(np.nanmin(analysis_frame))
@@ -566,7 +666,36 @@ class SpotPowerWindow:
 
     def _redraw_current_frame(self):
         if self.latest_frame is not None:
-            self._analyse_and_draw_latest_frame()
+            self._analyse_and_draw_latest_frame(record_power_sample=False)
+
+    def _reset_power_history_and_redraw(self):
+        self.absolute_power_history.clear()
+        if self.latest_frame is not None:
+            self._analyse_and_draw_latest_frame(record_power_sample=True)
+
+    def apply_rolling_average(self, event=None):
+        del event
+        try:
+            requested_window = int(self.rolling_average_window_var.get())
+        except (TypeError, ValueError):
+            self.status_var.set("Rolling-average frame count must be an integer.")
+            self.rolling_average_window_var.set(
+                str(self.rolling_average_window)
+            )
+            return
+
+        if requested_window < 1 or requested_window > 1000:
+            self.status_var.set(
+                "Rolling-average frame count must be between 1 and 1000."
+            )
+            self.rolling_average_window_var.set(
+                str(self.rolling_average_window)
+            )
+            return
+
+        self.rolling_average_window = requested_window
+        self.rolling_average_window_var.set(str(requested_window))
+        self._reset_power_history_and_redraw()
 
     def apply_centres(self):
         try:
@@ -584,7 +713,7 @@ class SpotPowerWindow:
         self.selected_spot_spinbox.configure(to=max(1, len(self.spot_centres)))
         self.plot_configuration_dirty = True
         self.status_var.set(f"Applied {len(self.spot_centres)} spot centres.")
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def apply_aperture(self):
         try:
@@ -600,7 +729,7 @@ class SpotPowerWindow:
             f"(y={self.aperture_radii[0]:g}, x={self.aperture_radii[1]:g})."
         )
         self.plot_configuration_dirty = True
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def _apply_selected_spot(self, event=None):
         del event
@@ -649,7 +778,7 @@ class SpotPowerWindow:
         self.selected_spot_spinbox.configure(to=len(self.spot_centres))
         self._write_centres_to_editor()
         self.plot_configuration_dirty = True
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def choose_centres_file(self):
         from tkinter import filedialog
@@ -676,7 +805,7 @@ class SpotPowerWindow:
         self._write_centres_to_editor()
         self.plot_configuration_dirty = True
         self.status_var.set(f"Loaded {len(self.spot_centres)} centres from {filename}.")
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def choose_save_centres_file(self):
         from tkinter import filedialog
@@ -714,7 +843,7 @@ class SpotPowerWindow:
         self.status_var.set(
             f"Saved {len(self.spot_centres)} spot centres to {filename}."
         )
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def choose_dark_frame_file(self):
         from tkinter import filedialog
@@ -747,7 +876,7 @@ class SpotPowerWindow:
         self.dark_frame_filename = str(filename)
         self.use_dark_frame_var.set(True)
         self.status_var.set(f"Loaded dark frame: {filename}")
-        self._redraw_current_frame()
+        self._reset_power_history_and_redraw()
 
     def run(self):
         self.root.mainloop()

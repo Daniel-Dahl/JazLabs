@@ -136,3 +136,25 @@ def analyse_spot_powers(frame, spot_centres, aperture_radii):
         relative_powers = np.zeros_like(absolute_powers)
 
     return absolute_powers, relative_powers, total_power, aperture_views
+
+
+def average_spot_power_history(absolute_power_history):
+    """
+    Average matching per-spot power measurements across multiple frames.
+
+    Returns averaged absolute powers, relative powers, and total power.
+    """
+    history = np.asarray(absolute_power_history, dtype=float)
+    if history.ndim != 2:
+        raise ValueError("Power history must have shape (frames, spots).")
+    if history.shape[0] == 0:
+        raise ValueError("Power history must contain at least one frame.")
+
+    absolute_powers = np.mean(history, axis=0)
+    total_power = float(np.sum(absolute_powers))
+    if total_power > 0:
+        relative_powers = absolute_powers / total_power
+    else:
+        relative_powers = np.zeros_like(absolute_powers)
+
+    return absolute_powers, relative_powers, total_power

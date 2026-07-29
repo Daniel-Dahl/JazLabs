@@ -7,6 +7,7 @@ from JazLabs.hardware.SpotPower.SpotPower_Viewer import (
 )
 from JazLabs.hardware.SpotPower.SpotPower_Analysis import (
     analyse_spot_powers,
+    average_spot_power_history,
     parse_spot_centres,
     prepare_analysis_frame,
 )
@@ -80,3 +81,17 @@ def test_saved_spot_centres_can_be_loaded_again(tmp_path, suffix):
     save_spot_centres_file(filename, centres)
 
     np.testing.assert_allclose(load_spot_centres_file(filename), centres)
+
+
+def test_average_spot_power_history_averages_raw_and_recomputes_relative_power():
+    absolute, relative, total = average_spot_power_history(
+        [
+            [2, 6],
+            [4, 10],
+            [6, 14],
+        ]
+    )
+
+    np.testing.assert_allclose(absolute, [4, 10])
+    np.testing.assert_allclose(relative, [2 / 7, 5 / 7])
+    assert total == 14

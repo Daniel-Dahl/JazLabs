@@ -20,6 +20,11 @@ if FliSdk_V2lib not in sys.path:
 
 import FliSdk_V2
 
+try:
+    from .firstlight_ctypes import FirstLightNewImageCounter
+except ImportError:
+    from firstlight_ctypes import FirstLightNewImageCounter
+
 def snap_to_value(value, step, mode='nearest', minimum=0):
     value = int(value)
     step = int(step)
@@ -76,10 +81,18 @@ class CameraObject:
         self.pixelFormatRaw = None
         self.GetPixelFormat()
         self.GetExposureTime()
+        self._new_image_counter = None
+        self.frame_id_updates_asynchronously = False
 
         # Start SDK/grabber first
         FliSdk_V2.Start(self.cam_context)
         self.SetContinuousMode()
+        try:
+            self._new_image_counter = FirstLightNewImageCounter(self.cam_context)
+            self.frame_id_updates_asynchronously = True
+        except Exception as e:
+            if self.verbose:
+                print("First Light new-image callback unavailable:", e)
 
         atexit.register(self.shutdown)
 
@@ -94,6 +107,9 @@ class CameraObject:
             return
         self._closed = True
         try:
+            if getattr(self, "_new_image_counter", None) is not None:
+                self._new_image_counter.close()
+                self._new_image_counter = None
             self.StopAcquisition()
             FliSdk_V2.Stop(self.cam_context)
         finally:
@@ -523,7 +539,9 @@ class CameraObject:
     # frame acquisition
     # ----------------------------
     def GetFrameID(self):
-        self.frame_id = FliSdk_V2.GetBufferFilling(self.cam_context)
+        if self._new_image_counter is None:
+            return None
+        self.frame_id = self._new_image_counter.get_count()
         return self.frame_id
     
     def GetFrame(self):

@@ -370,6 +370,7 @@ def CameraViewerProcess(
 
     last_frame_counter = None
     previous_frame_shape = None
+    viewer_paused = False
 
     try:
         pixel_format = cam.GetPixelFormat()
@@ -489,6 +490,24 @@ def CameraViewerProcess(
 
     try:
         while True:
+            if viewer_paused:
+                key = cv2.waitKey(20) & 0xFF
+
+                if key == ord("q"):
+                    break
+
+                if key == ord("p"):
+                    viewer_paused = False
+                    cam.DrainFrameNotifications()
+                    last_frame_counter = cam.GetFrameCounter()
+                    try:
+                        cv2.setWindowTitle(window_name, window_name)
+                    except Exception:
+                        pass
+                    print(f"{window_name}: resumed")
+
+                continue
+
             software_trigger_mode = cam.IsSoftwareTriggerMode()
 
             if software_trigger_mode:
@@ -650,6 +669,20 @@ def CameraViewerProcess(
                 roi_current = None
 
             elif key == ord("p"):
+                viewer_paused = True
+                try:
+                    cv2.setWindowTitle(
+                        window_name,
+                        f"{window_name} [PAUSED]",
+                    )
+                except Exception:
+                    pass
+                print(
+                    f"{window_name}: paused; camera acquisition continues "
+                    "for other clients"
+                )
+
+            elif key == ord("f"):
                 try:
                     pixel_format = cam.GetPixelFormat()
                     display_min = hw_min

@@ -20,6 +20,11 @@ if FliSdk_V2lib not in sys.path:
 
 import FliSdk_V2
 
+try:
+    from .firstlight_ctypes import FirstLightNewImageCounter
+except ImportError:
+    from firstlight_ctypes import FirstLightNewImageCounter
+
 def snap_to_value(value, step, mode='nearest', minimum=0):
     value = int(value)
     step = int(step)
@@ -44,41 +49,127 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
 
     return int(snapped)
 
+
 class CameraObject:
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=17.0e-6, verbose=False):
+    def __init__(
+        self,
+        CameraSerialNumber,
+        CalibrationFile=None,
+        PixelSize=17.0e-6,
+        verbose=False,
+    ):
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
         self.cam_context = FliSdk_V2.Init()
         self._closed = False
         self.verbose = verbose
+        self.CameraSerialNumber = requested_serial_number
 
         self.grabber_list = FliSdk_V2.DetectGrabbers(self.cam_context)
         self.camera_list = FliSdk_V2.DetectCameras(self.cam_context)
 
         self.num_cameras = len(self.camera_list)
+        if self.num_cameras == 0:
+            self._closed = True
+            FliSdk_V2.Exit(self.cam_context)
+            raise RuntimeError("No First Light cameras detected")
+
         if self.verbose:
             print(f"{self.num_cameras} cameras detected:")
             for k, name in enumerate(self.camera_list):
                 print(f"{k}: {name}")
-            print(f"Using camera {CameraIdx}")
 
-        ok = FliSdk_V2.SetCamera(self.cam_context, self.camera_list[CameraIdx])
-        if not ok:
-            raise RuntimeError("Failed to set camera")
+        discovered_serial_numbers = []
+        selected_camera_index = None
+        for camera_index, camera_identifier in enumerate(self.camera_list):
+            camera_set = FliSdk_V2.SetCamera(
+                self.cam_context,
+                camera_identifier,
+            )
+            if not camera_set:
+                if self.verbose:
+                    print(f"Could not select detected camera {camera_index}")
+                continue
+
+            FliSdk_V2.SetMode(self.cam_context, FliSdk_V2.Mode.Full)
+            camera_updated = FliSdk_V2.Update(self.cam_context)
+            if not camera_updated:
+                if self.verbose:
+                    print(f"Could not initialise detected camera {camera_index}")
+                continue
+
+            serial_read, hardware_uid = FliSdk_V2.FliCred.GetHwuid(
+                self.cam_context
+            )
+            if not serial_read:
+                if self.verbose:
+                    print(
+                        "Could not read the serial number of detected camera "
+                        f"{camera_index}"
+                    )
+                continue
+
+            discovered_serial_number = str(hardware_uid).strip()
+            discovered_serial_numbers.append(discovered_serial_number)
+            if self.verbose:
+                print(
+                    f"Camera {camera_index} hardware UID: "
+                    f"{discovered_serial_number}"
+                )
+
+            if (
+                discovered_serial_number.casefold()
+                == requested_serial_number.casefold()
+            ):
+                selected_camera_index = camera_index
+                self.CameraIdx = camera_index
+                self.camSerialNumber = hardware_uid
+                break
+
+        if selected_camera_index is None:
+            self._closed = True
+            FliSdk_V2.Exit(self.cam_context)
+            discovered_serials_text = ", ".join(discovered_serial_numbers)
+            if not discovered_serials_text:
+                discovered_serials_text = "none readable"
+            raise ValueError(
+                "First Light camera with serial number "
+                f"{requested_serial_number!r} was not found. "
+                f"Discovered serial numbers: {discovered_serials_text}"
+            )
+
+        if self.verbose:
+            print(
+                f"Using camera serial number {self.camSerialNumber} "
+                f"(detected index {selected_camera_index})"
+            )
 
         FliSdk_V2.SetMode(self.cam_context, FliSdk_V2.Mode.Full)
 
         ok = FliSdk_V2.Update(self.cam_context)
         if not ok:
             raise RuntimeError("Failed to update SDK after setting camera")
+        self.GetCameraModel()
 
         self.Nx, self.Ny = FliSdk_V2.GetCurrentImageDimension(self.cam_context)
         
         self.pixelFormat = "mono14"
         self.pixelFormatRaw = "Mono14"
         self.GetExposureTime()
+        self._new_image_counter = None
+        self.frame_id_updates_asynchronously = False
        
         # Start SDK/grabber first
         FliSdk_V2.Start(self.cam_context)
         self.SetContinuousMode()
+        try:
+            self._new_image_counter = FirstLightNewImageCounter(self.cam_context)
+            self.frame_id_updates_asynchronously = True
+        except Exception as e:
+            if self.verbose:
+                print("First Light new-image callback unavailable:", e)
         
 
         atexit.register(self.shutdown)
@@ -94,6 +185,9 @@ class CameraObject:
             return
         self._closed = True
         try:
+            if getattr(self, "_new_image_counter", None) is not None:
+                self._new_image_counter.close()
+                self._new_image_counter = None
             self.StopAcquisition()
             FliSdk_V2.Stop(self.cam_context)
         finally:
@@ -101,6 +195,27 @@ class CameraObject:
                 FliSdk_V2.Exit(self.cam_context)
             except Exception:
                 pass
+
+    def GetSerialNumber(self):
+        ok, hardware_uid = FliSdk_V2.FliCred.GetHwuid(self.cam_context)
+        self.camSerialNumber = hardware_uid
+        if not ok:
+            raise RuntimeError("Failed to read camera hardware UID")
+
+        print("Camera hardware UID:", hardware_uid)
+        return self.camSerialNumber
+    
+    def GetCameraModel(self):
+        camera_model = FliSdk_V2.GetCameraModel(self.cam_context)
+        camera_model = "".join(
+                character
+                for character in camera_model.lower()
+                if character.isalnum()
+            )
+        print("Camera model:", camera_model)
+        self.camModel = camera_model
+        
+        return self.camModel
     
     def StartAcquisition(self):
         ok = FliSdk_V2.Start(self.cam_context)
@@ -117,6 +232,44 @@ class CameraObject:
 
     def ResetBuffer(self):
         FliSdk_V2.ResetBuffer(self.cam_context)
+
+    def GetDiagnostics(self):
+        diagnostics = {
+        "camera_model": self.camModel,
+        "trigger_returned_ok": self.command_ok,
+        "sdk_started": FliSdk_V2.IsStarted(self.cam_context),
+        "received_rate": FliSdk_V2.GetImageReceivedRate(
+            self.cam_context
+        ),
+        "buffer_filling": FliSdk_V2.GetBufferFilling(
+            self.cam_context
+        ),
+        "buffer_capacity": FliSdk_V2.GetImagesCapacity(
+            self.cam_context
+        ),
+        "frame_count_errors": FliSdk_V2.GetNbCountError(
+            self.cam_context
+        ),
+        "start_frame_id": self.start_frame_id,
+        "current_frame_id": self.GetFrameID(),
+    }
+
+        for command in (
+            "status raw",
+            "status detailed",
+            "swsynchro raw",
+            "swsynchro source raw",
+            "extsynchro raw",
+            "nbframesperswtrig raw",
+            "fps raw",
+            "tint raw",
+        ):
+            ok, response = FliSdk_V2.FliSerialCamera.SendCommand(
+                self.cam_context,
+                command,
+            )
+            diagnostics[command] = (ok, response)
+        return diagnostics
 
     # ----------------------------
     # buffer
@@ -137,65 +290,6 @@ class CameraObject:
         return int(buffsize_bytes // bytes_per_frame)
     def GetNumberOfFramesInBuffer(self):
         return FliSdk_V2.GetBufferFilling(self.cam_context)
-
-    def GetCameraHealth(self):
-        def read_value(name, func):
-            try:
-                return func()
-            except Exception as e:
-                return {
-                    "error": f"{type(e).__name__}: {e}",
-                }
-
-        status = read_value(
-            "status",
-            lambda: FliSdk_V2.FliCred.GetStatus(self.cam_context),
-        )
-        status_detailed = read_value(
-            "status_detailed",
-            lambda: FliSdk_V2.FliCred.GetStatusDetailed(self.cam_context),
-        )
-
-        return {
-            "sdk_started": read_value(
-                "sdk_started",
-                lambda: bool(FliSdk_V2.IsStarted(self.cam_context)),
-            ),
-            "status": status,
-            "status_detailed": status_detailed,
-            "image_received_rate": read_value(
-                "image_received_rate",
-                lambda: float(FliSdk_V2.GetImageReceivedRate(self.cam_context)),
-            ),
-            "buffer_filling": read_value(
-                "buffer_filling",
-                lambda: int(FliSdk_V2.GetBufferFilling(self.cam_context)),
-            ),
-            "buffer_size_frames": read_value(
-                "buffer_size_frames",
-                self.GetBufferSizeInNumberOfFrames,
-            ),
-            "frame_id": read_value(
-                "frame_id",
-                self.GetFrameID,
-            ),
-            "count_errors": read_value(
-                "count_errors",
-                lambda: int(FliSdk_V2.GetNbCountError(self.cam_context)),
-            ),
-            "trigger_mode": read_value(
-                "trigger_mode",
-                self.GetTriggerMode,
-            ),
-            "fps": read_value(
-                "fps",
-                self.GetFPS,
-            ),
-            "exposure_time_us": read_value(
-                "exposure_time_us",
-                self.GetExposureTime,
-            ),
-        }
 
     # ----------------------------
     # trigger / mode configuration
@@ -244,7 +338,23 @@ class CameraObject:
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr) 
         self.GetTriggerMode()
 
-    def SetSoftwareTriggerMode(self):
+    def SetNbFramesPerSoftwareTrigger(self, n_frames):
+        """
+        Set the number of frames acquired per software trigger.
+        """
+
+        if "cred2lite" in self.camModel:
+            command_ok = FliSdk_V2.FliCredTwoLite.SetNbFramesPerSwTrig(self.cam_context,int(n_frames))
+        elif "cred3" in self.camModel:
+            command_ok = FliSdk_V2.FliCredThree.SetNbFramesPerSwTrig(self.cam_context,int(n_frames))
+        else:
+            raise RuntimeError(f"Unsupported First Light camera model: {self.camModel!r}")
+        
+        if not command_ok:
+            raise RuntimeError("Failed to set number of frames per software trigger")
+        self.GetTriggerMode()
+
+    def SetSoftwareTriggerMode(self, n_frames=1):
         """
         One trigger starts one frame.
         """
@@ -256,10 +366,9 @@ class CameraObject:
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
         commandstr='set extsynchro off'
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr) 
-    
+        self.SetNbFramesPerSoftwareTrigger(n_frames)
         self.GetTriggerMode()
 
-    
     def _estimate_software_trigger_timing(self, timeout_s=None, poll_interval_s=None, fire_retry_delay_s=None):
         exposure_s = max(float(getattr(self, "ExposureTime", 0.0)) * 1e-6, 0.0)
 
@@ -269,6 +378,7 @@ class CameraObject:
                 fps = float(self.GetFPS())
             except Exception:
                 fps = 0.0
+
         frame_period_s = (1.0 / fps) if fps > 0 else 0.0
         expected_frame_s = max(exposure_s, frame_period_s)
         if expected_frame_s <= 0:
@@ -284,66 +394,49 @@ class CameraObject:
             timeout_s = max(5.0, 3.0 * float(fire_retry_delay_s))
 
         return float(timeout_s), float(poll_interval_s), float(fire_retry_delay_s)
-    
-    def FireSoftwareTrigger(self,
-        timeout_s=None,
-        poll_interval_s=None,
-        max_fire_attempts=100,
-        fire_retry_delay_s=None,):
-        """
-        Fire one software trigger and wait until the camera frame marker changes.
-
-        The serial ``swtrig`` command acknowledges that the trigger command was
-        accepted. The frame marker changing is the confirmation that a new frame
-        has actually arrived in the SDK buffer.
-        """
-        if self.trigger_mode != "On" or self.trigger_source != "Software":
-            self.GetTriggerMode()
-
-        if self.trigger_mode != "On" or self.trigger_source != "Software":
-            raise RuntimeError("Camera is not in software trigger mode")
-        
-        timeout_s, poll_interval_s, fire_retry_delay_s = self._estimate_software_trigger_timing(
-            timeout_s=timeout_s,
-            poll_interval_s=poll_interval_s,
-            fire_retry_delay_s=fire_retry_delay_s,
-        )
-        for iAttempt in range(3):
-
+    def FireSoftwareTrigger(
+            self,
+            timeout_s=1.0,
+            poll_interval_s=0.000,
+        ):
             start_frame_id = self.GetFrameID()
+
+            if "cred2lite" in self.camModel:
+                command_ok = FliSdk_V2.FliCredTwoLite.SoftwareTrig(
+                    self.cam_context
+                )
+            elif "cred3" in self.camModel:
+                command_ok = FliSdk_V2.FliCredThree.SoftwareTrig(
+                    self.cam_context
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported First Light camera model: {self.camModel!r}"
+                )
+
             deadline = time.monotonic() + float(timeout_s)
-            last_errorval = None
-            last_response = None
 
-            for attempt_idx in range(int(max_fire_attempts)):
-                errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(
-                    self.cam_context,
-                    "swtrig",
-                )
-                last_errorval = errorval
-                last_response = response
+            while time.monotonic() < deadline:
+                current_frame_id = self.GetFrameID()
 
-                attempt_deadline = min(
-                    deadline,
-                    time.monotonic() + float(fire_retry_delay_s),
-                )
-                while time.monotonic() < attempt_deadline:
-                    current_frame_id = self.GetFrameID()
-                    if current_frame_id != start_frame_id:
-                        return errorval, response
+                if current_frame_id != start_frame_id:
+                    if not command_ok and self.verbose:
+                        print(
+                            "SoftwareTrig returned False, but a frame arrived: "
+                            f"model={self.camModel!r}, "
+                            f"start_frame_id={start_frame_id}, "
+                            f"current_frame_id={current_frame_id}"
+                        )
 
-                    time.sleep(float(poll_interval_s))
+                    # The requested operation succeeded, regardless of the
+                    # misleading SDK command return value.
+                    return True
+                time.sleep(float(poll_interval_s))
 
-                if time.monotonic() >= deadline:
-                    break
-            self.ResetCamera()
+            raise TimeoutError("Software trigger produced no observable frame")
 
-        raise TimeoutError(
-            "Timed out waiting for software-triggered frame "
-            f"(frame_id={start_frame_id}, "
-            f"last_errorval={last_errorval}, last_response={last_response})"
-        )
-        
+
+
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=-1, lineNumber=0):
         commandstr='set swsynchro off'
         errorval, response = FliSdk_V2.FliSerialCamera.SendCommand(self.cam_context, commandstr)
@@ -579,7 +672,9 @@ class CameraObject:
         return self.offset_x, self.offset_y, self.width, self.height
     
     def GetFrameID(self):
-        self.frame_id = FliSdk_V2.GetBufferFilling(self.cam_context)
+        if self._new_image_counter is None:
+            return None
+        self.frame_id = self._new_image_counter.get_count()
         return self.frame_id
     # ----------------------------
     # frame acquisition

@@ -38,19 +38,11 @@ SLM_DISPLAY_PORT = 5556
 SLM_PIXEL_SIZE = 17e-6
 SLM_WAVELENGTH = 1550e-9
 SLM_REFRESH_TIME = 40e-3
-# SLM_LUT_FILE = (
-#     r"C:\Program Files\Meadowlark Optics\Blink OverDrive Plus\LUT Files"
-#     r"\SLM6658_at1550_75c_2.lut"
-# )
-from pathlib import Path
-import JazLabs
-JAZLABS_ROOT = Path(JazLabs.__file__).resolve().parents[2]
-LUTFOLDER =JAZLABS_ROOT/ "calibrations"/ "SLM"/ "CustomLutFiles"
-SLM_LUT_FILE = str(LUTFOLDER / "SLM_PhaseCalibration_New_2.lut")
-# SLM_LUT_FILE = (
-#     r"C:\Program Files\Meadowlark Optics\Blink OverDrive Plus\LUT Files"
-#     r"\SLM6658_at1550_75c_2.lut"
-# )
+SLM_LUT_FILE = (
+    r"C:\Program Files\Meadowlark Optics\Blink OverDrive Plus\LUT Files"
+    r"\SLM6658_at1550_75c_2.lut"
+)
+
 # Output and optional checks.
 MASK_PROPERTIES_FILENAME = "SLM_CenterAlignment.npy"
 SAVE_MASK_PROPERTIES = True

@@ -2,6 +2,7 @@
 
 from .SpotPower_Analysis import (
     analyse_spot_powers,
+    average_spot_power_history,
     parse_spot_centres,
     prepare_analysis_frame,
 )
@@ -14,6 +15,7 @@ from .SpotPower_Viewer import (
 __all__ = [
     "SpotPowerViewer",
     "analyse_spot_powers",
+    "average_spot_power_history",
     "load_spot_centres_file",
     "parse_spot_centres",
     "prepare_analysis_frame",

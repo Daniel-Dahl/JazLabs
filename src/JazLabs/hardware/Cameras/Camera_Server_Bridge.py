@@ -174,22 +174,6 @@ class CameraZMQBridgeServer:
                 "continuous_publish_fps",
                 None,
             ),
-            "frame_watchdog_timeout": self.remote_properties.get(
-                "frame_watchdog_timeout",
-                None,
-            ),
-            "frame_watchdog_action": self.remote_properties.get(
-                "frame_watchdog_action",
-                None,
-            ),
-            "frame_watchdog_tripped": self.remote_properties.get(
-                "frame_watchdog_tripped",
-                None,
-            ),
-            "frame_watchdog_trip_count": self.remote_properties.get(
-                "frame_watchdog_trip_count",
-                None,
-            ),
             "remote_host": self.remote_host,
             "remote_command_port": self.remote_command_port,
             "remote_frame_pub_port": self.remote_frame_pub_port,
