@@ -68,3 +68,14 @@ class OpticalSwitchClient:
 
     def CloseSwitch(self):
         return self.SendCommand({"cmd": "close_switch"})
+    
+    def close(self):
+        try:
+            self.socket.close(0)
+        except Exception:
+            pass
+
+        try:
+            self.context.term()
+        except Exception:
+            pass

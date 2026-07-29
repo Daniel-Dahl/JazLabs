@@ -6,7 +6,7 @@ CAMERA_SERVERS = [
     {
         "name": "cam_oah",
         "camera_type": "First Light C-Red3_2Lite",
-        "camera_idx": 0,
+        "camera_serial_number": '01-00001de3be41',
         "command_port": 50731,
         "frame_pub_port": 50732,
         "frame_topic": "camera.frame",
@@ -18,18 +18,27 @@ CAMERA_SERVERS = [
 # Laser server configuration.  Set the host to "0.0.0.0" on the machine
 # connected to the laser when clients will connect from another computer.
 # Change laser_type and laser_kwargs to match the instrument and connection.
-# LASER_HOST = "127.0.0.1"
-LASER_HOST = "10.196.64.172"
+LASER_HOST = "127.0.0.1"
+# LASER_HOST = "10.196.64.172"
 LASER_SERVERS = [
     {
-        "name": "tunable_laser_oah",
+        "name": "Anritsu",
         "laser_type": "Anritsu MG963x",
         "laser_kwargs": {"port": "COM3"},
-        "command_port": 5555,
+        "command_port": 50631,
         "poll_timeout_ms": 100,
         # Keep disabled until the correct laser connection details are set.
         "enabled": False,
     },
+    {
+            "name": "JDS",
+            "laser_type": "JDS Tunable",
+            "laser_kwargs": {"port": "GPIB0::1::INSTR"},
+            "command_port": 50632,
+            "poll_timeout_ms": 100,
+            # Keep disabled until the correct laser connection details are set.
+            "enabled": False,
+        },
 ]
 OPTICAL_SWITCH_HOST = "127.0.0.1"
 
@@ -38,7 +47,7 @@ OPTICAL_SWITCH_SERVERS = [
         "name": "pol_switch",
         "switch_type": "JDS_Pol",
         "host": OPTICAL_SWITCH_HOST,
-        "command_port": 50835,
+        "command_port": 50832,
         "serial_port": "COM4",
         "serial_timeout": 2.0,
         "rtscts": True,
@@ -49,7 +58,7 @@ OPTICAL_SWITCH_SERVERS = [
         "name": "optical_switch",
         "switch_type": "JDS_SC",
         "host": OPTICAL_SWITCH_HOST,
-        "command_port": 50836,
+        "command_port": 50831,
         "serial_port": "COM12",
         "serial_timeout": 2.0,
         "rtscts": True,

@@ -36,9 +36,9 @@ def build_parser():
 def build_switch_kwargs(switch):
     return {
         "port": switch["serial_port"],
-        "timeout": switch["serial_timeout"],
-        "rtscts": switch["rtscts"],
-        "dsrdtr": switch["dsrdtr"],
+        # "timeout": switch["serial_timeout"],
+        # "rtscts": switch["rtscts"],
+        # "dsrdtr": switch["dsrdtr"],
     }
 
 

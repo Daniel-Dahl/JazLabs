@@ -12,17 +12,17 @@ class LaserObject:
     and Santec drivers while keeping the JDS command set internally.
     """
 
-    def __init__(self, LaserID=None):
+    def __init__(self, port=None):
         rm = pyvisa.ResourceManager()
 
-        if LaserID is None:
+        if port is None:
             print(rm.list_resources())
             print("Select the correct VISA resource from the list and re-initialise.")
             self.Laser = None
             return
 
-        self.LaserID = LaserID
-        self.Laser = rm.open_resource(self.LaserID, timeout=2000)
+        self.port = port
+        self.Laser = rm.open_resource(self.port, timeout=2000)
         self.Laser.write_termination = "\n"
         self.Laser.read_termination = "\n"
         self.Laser.send_end = True

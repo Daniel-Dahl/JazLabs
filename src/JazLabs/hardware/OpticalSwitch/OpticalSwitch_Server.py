@@ -57,7 +57,7 @@ class OpticalSwitchZMQServer:
         else:
             raise ValueError(f"Unknown switch_type: {self.switch_type}")
         switch_obj = OpticalSwitch_lib.OpticalSwitchObject(**self.switch_kwargs)
-        
+
 
         context = None
         command_socket = None
