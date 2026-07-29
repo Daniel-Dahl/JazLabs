@@ -41,7 +41,8 @@ def CalculateCouplingMatrix(fieldX,fieldY,pixelsize):
     # CoupMat_norm=np.zeros((modeCountY,modeCountX),dtype=complex)
     for imodeY in range(modeCountY):
         for imodeX in range(modeCountX):
-            CoupMat[imodeY,imodeX]=np.sum((fieldY[imodeY,:,:])*((fieldX[imodeX,:,:])))*dxy
+            CoupMat[imodeY,imodeX]=np.sum(np.conj(fieldY[imodeY,:,:])*((fieldX[imodeX,:,:])))
+            # CoupMat[imodeY,imodeX]=np.sum((fieldY[imodeY,:,:])*((fieldX[imodeX,:,:])))*dxy
             
             # CoupMat[imodeY,imodeX]=np.sum((fieldY[imodeY,:,:])*(np.conj(fieldX[imodeX,:,:])))*dxy
             # CoupMat[imodeY,imodeX]=np.sum((np.conj(fieldX[imodeX,:,:]))*(fieldY[imodeY,:,:]))*dxy
