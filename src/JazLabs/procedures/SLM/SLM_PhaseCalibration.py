@@ -327,6 +327,7 @@ def PlotPhaseCalibrationFit(fit_result,PowerValues_0th,PowerValues_plus1st,
         np.asarray(PowerValues_plus1st)[:-1]
         +np.asarray(PowerValues_minus1st)[:-1]
     )
+    linearphase=np.linspace(0,2*np.pi,len(zeroth_order))
 
     figure,axes=plt.subplots(1,3,figsize=(15,4))
     axes[0].plot(fit_result["g"],zeroth_order,label="Measured")
@@ -345,6 +346,7 @@ def PlotPhaseCalibrationFit(fit_result,PowerValues_0th,PowerValues_plus1st,
     axes[1].legend()
 
     axes[2].plot(fit_result["g"],fit_result["phi"])
+    axes[2].plot(fit_result["g"],linearphase,linestyle="--",label="Linear phase")
     axes[2].set_title(f"Recovered phase: {fit_result['phi_end']/np.pi:.3f}π")
     axes[2].set_xlabel("SLM grey level")
     axes[2].set_ylabel("Phase [rad]")

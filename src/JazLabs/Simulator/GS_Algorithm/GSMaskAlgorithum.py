@@ -229,6 +229,8 @@ def GS_ComplexShapingForDM(Field_target,Field_Source,Aperture_ForMode,Aperture_F
     Field_target_appForOverlap,_ = arrmani.apply_square_aperture(Field_target,roi_center,ROINx,ROINy)
     target_overlap_power = np.sum(np.abs(Field_target_appForOverlap)**2)
     overlap_abs_history = []
+    best_overlap_abs = -np.inf
+    BestPhaseMask = None
     FieldBackPropagated=fftshift(ifft2(ifftshift(Field_target)))
     
     
@@ -276,20 +278,25 @@ def GS_ComplexShapingForDM(Field_target,Field_Source,Aperture_ForMode,Aperture_F
         # ifft the new target field back so that it its phase in the souce plane can be calculated and applied to the source 
         FieldBackPropagated =fftshift(ifft2(ifftshift(FieldForBackPropagation)))*np.sqrt(Nx*Ny)#Scaling due to ifft2
 
-        should_update_overlap = (
+        FarField_appForOverlap,_ = arrmani.apply_square_aperture(FarField_reconstructed_mode,roi_center,ROINx,ROINy)
+        farfield_overlap_power = np.sum(np.abs(FarField_appForOverlap)**2)
+        if farfield_overlap_power > 0 and target_overlap_power > 0:
+            overlap = np.sum(np.conj(Field_target_appForOverlap)*FarField_appForOverlap)
+            overlap = overlap/np.sqrt(farfield_overlap_power*target_overlap_power)
+            overlap_abs = np.abs(overlap)**2
+        else:
+            overlap = 0.0 + 0.0j
+            overlap_abs = 0.0
+
+        if overlap_abs > best_overlap_abs:
+            best_overlap_abs = overlap_abs
+            BestPhaseMask = np.copy(PhaseMask)
+
+        should_update_overlap_history = (
             itime + 1 == ItterCount
             or (itime + 1) % max(1, overlap_update_every) == 0
         )
-        if should_update_overlap:
-            FarField_appForOverlap,_ = arrmani.apply_square_aperture(FarField_reconstructed_mode,roi_center,ROINx,ROINy)
-            farfield_overlap_power = np.sum(np.abs(FarField_appForOverlap)**2)
-            if farfield_overlap_power > 0 and target_overlap_power > 0:
-                overlap = np.sum(np.conj(Field_target_appForOverlap)*FarField_appForOverlap)
-                overlap = overlap/np.sqrt(farfield_overlap_power*target_overlap_power)
-                overlap_abs = np.abs(overlap)**2
-            else:
-                overlap = 0.0 + 0.0j
-                overlap_abs = 0.0
+        if should_update_overlap_history:
             overlap_abs_history.append(overlap_abs)
 
             if show_progress and using_tqdm_progress:
@@ -322,6 +329,19 @@ def GS_ComplexShapingForDM(Field_target,Field_Source,Aperture_ForMode,Aperture_F
     
     #Need to normalise the FarField_app to 1 so that when the overlap is calculated against the Field_target it will make sense
     FarField_app_norm=FarField_app/(np.sqrt(np.sum(np.abs(FarField_app)**2)))
+
+    FarField_appForOverlap,_ = arrmani.apply_square_aperture(FarField_app,roi_center,ROINx,ROINy)
+    farfield_overlap_power = np.sum(np.abs(FarField_appForOverlap)**2)
+    if farfield_overlap_power > 0 and target_overlap_power > 0:
+        last_mask_overlap = np.sum(np.conj(Field_target_appForOverlap)*FarField_appForOverlap)
+        last_mask_overlap = last_mask_overlap/np.sqrt(farfield_overlap_power*target_overlap_power)
+        last_mask_overlap_abs = np.abs(last_mask_overlap)**2
+    else:
+        last_mask_overlap_abs = 0.0
+
+    if BestPhaseMask is None or last_mask_overlap_abs > best_overlap_abs:
+        best_overlap_abs = last_mask_overlap_abs
+        BestPhaseMask = np.copy(PhaseMask)
     
     TotalPwrInFarField=np.sum(np.abs((FarField))**2)
     PwrInReconMode=np.sum(np.abs((FarField_app))**2)
@@ -344,7 +364,9 @@ def GS_ComplexShapingForDM(Field_target,Field_Source,Aperture_ForMode,Aperture_F
         plt.title("GS DM overlap progress")
         plt.grid(True)
     
-    return PhaseMask,FarField_app,FarField,TotalPwrInFarField,PwrInReconMode
+    # PhaseMask remains the first return value for compatibility. BestPhaseMask is
+    # appended so the positions of the existing five return values do not change.
+    return PhaseMask,FarField_app,FarField,TotalPwrInFarField,PwrInReconMode,BestPhaseMask
 
 
 
