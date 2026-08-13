@@ -1,5 +1,5 @@
 """
-Open live spot-power analysis for a running JazLabs camera server.
+Open live spot-power analysis for a running pwi_inst camera server.
 
 Spot centres always use NumPy image order: ``(y, x)``.
 """
@@ -8,7 +8,7 @@ import multiprocessing as mp
 
 import numpy as np
 
-from JazLabs.hardware.SpotPower import SpotPowerViewer
+from pwi_inst.hardware.SpotPower import SpotPowerViewer
 
 
 if __name__ == "__main__":
