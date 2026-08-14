@@ -505,8 +505,8 @@ class AlginmentObj():
         MaskSize=self.slmObjs[self.ObjIdx].polProps[self.channel][self.pol].masksize
         
         
-        Nx=MaskSize[0]
-        Ny=MaskSize[1]
+        Nx=520#MaskSize[0]
+        Ny=520#MaskSize[1]
         xCenter=self.slmObjs[self.ObjIdx].AllMaskProperties[self.channel][self.pol][self.imask].center[1]
         yCenter=self.slmObjs[self.ObjIdx].AllMaskProperties[self.channel][self.pol][self.imask].center[0]
         MASK=np.ones((Nx,Ny),dtype=complex)

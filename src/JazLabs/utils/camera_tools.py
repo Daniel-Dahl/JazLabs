@@ -37,13 +37,24 @@ def take_darkframe(camera_object, num_frames=10, save_path=None, wait_time=None)
 
     # Average (keep as float64)
     darkframe = darkframe_accum / num_frames
+    print(camera_object.GetExposureTime())
 
     if save_path is not None:
         # Save with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         darkframe_path = Path(save_path) / f"darkframe_{timestamp}.npy"
+        darkframe_path_meta = Path(save_path) / f"darkframe_meta_{timestamp}.npy"
+        
         # darkframe_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(darkframe_path, darkframe)
+        np.save(darkframe_path_meta, {
+            "num_frames": num_frames,
+            "wait_time": wait_time,
+            "timestamp": timestamp,
+            "exposure_time": camera_object.GetExposureTime(),
+            "fps": camera_object.GetFPS(),
+            "frame_shape": darkframe.shape,
+        })
         print(f"Dark frame saved to: {darkframe_path}")
     camera_object.SetContinuousMode()
 
