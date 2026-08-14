@@ -942,7 +942,7 @@ class PhaseMaskObject():
         Set the refresh rate through the current SLM stack when supported.
 
         Older code stored refresh timing only on the phase-mask object. The
-        Linux/Windows SLM stack exposes SetRefreshRate on the underlying
+        Bridged SLM stack exposes SetRefreshRate on the underlying
         SLMObject, so this method keeps both layers in sync for UI callers.
         """
         refresh_rate = float(NewRefreshRate)

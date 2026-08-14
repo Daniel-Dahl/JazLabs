@@ -6,7 +6,7 @@ import numpy as np
 import zmq
 
 
-class SLMWindowsServer:
+class SLMZMQServer:
     def __init__(
         self,
         host="0.0.0.0",
@@ -29,12 +29,12 @@ class SLMWindowsServer:
         self.RefreshRate = float(RefreshRate)
         self.LutFile = LutFile
 
-    def _send_display_ack_to_linux_server(self, linux_server_ack_socket, ack):
+    def _send_display_ack_to_bridge(self, bridge_ack_socket, ack):
         ack = dict(ack)
         ack.setdefault("type", "slm_display_ack")
         ack.setdefault("ack_time_ns", time.time_ns())
         try:
-            linux_server_ack_socket.send_multipart(
+            bridge_ack_socket.send_multipart(
                 [
                     self.ack_topic.encode("utf-8"),
                     json.dumps(ack).encode("utf-8"),
@@ -93,7 +93,7 @@ class SLMWindowsServer:
             "last_timing": self.last_timing,
         }
 
-    def _process_linux_server_command(self, msg):
+    def _process_bridge_command(self, msg):
         cmd = msg.get("cmd")
         client_id = msg.get("client_id", "unknown_client")
 
@@ -169,32 +169,32 @@ class SLMWindowsServer:
         self.running = True
 
         context = zmq.Context()
-        linux_server_command_socket = context.socket(zmq.REP)
-        linux_server_command_socket.bind(f"tcp://{self.host}:{self.command_port}")
+        bridge_command_socket = context.socket(zmq.REP)
+        bridge_command_socket.bind(f"tcp://{self.host}:{self.command_port}")
 
-        linux_server_image_socket = context.socket(zmq.SUB)
-        linux_server_image_socket.setsockopt(zmq.RCVHWM, 1)
-        linux_server_image_socket.setsockopt_string(zmq.SUBSCRIBE, self.image_topic)
-        linux_server_image_socket.bind(f"tcp://{self.host}:{self.image_sub_port}")
+        bridge_image_socket = context.socket(zmq.SUB)
+        bridge_image_socket.setsockopt(zmq.RCVHWM, 1)
+        bridge_image_socket.setsockopt_string(zmq.SUBSCRIBE, self.image_topic)
+        bridge_image_socket.bind(f"tcp://{self.host}:{self.image_sub_port}")
 
-        linux_server_ack_socket = context.socket(zmq.PUB)
-        linux_server_ack_socket.setsockopt(zmq.SNDHWM, 16)
-        linux_server_ack_socket.bind(f"tcp://{self.host}:{self.ack_pub_port}")
+        bridge_ack_socket = context.socket(zmq.PUB)
+        bridge_ack_socket.setsockopt(zmq.SNDHWM, 16)
+        bridge_ack_socket.bind(f"tcp://{self.host}:{self.ack_pub_port}")
 
         poller = zmq.Poller()
-        poller.register(linux_server_command_socket, zmq.POLLIN)
-        poller.register(linux_server_image_socket, zmq.POLLIN)
+        poller.register(bridge_command_socket, zmq.POLLIN)
+        poller.register(bridge_image_socket, zmq.POLLIN)
 
-        print(f"Windows SLM server command REP on tcp://{self.host}:{self.command_port}")
-        print(f"Windows SLM server image SUB on tcp://{self.host}:{self.image_sub_port}")
-        print(f"Windows SLM server ACK PUB on tcp://{self.host}:{self.ack_pub_port}")
+        print(f"SLM server command REP on tcp://{self.host}:{self.command_port}")
+        print(f"SLM server image SUB on tcp://{self.host}:{self.image_sub_port}")
+        print(f"SLM server ACK PUB on tcp://{self.host}:{self.ack_pub_port}")
         print(f"SLM shape: {self.expected_shape}")
 
         try:
             while self.running:
                 events = dict(poller.poll(timeout=1000))
 
-                if linux_server_image_socket in events:
+                if bridge_image_socket in events:
                     header = {}
                     try:
                         # Drain queued image messages and display only the latest one.
@@ -202,7 +202,7 @@ class SLMWindowsServer:
                         recv_start_ns = time.perf_counter_ns()
                         while True:
                             try:
-                                latest_image_parts = linux_server_image_socket.recv_multipart(
+                                latest_image_parts = bridge_image_socket.recv_multipart(
                                     flags=zmq.NOBLOCK
                                 )
                             except zmq.Again:
@@ -262,11 +262,11 @@ class SLMWindowsServer:
                             self.last_timing = {
                                 "frame_id": int(frame_id),
                                 "publish_time_ns": int(header.get("publish_time_ns", 0)),
-                                "windows_recv_start_perf_ns": int(recv_start_ns),
-                                "windows_recv_done_perf_ns": int(recv_done_ns),
-                                "windows_decode_done_perf_ns": int(decode_done_ns),
-                                "windows_write_start_perf_ns": int(write_start_ns),
-                                "windows_write_done_perf_ns": int(write_done_ns),
+                                "server_recv_start_perf_ns": int(recv_start_ns),
+                                "server_recv_done_perf_ns": int(recv_done_ns),
+                                "server_decode_done_perf_ns": int(decode_done_ns),
+                                "server_write_start_perf_ns": int(write_start_ns),
+                                "server_write_done_perf_ns": int(write_done_ns),
                                 "recv_call_ms": (recv_done_ns - recv_start_ns) / 1e6,
                                 "decode_and_validate_ms": (
                                     decode_done_ns - decode_start_ns
@@ -277,8 +277,8 @@ class SLMWindowsServer:
                                 "image_nbytes": int(len(image_bytes)),
                             }
 
-                            self._send_display_ack_to_linux_server(
-                                linux_server_ack_socket,
+                            self._send_display_ack_to_bridge(
+                                bridge_ack_socket,
                                 {
                                     "client_id": client_id,
                                     "frame_id": frame_id,
@@ -290,13 +290,13 @@ class SLMWindowsServer:
 
                     except Exception as e:
                         print(
-                            "[Windows SLM] image receive/display error: "
+                            "[SLM server] image receive/display error: "
                             f"{type(e).__name__}: {e}"
                         )
                         print(traceback.format_exc())
                         if header:
-                            self._send_display_ack_to_linux_server(
-                                linux_server_ack_socket,
+                            self._send_display_ack_to_bridge(
+                                bridge_ack_socket,
                                 {
                                     "client_id": header.get("client_id", "unknown_client"),
                                     "frame_id": int(header.get("frame_id", 0)),
@@ -306,29 +306,29 @@ class SLMWindowsServer:
                                 },
                             )
 
-                if linux_server_command_socket in events:
-                    msg = linux_server_command_socket.recv_json()
+                if bridge_command_socket in events:
+                    msg = bridge_command_socket.recv_json()
                     try:
-                        reply = self._process_linux_server_command(msg)
+                        reply = self._process_bridge_command(msg)
                     except Exception as e:
                         reply = {
                             "ok": False,
                             "error": f"{type(e).__name__}: {e}",
                             "traceback": traceback.format_exc(),
                         }
-                    linux_server_command_socket.send_json(reply)
+                    bridge_command_socket.send_json(reply)
 
         finally:
             try:
-                linux_server_command_socket.close(0)
+                bridge_command_socket.close(0)
             except Exception:
                 pass
             try:
-                linux_server_image_socket.close(0)
+                bridge_image_socket.close(0)
             except Exception:
                 pass
             try:
-                linux_server_ack_socket.close(0)
+                bridge_ack_socket.close(0)
             except Exception:
                 pass
             try:
@@ -338,7 +338,7 @@ class SLMWindowsServer:
 
 
 if __name__ == "__main__":
-    server = SLMWindowsServer(
+    server = SLMZMQServer(
         host="0.0.0.0",
         command_port=5555,
         image_sub_port=5556,

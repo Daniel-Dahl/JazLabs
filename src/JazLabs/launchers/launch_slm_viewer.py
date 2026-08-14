@@ -27,13 +27,13 @@ def start_slm_viewer(
     if shm_name is None:
         shm_name = config.get("SLM_SHM_NAME")
     if shm_name is None:
-        shm_name = config.get("SLM_LINUX_SERVER", {}).get("shm_name")
+        shm_name = config.get("SLM_BRIDGE", {}).get("shm_name")
     if shm_name is None:
         raise ValueError("No SLM SHM name was provided and config has no SLM_SHM_NAME.")
 
-    from JazLabs.hardware.SLM.SLMStackMilk.SLM_ViewerLinux import SLMLinuxViewer
+    from JazLabs.hardware.SLM.SLMStackMilk.SLM_Viewer import SLMViewer
 
-    viewer = SLMLinuxViewer(
+    viewer = SLMViewer(
         stream_name=shm_name,
         window_name=window_name,
         zoom=zoom,
@@ -69,4 +69,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

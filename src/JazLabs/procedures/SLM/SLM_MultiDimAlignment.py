@@ -18,7 +18,6 @@ plt.rcParams['figure.figsize'] = [5,5]
 from typing import List
 
 import JazLabs.utils.camera_utils as cam_utils
-import JazLabs.hardware.SLM.SLM_ServerLinux as SLM_Serverlib
 import JazLabs.hardware.Cameras.Camera_Client as CamClientlib
 import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
 import JazLabs.utils.GenerateSimplePhaseMasks as SimpMaskLib
@@ -798,4 +797,3 @@ class AlginmentObj():
         self.CamObjs[self.CamObjIdx].SetContinousFrameCapMode()
 
         return Mask
-        

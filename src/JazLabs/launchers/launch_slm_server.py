@@ -6,7 +6,7 @@ from JazLabs.launchers.config import load_config, merge_overrides
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Run the Windows-side SLM server.")
+    parser = argparse.ArgumentParser(description="Run the hardware-facing SLM server.")
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
@@ -24,7 +24,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
     slm = merge_overrides(
-        config.get("SLM_WINDOWS_SERVER", {}),
+        config.get("SLM_SERVER", {}),
         {
             "host": args.host,
             "command_port": args.command_port,
@@ -40,9 +40,9 @@ def main(argv=None):
 
     mp.freeze_support()
 
-    from JazLabs.hardware.SLM.SLMStackMilk.SLM_ServerWindows import SLMWindowsServer
+    from JazLabs.hardware.SLM.SLMStackMilk.SLM_Server import SLMZMQServer
 
-    server = SLMWindowsServer(
+    server = SLMZMQServer(
         host=slm["host"],
         command_port=slm["command_port"],
         image_sub_port=slm["image_sub_port"],
@@ -54,7 +54,7 @@ def main(argv=None):
         LutFile=slm["lut_file"],
     )
 
-    print("Launching Windows SLM server.")
+    print("Launching SLM server.")
     print(f"Host: {slm['host']}")
     print(
         "Ports: "
@@ -71,4 +71,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

@@ -16,18 +16,18 @@ CAMERA_SERVERS = [
     
 ]
 
-SLM_SHM_NAME = "slm_linux_shared"
+SLM_SHM_NAME = "slm_shared"
 
-SLM_LINUX_SERVER = {
-    "name": "slm",
-    "client_id": "linux_shm_server",
+SLM_BRIDGE = {
+    "name": "slm_bridge",
+    "client_id": "slm_bridge",
     "shm_name": SLM_SHM_NAME,
     "bind_host": "127.0.0.1",
     "local_command_port": 5565,
-    "windows_host": "10.196.0.67",
-    "windows_command_port": 5555,
-    "windows_image_port": 5556,
-    "windows_ack_port": 5557,
+    "server_host": "10.196.0.67",
+    "server_command_port": 5555,
+    "server_image_port": 5556,
+    "server_ack_port": 5557,
     "image_topic": "slm.image",
     "ack_topic": "slm.ack",
     "timeout_ms": 5000,
@@ -36,8 +36,8 @@ SLM_LINUX_SERVER = {
     "poll_timeout_s": 1e-3,
 }
 
-SLM_WINDOWS_SERVER = {
-    "name": "slm_windows",
+SLM_SERVER = {
+    "name": "slm_server",
     "host": "0.0.0.0",
     "command_port": 5555,
     "image_sub_port": 5556,

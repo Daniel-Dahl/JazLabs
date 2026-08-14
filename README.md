@@ -103,10 +103,12 @@ jazlabs-view-slm
 jazlabs-view-slm-stack
 jazlabs-view-laser
 jazlabs-tmux
+jazlabs-slm-center-alignment
+jazlabs-camera-dark-frame
 ```
 
 These commands are configured in `pyproject.toml` and implemented under
-`src/JazLabs/launchers/`.
+`src/JazLabs/launchers/` and `src/JazLabs/procedures/`.
 
 ## Direct Object Example
 

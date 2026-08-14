@@ -1,17 +1,6 @@
 
-import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import ctypes
-import copy
-from IPython.display import display, clear_output
-import ipywidgets
-import multiprocessing
-import time
-import scipy.io
-from scipy import io, integrate, linalg, signal
-from scipy.io import savemat, loadmat
-from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
 # Defult Ploting properties 
 plt.style.use('dark_background')
 plt.rcParams['figure.figsize'] = [5,5]
@@ -412,7 +401,6 @@ def NelderMead(StepArray,xbar,ErrTol,maxAttempts,funcToOpt):
     print('Finished Optimisation in ' ,attemptCount, ' steps')
 
     return Final_optValue,xVertex[:,0]
-
 
 
 

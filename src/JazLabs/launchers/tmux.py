@@ -37,9 +37,9 @@ def python_can_import(python, module_name):
     return result.returncode == 0
 
 
-def choose_slm_python():
-    python = os.environ.get("JAZLABS_SLM_SERVER_PYTHON", sys.executable)
-    if "JAZLABS_SLM_SERVER_PYTHON" in os.environ or python_can_import(python, "pyMilk"):
+def choose_slm_bridge_python():
+    python = os.environ.get("JAZLABS_SLM_BRIDGE_PYTHON", sys.executable)
+    if "JAZLABS_SLM_BRIDGE_PYTHON" in os.environ or python_can_import(python, "pyMilk"):
         return python
 
     base_python = Path.home() / "miniforge3" / "bin" / "python"
@@ -92,24 +92,26 @@ def camera_tasks(config_name, config, camera_name=None):
             )
 
 
-def slm_linux_task(config_name):
+def slm_bridge_task(config_name, config):
+    bridge = config.get("SLM_BRIDGE", {})
     return (
-        "slm",
+        bridge.get("name", "slm_bridge"),
         module_command(
-            "JazLabs.launchers.launch_slm_linux_server",
+            "JazLabs.launchers.launch_slm_bridge",
             [("--config", config_name)],
-            choose_slm_python(),
+            choose_slm_bridge_python(),
         ),
     )
 
 
-def slm_windows_task(config_name):
+def slm_server_task(config_name, config):
+    server = config.get("SLM_SERVER", {})
     return (
-        "slm_windows",
+        server.get("name", "slm_server"),
         module_command(
-            "JazLabs.launchers.launch_slm_windows_server",
+            "JazLabs.launchers.launch_slm_server",
             [("--config", config_name)],
-            os.environ.get("JAZLABS_SLM_WINDOWS_SERVER_PYTHON", sys.executable),
+            os.environ.get("JAZLABS_SLM_SERVER_PYTHON", sys.executable),
         ),
     )
 
@@ -177,8 +179,8 @@ def build_parser():
         choices=(
             "all",
             "camera",
-            "slm-linux",
-            "slm-windows",
+            "slm-bridge",
+            "slm-server",
             "slm-stack",
             "daq",
             "optical-switch",
@@ -216,10 +218,10 @@ def main(argv=None):
     if args.target in ("all", "camera"):
         camera_name = args.name if args.target == "camera" else None
         tasks.extend(camera_tasks(args.config, config, camera_name))
-    if args.target in ("all", "slm-linux") and config.get("SLM_LINUX_SERVER", {}).get("enabled", True):
-        tasks.append(slm_linux_task(args.config))
-    if args.target == "slm-windows" and config.get("SLM_WINDOWS_SERVER", {}).get("enabled", True):
-        tasks.append(slm_windows_task(args.config))
+    if args.target in ("all", "slm-bridge") and config.get("SLM_BRIDGE", {}).get("enabled", True):
+        tasks.append(slm_bridge_task(args.config, config))
+    if args.target == "slm-server" and config.get("SLM_SERVER", {}).get("enabled", True):
+        tasks.append(slm_server_task(args.config, config))
     if args.target in ("all", "slm-stack") and config.get("SLM_STACK_SERVER", {}).get("enabled", False):
         tasks.append(slm_stack_task(args.config, config))
     if args.target in ("all", "daq"):

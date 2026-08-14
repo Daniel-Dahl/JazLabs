@@ -5,36 +5,36 @@ import zmq
 from pyMilk.interfacing.isio_shmlib import SHM
 
 
-class SLMObject:
+class SLMClient:
     """
-    Meadowlark-style Linux client for SLMLinuxServer.
+    Meadowlark-style client for SLMZMQBridgeServer.
 
-    WriteImageToSLM writes to the pymilk SHM. The Linux server watches that SHM
-    and forwards updates to the Windows SLM server, so other processes can also
+    WriteImageToSLM writes to the pymilk SHM. The bridge watches that SHM
+    and forwards updates to the SLM server, so other processes can also
     update the SHM directly and still drive the physical SLM.
     """
 
     def __init__(
         self,
         client_id=None,
-        linux_host="127.0.0.1",
-        linux_command_port=5565,
+        bridge_host="127.0.0.1",
+        bridge_command_port=5565,
         shm_name=None,
         timeout_ms=5000,
         create_shm_if_missing=False,
         **_,
     ):
         self.client_id = client_id if client_id is not None else str(uuid.uuid4())
-        self.linux_host = linux_host
-        self.linux_command_port = int(linux_command_port)
+        self.bridge_host = bridge_host
+        self.bridge_command_port = int(bridge_command_port)
         self.timeout_ms = int(timeout_ms)
 
         self.context = zmq.Context()
-        self.linux_server_command_socket = self.context.socket(zmq.REQ)
-        self.linux_server_command_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self.linux_server_command_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-        self.linux_server_command_socket.connect(
-            f"tcp://{self.linux_host}:{self.linux_command_port}"
+        self.bridge_command_socket = self.context.socket(zmq.REQ)
+        self.bridge_command_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self.bridge_command_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self.bridge_command_socket.connect(
+            f"tcp://{self.bridge_host}:{self.bridge_command_port}"
         )
         props = self.GetProperties()
 
@@ -44,7 +44,7 @@ class SLMObject:
         self.NumberOfChannels = int(props["number_of_channels"])
         self.single_channel_shape = tuple(props["single_channel_shape"])
         self.image_shape = tuple(props["input_expected_shape"])
-        self.RefreshRate = self._windows_property(props, "refresh_rate", 0)
+        self.RefreshRate = self._server_property(props, "refresh_rate", 0)
         self.OutputPulseImageFlip = int(props.get("output_pulse_image_flip", 0))
 
         if create_shm_if_missing:
@@ -61,35 +61,35 @@ class SLMObject:
 
         self.last_write_counter = int(self.shm.get_counter())
 
-    def _windows_property(self, props, name, default=None):
-        windows_props = props.get("windows_properties", {})
-        return windows_props.get(name, props.get(name, default))
+    def _server_property(self, props, name, default=None):
+        server_properties = props.get("server_properties", {})
+        return server_properties.get(name, props.get(name, default))
 
-    def _reset_linux_server_command_socket(self):
+    def _reset_bridge_command_socket(self):
         try:
-            self.linux_server_command_socket.close(0)
+            self.bridge_command_socket.close(0)
         except Exception:
             pass
-        self.linux_server_command_socket = self.context.socket(zmq.REQ)
-        self.linux_server_command_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self.linux_server_command_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-        self.linux_server_command_socket.connect(
-            f"tcp://{self.linux_host}:{self.linux_command_port}"
+        self.bridge_command_socket = self.context.socket(zmq.REQ)
+        self.bridge_command_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self.bridge_command_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self.bridge_command_socket.connect(
+            f"tcp://{self.bridge_host}:{self.bridge_command_port}"
         )
 
-    def _send_command_to_linux_server(self, msg):
+    def _send_command_to_bridge(self, msg):
         msg = dict(msg)
         msg.setdefault("client_id", self.client_id)
 
         try:
-            self.linux_server_command_socket.send_json(msg)
-            reply = self.linux_server_command_socket.recv_json()
+            self.bridge_command_socket.send_json(msg)
+            reply = self.bridge_command_socket.recv_json()
         except Exception:
-            self._reset_linux_server_command_socket()
+            self._reset_bridge_command_socket()
             raise
 
         if not reply.get("ok", False):
-            raise RuntimeError(reply.get("error", "Unknown Linux SLM server error"))
+            raise RuntimeError(reply.get("error", "Unknown SLM bridge error"))
 
         return reply
 
@@ -155,7 +155,7 @@ class SLMObject:
     def WaitForSLMDisplayAck(self, shm_counter=None, timeout_ms=None):
         if shm_counter is None:
             shm_counter = self.last_write_counter
-        reply = self._send_command_to_linux_server(
+        reply = self._send_command_to_bridge(
             {
                 "cmd": "wait_for_slm_display_ack",
                 "shm_counter": int(shm_counter),
@@ -165,7 +165,7 @@ class SLMObject:
         return bool(reply["result"])
 
     def SetRefreshRate(self, NewRefreshRate):
-        reply = self._send_command_to_linux_server(
+        reply = self._send_command_to_bridge(
             {
                 "cmd": "set_refresh_rate",
                 "value": float(NewRefreshRate),
@@ -175,7 +175,7 @@ class SLMObject:
         return self.RefreshRate
 
     def SetTriggerOutput(self, TriggerOutputEnabled):
-        reply = self._send_command_to_linux_server(
+        reply = self._send_command_to_bridge(
             {
                 "cmd": "set_trigger_output",
                 "value": int(TriggerOutputEnabled),
@@ -185,7 +185,7 @@ class SLMObject:
         return int(reply["result"])
 
     def LoadLutFile(self, PathToLut):
-        reply = self._send_command_to_linux_server(
+        reply = self._send_command_to_bridge(
             {
                 "cmd": "load_lut",
                 "path": PathToLut,
@@ -194,21 +194,21 @@ class SLMObject:
         return int(reply["result"])
 
     def GetSLMTemperature(self):
-        reply = self._send_command_to_linux_server({"cmd": "get_temperature"})
+        reply = self._send_command_to_bridge({"cmd": "get_temperature"})
         return float(reply["result"])
 
     def GetProperties(self):
-        reply = self._send_command_to_linux_server({"cmd": "get_properties"})
+        reply = self._send_command_to_bridge({"cmd": "get_properties"})
         return reply["result"]
 
     def acquire_control(self):
-        return self._send_command_to_linux_server({"cmd": "acquire_control"})
+        return self._send_command_to_bridge({"cmd": "acquire_control"})
 
     def release_control(self):
-        return self._send_command_to_linux_server({"cmd": "release_control"})
+        return self._send_command_to_bridge({"cmd": "release_control"})
 
     def shutdown(self):
-        return self._send_command_to_linux_server({"cmd": "shutdown"})["result"]
+        return self._send_command_to_bridge({"cmd": "shutdown"})["result"]
 
     def close(self):
         try:
@@ -216,7 +216,7 @@ class SLMObject:
         except Exception:
             pass
         try:
-            self.linux_server_command_socket.close(0)
+            self.bridge_command_socket.close(0)
         except Exception:
             pass
         try:
@@ -229,6 +229,3 @@ class SLMObject:
             self.close()
         except Exception:
             pass
-
-
-SLMLinuxClient = SLMObject

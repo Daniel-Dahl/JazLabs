@@ -26,7 +26,7 @@ configured JazLabs installation, the commands have this form:
 
 ```powershell
 jazlabs-server-camera --name <camera-name>
-jazlabs-server-slm-windows
+jazlabs-server-slm
 jazlabs-view-camera --name <camera-name>
 ```
 

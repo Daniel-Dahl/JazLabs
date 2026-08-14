@@ -56,7 +56,7 @@ def main(argv=None):
         )
 
     if args.target == "slm" or (
-        args.target == "all" and config.get("SLM_LINUX_SERVER", {}).get("enabled", True)
+        args.target == "all" and config.get("SLM_BRIDGE", {}).get("enabled", True)
     ):
         processes.extend(
             start_slm_viewer(
@@ -85,4 +85,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

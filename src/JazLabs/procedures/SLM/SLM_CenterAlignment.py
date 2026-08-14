@@ -5,8 +5,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import copy
-from IPython.display import display, clear_output
-import cma
+from pathlib import Path
 from scipy import io, integrate, linalg, signal
 from scipy.io import savemat, loadmat
 from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
@@ -105,7 +104,7 @@ def FindFactors(num):
 
 def FindPlateauStart(x_values,metric_values,smoothing_window=15,plateau_tail_fraction=0.20,
                      PlotResults=True,xlabel="SLM aperture radius [pixels]",
-                     ylabel="Alignment metric"):
+                     ylabel="Alignment metric",PlotSavePath=None,ShowPlot=True):
     """Find the first measured-data intersection with a final plateau estimate.
 
     The final plateau is the median of the last ``plateau_tail_fraction`` of a
@@ -176,7 +175,7 @@ def FindPlateauStart(x_values,metric_values,smoothing_window=15,plateau_tail_fra
         print(f"First intersection: {plateau_start:.2f} pixels")
 
     if PlotResults:
-        plt.figure(figsize=(8,5))
+        plateau_figure=plt.figure(figsize=(8,5))
         plt.plot(x_values,metric_values,alpha=0.7,label="Measured")
         plt.plot(x_values,smoothed_metric,color="khaki",label="Smoothed")
         plt.axhline(plateau_level,color="white",linestyle="--",label="Final plateau")
@@ -194,7 +193,14 @@ def FindPlateauStart(x_values,metric_values,smoothing_window=15,plateau_tail_fra
         plt.ylabel(ylabel)
         plt.grid(alpha=0.3)
         plt.legend()
-        plt.show()
+        if PlotSavePath is not None:
+            plot_save_path=Path(PlotSavePath)
+            plot_save_path.parent.mkdir(parents=True,exist_ok=True)
+            plateau_figure.savefig(plot_save_path,bbox_inches="tight")
+        if ShowPlot:
+            plt.show()
+        else:
+            plt.close(plateau_figure)
 
     return plateau_start,plateau_level
 
@@ -505,8 +511,8 @@ class AlginmentObj():
         MaskSize=self.slmObjs[self.ObjIdx].polProps[self.channel][self.pol].masksize
         
         
-        Nx=520#MaskSize[0]
-        Ny=520#MaskSize[1]
+        Nx=MaskSize[0]
+        Ny=MaskSize[1]
         xCenter=self.slmObjs[self.ObjIdx].AllMaskProperties[self.channel][self.pol][self.imask].center[1]
         yCenter=self.slmObjs[self.ObjIdx].AllMaskProperties[self.channel][self.pol][self.imask].center[0]
         MASK=np.ones((Nx,Ny),dtype=complex)
@@ -548,7 +554,11 @@ class AlginmentObj():
                                     iyCamCenter=None,
                                     x_half_width=None,
                                     y_half_width=None,
-                                    Verbose=False ):
+                                    Verbose=False,
+                                    PlotOutputDirectory=None,
+                                    PlotFilenamePrefix="fine_alignment",
+                                    PlotFileFormat="png",
+                                    ShowPlots=True ):
         self.ixCamCenter=ixCamCenter
         self.iyCamCenter=iyCamCenter
         self.x_half_width=x_half_width
@@ -691,7 +701,18 @@ class AlginmentObj():
 
             if self.PlotTracking:
                 tracking_figure.suptitle(f"Mask {imask} centre alignment")
-                plt.show()
+                if PlotOutputDirectory is not None:
+                    plot_output_directory=Path(PlotOutputDirectory)
+                    plot_output_directory.mkdir(parents=True,exist_ok=True)
+                    tracking_figure.savefig(
+                        plot_output_directory
+                        / f"{PlotFilenamePrefix}_mask_{imask}.{PlotFileFormat}",
+                        bbox_inches="tight",
+                    )
+                if ShowPlots:
+                    plt.show()
+                else:
+                    plt.close(tracking_figure)
 
             if Verbose:
                 print(

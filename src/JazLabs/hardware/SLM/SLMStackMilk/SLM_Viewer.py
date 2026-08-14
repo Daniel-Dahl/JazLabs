@@ -5,7 +5,7 @@ import time
 from pyMilk.interfacing.isio_shmlib import SHM
 
 
-class SLMLinuxViewer:
+class SLMViewer:
     def __init__(
         self,
         stream_name,
@@ -154,7 +154,7 @@ class SLMLinuxViewer:
 if __name__ == "__main__":
     mp.freeze_support()
 
-    viewer = SLMLinuxViewer(
+    viewer = SLMViewer(
         stream_name="PUT_YOUR_PYMILK_STREAM_NAME_HERE",
         zoom=1.0,
         fps=30,

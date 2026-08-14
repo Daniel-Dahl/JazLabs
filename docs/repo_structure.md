@@ -11,7 +11,7 @@ JazLabs/
 |-- pyproject.toml          # Package metadata and console-script entry points
 |-- README.md               # Project overview, currently minimal
 |-- LICENSE
-|-- docs/                   # Project documentation
+|-- docs/                   # Architecture, concepts, and task-based guides
 |-- examples/               # Runnable example scripts for hardware/procedures
 |-- notebooks/              # Exploratory notebooks and saved console/wisdom files
 |-- src/                    # Installable Python source tree
@@ -20,6 +20,30 @@ JazLabs/
 |-- tests/                  # Test package placeholder
 `-- build/                  # Generated build artifacts; do not edit as source
 ```
+
+The documentation is split between project-wide reference material and
+task-based operating guides:
+
+```text
+docs/
+|-- DesignRequirements.md
+|-- core_concepts.md
+|-- repo_structure.md
+`-- guides/
+    |-- camera-dark-frames.md
+    |-- launch-servers-viewers-and-guis.md
+    `-- intensity-based-slm-centre-alignment.md
+```
+
+Use `docs/guides/` for practical instructions that take an operator through a
+specific lab task. The existing
+[`launch-servers-viewers-and-guis.md`](guides/launch-servers-viewers-and-guis.md)
+guide explains how to start the camera and SLM servers and connect their
+viewers and control GUI.
+The same folder contains guides for
+[`capturing camera dark frames`](guides/camera-dark-frames.md) and
+[`performing intensity-based SLM centre alignment`](guides/intensity-based-slm-centre-alignment.md).
+Add future operator procedures here as well.
 
 ## Package Source
 
@@ -92,8 +116,8 @@ launchers/
 |-- launch_camera_viewer.py
 |-- launch_daq_server.py
 |-- launch_daq_bridge.py
-|-- launch_slm_linux_server.py
-|-- launch_slm_windows_server.py
+|-- launch_slm_server.py
+|-- launch_slm_bridge.py
 |-- launch_slm_stack_server.py
 |-- launch_slm_viewer.py
 |-- launch_slm_stack_viewer.py
@@ -103,15 +127,16 @@ launchers/
 `-- configs/
     |-- HDStokes.py
     |-- OAH_setup.py
-    `-- OAH_setup_ben.py
+    |-- OAH_setup_ben.py
+    `-- default_lab.py
 ```
 
 Configured console commands include:
 
 - `jazlabs-server-camera`
 - `jazlabs-server-daq`
-- `jazlabs-server-slm-linux`
-- `jazlabs-server-slm-windows`
+- `jazlabs-server-slm`
+- `jazlabs-bridge-slm`
 - `jazlabs-server-slm-stack`
 - `jazlabs-bridge-camera`
 - `jazlabs-bridge-daq`
@@ -120,6 +145,8 @@ Configured console commands include:
 - `jazlabs-view-slm`
 - `jazlabs-view-slm-stack`
 - `jazlabs-tmux`
+- `jazlabs-slm-center-alignment`
+- `jazlabs-camera-dark-frame`
 
 ### `procedures/`
 
@@ -184,7 +211,7 @@ utils/
 `notebooks/` contains interactive notebooks for camera, laser, SLM, server
 client/viewer, jitter, speed, and photoluminescence characterisation workflows.
 
-## Concept Documentation
+## Documentation
 
 `docs/core_concepts.md` explains the reasoning behind important helper objects,
 including the SLM phase-mask object used to manage centered masks, Zernike
@@ -192,6 +219,16 @@ corrections, mask sets, and multi-plane light converter workflows. It also
 explains how JazLabs wraps the external `joelacarpenter/digHolo` library for
 batch and live off-axis holography workflows, and how DAQ controllers are used
 as low-level voltage IO beneath higher-level physical instrument classes.
+
+`docs/guides/` contains short, task-based instructions for operating JazLabs.
+Start with
+[`docs/guides/launch-servers-viewers-and-guis.md`](guides/launch-servers-viewers-and-guis.md)
+when launching a camera or SLM server and connecting the corresponding viewer
+or control GUI. The folder also contains the
+[`camera dark-frame`](guides/camera-dark-frames.md) and
+[`intensity-based SLM centre-alignment`](guides/intensity-based-slm-centre-alignment.md)
+procedures. Keep future calibration and operator procedures in the same folder
+so they are easy to find.
 
 ## Data And Calibration Directories
 
@@ -235,5 +272,6 @@ there is a deliberate reason to version them.
 - Add experiment workflows under `src/JazLabs/procedures/<ProcedureArea>/`.
 - Add shared, hardware-agnostic helpers under `src/JazLabs/utils/`.
 - Add runnable usage examples under `examples/`.
+- Add task-based operating instructions under `docs/guides/`.
 - Add console entry points in `pyproject.toml` only when the launcher is meant
   to be installed as a command.
