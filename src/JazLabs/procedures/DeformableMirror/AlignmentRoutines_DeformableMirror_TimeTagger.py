@@ -1,40 +1,13 @@
-from Lab_Equipment.Config import config
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-import threading
-import ctypes
 import copy
-from IPython.display import display, clear_output
-import IntEnum
-import ipywidgets
-import multiprocessing
-import time
-import scipy.io
-import cma
+from enum import IntEnum
 
-from scipy import io, integrate, linalg, signal
-from scipy.io import savemat, loadmat
-from scipy.fft import fft, fftfreq, fftshift,ifftshift, fft2,ifft2,rfft2,irfft2
-from scipy.signal import find_peaks
+import cma
+import numpy as np
 from scipy.optimize import minimize
 
-# Defult Pploting properties 
-plt.style.use('dark_background')
-plt.rcParams['figure.figsize'] = [5,5]
-
-import  Lab_Equipment.OpticalSimulations.libs.OpticalOperators as OpticOp
-import Lab_Equipment.ZernikeModule.ZernikeModule as zernlib
-import TimeTagger
-import Lab_Equipment.TimeTagger.TimeTaggerFunction as TimetaggerFunc
-# import Lab_Equipment.TimeTagger.TimeTaggerLiveWindow as TTLiveWindow
-import Lab_Equipment.DeformableMirror.DeformableMirror as DeformMirror_lib
-
-import  Lab_Equipment.AlignmentRoutines.AlignmentFunctions as AlignFunc
-
-import  Lab_Equipment.GeneralLibs.ComplexPlotFunction as cmplxplt
-from typing import List
+import JazLabs.hardware.TimeTagger.TimeTaggerFunction as TimetaggerFunc
+import JazLabs.utils.AlignmentFunctions as AlignFunc
+from JazLabs.hardware.TimeTagger.TimeTagger_Client import TimeTaggerClient
 
 
 class DM_TT_Metrics(IntEnum):
@@ -43,8 +16,8 @@ class DM_TT_Metrics(IntEnum):
     G2 = 2
 class AlginmentObj_DM_TT():
     def __init__(self,
-                DeformableMirror:DeformMirror_lib.DeformanbleMirror_Obj,
-                Tagger:TimeTagger.TimeTagger
+                DeformableMirror,
+                Tagger:TimeTaggerClient
                 ):
         super().__init__()
         
@@ -58,7 +31,7 @@ class AlginmentObj_DM_TT():
     def __del__(self):
         print("Cleaning up AlginmentObj_DM_TT")
         # self.CamObjs[].SetContinousFrameCapMode()
-    
+
                 
     
 
@@ -218,7 +191,12 @@ class AlginmentObj_DM_TT():
         if self.GoalMetric==DM_TT_Metrics.Counts:
             MetricVaule=TimetaggerFunc.getCountrate(self.Tagger, self.measurementChannel,self.countingTime,clearbuffer=True)
         elif self.GoalMetric==DM_TT_Metrics.COIN:
-            CoincidenceData=TimetaggerFunc.getCoincidences(self.Tagger, self.measurementChannel,self.binWidth,self.countingTime,clearbuffer=True)
+            CoincidenceData=TimetaggerFunc.getCoincidences(
+                self.Tagger,
+                self.measurementChannel,
+                self.binWidth,
+                self.countingTime,
+            )
             MetricVaule=CoincidenceData.coincidences
         elif self.GoalMetric==DM_TT_Metrics.G2:
             pass
@@ -248,5 +226,3 @@ class AlginmentObj_DM_TT():
         self.TotalDims=VertexArr.shape
             
         return stepSizeVertexArr,VertexArr
-    
-    

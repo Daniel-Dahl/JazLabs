@@ -24,6 +24,19 @@ CAMERA_SERVERS = [
     },
 ]
 
+TIME_TAGGER_SERVERS = [
+    {
+        "name": "time_tagger",
+        "host": "0.0.0.0",
+        "command_port": 50931,
+        "serial": None,
+        "create_kwargs": {},
+        "poll_timeout_ms": 100,
+        # Enable after this config is copied to the Time Tagger host.
+        "enabled": False,
+    },
+]
+
 DARK_FRAME_CONFIG = {
     "camera_name": "cam_slm",
     "num_frames": 100,

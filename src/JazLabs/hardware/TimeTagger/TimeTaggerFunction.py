@@ -1,21 +1,38 @@
 import numpy as np
-import time
 # import multiprocessing
 # from multiprocessing import shared_memory
-import TimeTagger
-import cv2
-import copy
-import numba
 import matplotlib.pyplot as plt
 import shutil
 from scipy.signal import find_peaks
 
 import os
-import psutil
 
-import TimeTagger
+from JazLabs.hardware.TimeTagger.TimeTagger_Types import CoincidenceResults
+
+
+def _load_time_tagger_module():
+    try:
+        import TimeTagger
+    except ImportError as exc:
+        raise RuntimeError(
+            "Direct Time Tagger measurements require the vendor TimeTagger package. "
+            "On a client machine, pass a TimeTaggerClient instead."
+        ) from exc
+    return TimeTagger
+
+
+def _plot_correlation(time_bins, counts, normalised_counts):
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3))
+    color = "tab:blue"
+    axes[0].set_xlabel("Time(ps)")
+    axes[0].set_ylabel("Correlations (Counts/bin)", color=color)
+    axes[0].plot(time_bins, counts, color=color, marker="o")
+    axes[1].set_ylabel("Norm Correlations (Counts/Sec)", color=color)
+    axes[1].plot(time_bins, normalised_counts, color=color, marker="o")
+    fig.tight_layout()
 
 def CheckFileCanBeLoaded(files_path):
+    import psutil
     
     # Get available RAM in bytes
     available_ram = psutil.virtual_memory().available
@@ -99,7 +116,7 @@ def CalculateTimeDelay(timeData,CorrData):
 
 # fix me please i needed to be fixed!!!!!!!!!!!!!!!!!!!!!!!!!!
 # You have been fixed. go into the world and become something great
-def ScanVoltageTriggerLevels(tagger:TimeTagger.TimeTagger,voltmin=0.1,voltmax=0.6,VoltCount=2,ChannelToSweep=1,Channels=[1,2],binWidth=100,CountTime=10):
+def ScanVoltageTriggerLevels(tagger,voltmin=0.1,voltmax=0.6,VoltCount=2,ChannelToSweep=1,Channels=[1,2],binWidth=100,CountTime=10):
 
     VoltCount=int(voltmax-voltmin/0.001)# the 0.001 is the lowest precision the voltage trigger level can be
     voltageVal=np.linspace(voltmin,voltmax,VoltCount)
@@ -117,7 +134,7 @@ def ScanVoltageTriggerLevels(tagger:TimeTagger.TimeTagger,voltmin=0.1,voltmax=0.
 # Function to perform measurements 
 ################################################
 
-def GetCorrelationAndCountsdata_SynMulti(sm:TimeTagger.SynchronizedMeasurements,MeasurementList,channelList,CountTime,binCount,PlotResutls=False):
+def GetCorrelationAndCountsdata_SynMulti(sm,MeasurementList,channelList,CountTime,binCount,PlotResutls=False):
     MeasurementCount=len(MeasurementList)
     print(MeasurementCount)
     # Start measurements and accumulate data for Counting time
@@ -157,7 +174,25 @@ def GetCorrelationAndCountsdata_SynMulti(sm:TimeTagger.SynchronizedMeasurements,
             continue  # optional — loop continues anyway
     return timeData,MeasurementData, MeasurementDataNorm
         
-def getCorrelations(tagger:TimeTagger.TimeTagger, measurementChannels, binWidth, binNum,countingTime,PlotResutls=False):
+def getCorrelations(tagger, measurementChannels, binWidth, binNum,countingTime,PlotResutls=False):
+        if hasattr(tagger, "MeasureCorrelation"):
+            correlationTimebins_data, correlation_data, correlationNorm_data = (
+                tagger.MeasureCorrelation(
+                    measurementChannels,
+                    binWidth,
+                    binNum,
+                    countingTime,
+                )
+            )
+            if PlotResutls:
+                _plot_correlation(
+                    correlationTimebins_data,
+                    correlation_data,
+                    correlationNorm_data,
+                )
+            return correlationTimebins_data, correlation_data, correlationNorm_data
+
+        TimeTagger = _load_time_tagger_module()
         
         correlation = TimeTagger.Correlation(tagger=tagger,
                                      channel_1=measurementChannels[0],
@@ -216,9 +251,19 @@ def getCorrelations(tagger:TimeTagger.TimeTagger, measurementChannels, binWidth,
 
         return correlationTimebins_data,correlation_data,correlationNorm_data
     
-def getCounts(tagger:TimeTagger.TimeTagger,clearbuffer, measurementChannel, binWidth, binNum,countingTime):
+def getCounts(tagger,clearbuffer, measurementChannel, binWidth, binNum,countingTime):
     if not isinstance(measurementChannel, list):
         measurementChannel = [measurementChannel]
+    if hasattr(tagger, "MeasureCounts"):
+        return tagger.MeasureCounts(
+            measurementChannel,
+            binWidth,
+            binNum,
+            countingTime,
+            clear=clearbuffer,
+        )
+
+    TimeTagger = _load_time_tagger_module()
     counter = TimeTagger.Counter(tagger=tagger,
                                     channels=measurementChannel,
                                     binwidth=binWidth,
@@ -232,7 +277,16 @@ def getCounts(tagger:TimeTagger.TimeTagger,clearbuffer, measurementChannel, binW
     CounterTimebins_data=np.asarray(counter.getIndex())
     return CounterTimebins_data,Couter_data
 
-def getCountrate(tagger:TimeTagger.TimeTagger, measurementChannel,countingTime,clearbuffer=True):
+def getCountrate(tagger, measurementChannel,countingTime,clearbuffer=True):
+    if hasattr(tagger, "MeasureCountrate"):
+        values = tagger.MeasureCountrate(
+            measurementChannel,
+            countingTime,
+            clear=clearbuffer,
+        )
+        return np.asarray(values)
+
+    TimeTagger = _load_time_tagger_module()
     
     countRate = TimeTagger.Countrate(tagger=tagger,channels=[measurementChannel])
     if (clearbuffer==True):
@@ -248,20 +302,15 @@ def getCountrate(tagger:TimeTagger.TimeTagger, measurementChannel,countingTime,c
 
 
 
-from dataclasses import dataclass
-@dataclass
-class CoincidenceResults:
-    channel1_counts: int
-    channel2_counts: int
-    coincidences: int
-    channel1_rate: float
-    channel2_rate: float
-    coincidence_rate: float
-    accidental_rate: float
-    contrast_CAR: float
+def getCoincidences(tagger, measurementChannels, binWidth, countingTime) -> CoincidenceResults:
+    if hasattr(tagger, "MeasureCoincidences"):
+        return tagger.MeasureCoincidences(
+            measurementChannels,
+            binWidth,
+            countingTime,
+        )
 
-
-def getCoincidences(tagger:TimeTagger.TimeTagger, measurementChannels, binWidth, countingTime) -> CoincidenceResults:
+    TimeTagger = _load_time_tagger_module()
     coincidenceMeasurement = TimeTagger.Coincidence(
         tagger=tagger,
         channels=measurementChannels,
@@ -309,7 +358,19 @@ def getCoincidences(tagger:TimeTagger.TimeTagger, measurementChannels, binWidth,
     return CoincidenceData
 
 
-def getCoincidencesAndCorrelations(tagger:TimeTagger.TimeTagger, measurementChannels, binWidth,binNum, countingTime,PlotResutls=True) -> CoincidenceResults:
+def getCoincidencesAndCorrelations(tagger, measurementChannels, binWidth,binNum, countingTime,PlotResutls=True) -> CoincidenceResults:
+    if hasattr(tagger, "MeasureCoincidencesAndCorrelation"):
+        result = tagger.MeasureCoincidencesAndCorrelation(
+            measurementChannels,
+            binWidth,
+            binNum,
+            countingTime,
+        )
+        if PlotResutls:
+            _plot_correlation(result[1], result[2], result[3])
+        return result
+
+    TimeTagger = _load_time_tagger_module()
     coincidenceMeasurement = TimeTagger.Coincidence(
         tagger=tagger,
         channels=measurementChannels,

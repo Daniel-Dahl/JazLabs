@@ -31,6 +31,7 @@ docs/
 |-- repo_structure.md
 `-- guides/
     |-- camera-dark-frames.md
+    |-- time-tagger-server-bridge-client.md
     |-- launch-servers-viewers-and-guis.md
     `-- intensity-based-slm-centre-alignment.md
 ```
@@ -43,6 +44,9 @@ viewers and control GUI.
 The same folder contains guides for
 [`capturing camera dark frames`](guides/camera-dark-frames.md) and
 [`performing intensity-based SLM centre alignment`](guides/intensity-based-slm-centre-alignment.md).
+The
+[`Time Tagger server, bridge server, and client`](guides/time-tagger-server-bridge-client.md)
+guide documents the networked Time Tagger stack.
 Add future operator procedures here as well.
 
 ## Package Source
@@ -84,7 +88,7 @@ hardware/
 |-- Oscilloscope/       # Oscilloscope helper libraries
 |-- PowerMeters/        # Thorlabs and Santec power meter utilities
 |-- SLM/                # SLM stacks, viewers, phase masks, and vendor backends
-|-- TimeTagger/         # Time tagger measurement/window helpers
+|-- TimeTagger/         # Time Tagger server, bridge, client, and measurements
 `-- VOA/                # Variable optical attenuator drivers
 ```
 
@@ -119,6 +123,8 @@ launchers/
 |-- launch_slm_server.py
 |-- launch_slm_bridge.py
 |-- launch_slm_stack_server.py
+|-- launch_time_tagger_server.py
+|-- launch_time_tagger_bridge.py
 |-- launch_slm_viewer.py
 |-- launch_slm_stack_viewer.py
 |-- launch_viewers.py
@@ -140,6 +146,8 @@ Configured console commands include:
 - `jazlabs-server-slm-stack`
 - `jazlabs-bridge-camera`
 - `jazlabs-bridge-daq`
+- `jazlabs-server-time-tagger`
+- `jazlabs-bridge-time-tagger`
 - `jazlabs-view`
 - `jazlabs-view-camera`
 - `jazlabs-view-slm`
@@ -227,8 +235,10 @@ when launching a camera or SLM server and connecting the corresponding viewer
 or control GUI. The folder also contains the
 [`camera dark-frame`](guides/camera-dark-frames.md) and
 [`intensity-based SLM centre-alignment`](guides/intensity-based-slm-centre-alignment.md)
-procedures. Keep future calibration and operator procedures in the same folder
-so they are easy to find.
+procedures, plus the
+[`Time Tagger server, bridge server, and client`](guides/time-tagger-server-bridge-client.md)
+guide. Keep future calibration and operator procedures in the same folder so
+they are easy to find.
 
 ## Data And Calibration Directories
 

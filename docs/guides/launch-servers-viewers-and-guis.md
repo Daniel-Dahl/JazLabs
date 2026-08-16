@@ -46,6 +46,11 @@ Bringing a supported instrument online normally follows the same pattern:
 The camera and SLM examples below show this pattern with two different data
 paths: local camera shared memory and a networked SLM bridge.
 
+The Time Tagger follows the same server/bridge/client model without a
+continuous shared-memory stream. See the dedicated
+[`Time Tagger server, bridge server, and client`](time-tagger-server-bridge-client.md)
+guide for its launch commands and Python client example.
+
 ## Example 1: Camera Server and Clients on One Computer
 
 In this arrangement, the camera, server, live viewer, and control GUI are all

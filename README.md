@@ -91,11 +91,13 @@ jazlabs-server-camera
 jazlabs-server-laser
 jazlabs-server-daq
 jazlabs-server-optical-switch
-jazlabs-server-slm-linux
-jazlabs-server-slm-windows
+jazlabs-server-slm
+jazlabs-bridge-slm
 jazlabs-server-slm-stack
 jazlabs-bridge-camera
 jazlabs-bridge-daq
+jazlabs-server-time-tagger
+jazlabs-bridge-time-tagger
 jazlabs-view
 jazlabs-view-camera
 jazlabs-view-optical-switch
@@ -138,6 +140,10 @@ the same network.
 The exact client constructor depends on the instrument stack, so use the current
 examples and launcher configs as the reference until the examples are cleaned
 up.
+
+For the networked Time Tagger workflow, see the
+[`Time Tagger server, bridge server, and client`](docs/guides/time-tagger-server-bridge-client.md)
+guide.
 
 ### Laser server and remote control
 

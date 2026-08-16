@@ -3,7 +3,6 @@ import numpy as np
 import time
 import multiprocessing
 from multiprocessing import shared_memory
-import TimeTagger
 import cv2
 # Importing necessary libraries
 import sys
@@ -17,6 +16,7 @@ import copy
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 import JazLabs.hardware.TimeTagger.TimeTaggerFunction as TimetaggerFunc
+from JazLabs.hardware.TimeTagger.TimeTagger_Client import TimeTaggerClient
 IMAGE_X = 1600
 IMAGE_Y = 580
 THREAD_SLEEP_TIME=1e-12
@@ -104,7 +104,13 @@ class TimeTaggerLiveDisplayThread:
     generating sine wave data and updating parameters dynamically.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        host="127.0.0.1",
+        command_port=50931,
+        timeout_ms=120000,
+        client_id="time_tagger_live_window",
+    ):
         """
         Initializes the thread object, shared memory buffers, and synchronization events.
         """
@@ -181,7 +187,11 @@ class TimeTaggerLiveDisplayThread:
             self.SetAvgNumOfCountMeasEvent,
             self.sharedMemoryCountsName, 
             self.sharedFloat,
-            self.sharedInt
+            self.sharedInt,
+            host,
+            command_port,
+            timeout_ms,
+            client_id,
         ))
         process.start()  # Start the process
         return process
@@ -276,7 +286,8 @@ def TaggerLiveThreadWindow(queue, terminateThreadEvent, PauseThreadEvent,
                            CreateReleaseTaggerEvent,SetTriggerLevelEvent,SetChannelEvent,SetDisplayNormalisedValuesEvent,
                            GetCountsDataEvent,SetBinWidthEvent,SetCountTimeEvent,SetAvgNumOfCountMeasEvent,
                            sharedMemoryCountsName, 
-                           sharedFloat,sharedInt):
+                           sharedFloat,sharedInt,
+                           host,command_port,timeout_ms,client_id):
     
     sharedMemoryCounts = shared_memory.SharedMemory(name=sharedMemoryCountsName)
     countsarr_shm = np.ndarray((4), dtype=np.dtype(int), buffer=sharedMemoryCounts.buf)
@@ -306,16 +317,21 @@ def TaggerLiveThreadWindow(queue, terminateThreadEvent, PauseThreadEvent,
         if (CreateReleaseTaggerEvent.is_set()):
             if not(DeviceIsCreated):
                 try:
-                    tagger = TimeTagger.createTimeTagger()
+                    tagger = TimeTaggerClient(
+                        host=host,
+                        command_port=command_port,
+                        timeout_ms=timeout_ms,
+                        client_id=client_id,
+                    )
                     DeviceIsCreated=True
-                    queue.put("TimeTagger Connected")
-                except RuntimeError as e:
+                    queue.put("Time Tagger client connected")
+                except Exception as e:
                     queue.put(e)
                     DeviceIsCreated=False
             else:
-                TimeTagger.freeTimeTagger(tagger)
+                tagger.close()
                 DeviceIsCreated=False
-                queue.put("TimeTagger was released from the thread run function again to reconnect")
+                queue.put("Time Tagger client disconnected")
 
             CreateReleaseTaggerEvent.clear()
         
@@ -393,6 +409,9 @@ def TaggerLiveThreadWindow(queue, terminateThreadEvent, PauseThreadEvent,
         
 
         
+    if DeviceIsCreated:
+        tagger.close()
+
     cv2.destroyAllWindows()
     cv2.waitKey(1)
     cv2.destroyAllWindows()
@@ -402,4 +421,3 @@ def TaggerLiveThreadWindow(queue, terminateThreadEvent, PauseThreadEvent,
     
 
     return
-
