@@ -20,6 +20,9 @@ below use `HDStokes` for the camera and `default_lab` for the bridged SLM.
 - Install JazLabs on every computer that will run a server, bridge, or client.
 - Power on the hardware and install any required vendor drivers or SDKs.
 - Check the selected file under `src/JazLabs/launchers/configs/`.
+- Set `camera_serial_number` for every camera entry. JazLabs does not select a
+  camera by discovery index; startup fails if the requested serial is missing
+  or not detected.
 - Confirm that configured hosts and ports are correct and not already in use.
 - For a connection between computers, confirm that the hosts can reach each
   other and that the configured ports are allowed through their firewalls.
@@ -153,6 +156,7 @@ try:
     )
 
     print("Server alive:", camera_client.IsServerAlive())
+    print("Camera serial number:", camera_client.GetSerialNumber())
     print("Exposure [us]:", camera_client.GetExposureTime())
 
     previous_counter = camera_client.GetFrameCounter()

@@ -154,9 +154,14 @@ class CameraZMQBridgeServer:
     def _get_local_properties(self):
         acquisition_running = self.remote_properties.get("acquisition_running", None)
         camera_type = self.remote_properties.get("camera_type", "remote_camera")
+        camera_serial_number = self.remote_properties.get(
+            "camera_serial_number",
+            "unknown",
+        )
 
         return {
             "camera_type": camera_type,
+            "camera_serial_number": camera_serial_number,
             "command_port": self.local_command_port,
             "frame_pub_port": self.local_frame_pub_port,
             "frame_shared_memory_name": self.frame_shm.name,

@@ -41,8 +41,15 @@ class CameraObject:
     direct camera control, NumPy frames, and no multiprocessing/display code.
     """
 
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=5e-6, verbose=False):
-        self.CameraIdx = int(CameraIdx)
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=5e-6, verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "Lucid Vision"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
         self.verbose = bool(verbose)
@@ -58,19 +65,32 @@ class CameraObject:
         self.num_cameras = len(self.devices)
 
         print(f"{self.num_cameras} cameras detected:")
+        selected_device = None
+        discovered_serial_numbers = []
         for k, device in enumerate(self.devices):
-            print(f"{k}: Lucid Vision camera {k}")
-        print(f"Using camera {self.CameraIdx}")
+            serial_number = str(device.nodemap.DeviceSerialNumber.value).strip()
+            discovered_serial_numbers.append(serial_number)
+            print(f"{k}: Lucid Vision camera serial number {serial_number}")
+            if serial_number.casefold() == requested_serial_number.casefold():
+                selected_device = device
 
         if self.num_cameras <= 0:
             self.shutdown()
             raise RuntimeError("No Lucid Vision cameras detected")
-        if self.CameraIdx < 0 or self.CameraIdx >= self.num_cameras:
+        if selected_device is None:
             self.shutdown()
-            raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
+            raise ValueError(
+                "Lucid Vision camera with serial number "
+                f"{requested_serial_number!r} was not found. Discovered serial "
+                f"numbers: {', '.join(discovered_serial_numbers)}"
+            )
 
-        self.device = self.devices[self.CameraIdx]
+        self.device = selected_device
         self.node_map = self.device.nodemap
+        self.CameraSerialNumber = str(
+            self.node_map.DeviceSerialNumber.value
+        ).strip()
+        print(f"Using Lucid Vision camera serial number {self.CameraSerialNumber}")
 
         self.trigger_mode = "Off"
         self.trigger_source = "FreeRun"
@@ -107,6 +127,12 @@ class CameraObject:
         self.StartAcquisition()
 
         atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
+    def GetSerialNumber(self):
+        self.CameraSerialNumber = str(
+            self.node_map.DeviceSerialNumber.value
+        ).strip()
+        return self.CameraSerialNumber
 
     def __del__(self):
         self.shutdown()

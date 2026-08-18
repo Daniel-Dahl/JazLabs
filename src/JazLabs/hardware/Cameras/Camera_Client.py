@@ -53,6 +53,14 @@ class CameraClient:
         self.frame_sub_socket.connect(f"tcp://{self.host}:{self.frame_pub_port}")
 
         properties = self.GetProperties()
+        self.camera_type = properties.get("camera_type")
+        self.camera_serial_number = str(
+            properties.get("camera_serial_number") or ""
+        ).strip()
+        if not self.camera_serial_number:
+            raise RuntimeError(
+                "Camera server did not report a camera_serial_number"
+            )
         if int(properties["command_port"]) != self.command_port:
             raise RuntimeError(
                 f"Connected to command port {self.command_port}, "
@@ -323,6 +331,9 @@ class CameraClient:
         return self.SendCommand({
             "cmd": "get_camera_health",
         })
+
+    def GetSerialNumber(self):
+        return self.SendCommand({"cmd": "get_serial_number"})
 
     def GetTriggerMode(self):
         result = self.SendCommand({"cmd": "get_trigger_mode"})

@@ -10,7 +10,8 @@ def take_darkframe(camera_object, num_frames=10, save_path=None, wait_time=None)
     Args:
         camera_object: The camera object to use for taking the dark frame.
         num_frames: The number of dark frames to take (default is 10).
-        save_path: Path to save the dark frame as a npy file (None to not save).
+        save_path: Directory for the dark frame and metadata files. Defaults to
+            the repository's calibrations/Camera directory.
         wait_time: Time to wait between frames in seconds (None for no wait).
     """
     dumbframe=camera_object.GetFrame()
@@ -39,23 +40,45 @@ def take_darkframe(camera_object, num_frames=10, save_path=None, wait_time=None)
     darkframe = darkframe_accum / num_frames
     print(camera_object.GetExposureTime())
 
-    if save_path is not None:
-        # Save with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        darkframe_path = Path(save_path) / f"darkframe_{timestamp}.npy"
-        darkframe_path_meta = Path(save_path) / f"darkframe_meta_{timestamp}.npy"
-        
-        # darkframe_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(darkframe_path, darkframe)
-        np.save(darkframe_path_meta, {
-            "num_frames": num_frames,
-            "wait_time": wait_time,
-            "timestamp": timestamp,
-            "exposure_time": camera_object.GetExposureTime(),
-            "fps": camera_object.GetFPS(),
-            "frame_shape": darkframe.shape,
-        })
-        print(f"Dark frame saved to: {darkframe_path}")
+    if save_path is None:
+        save_path = Path(__file__).resolve().parents[3] / "calibrations" / "Camera"
+
+    save_directory = Path(save_path).expanduser()
+    save_directory.mkdir(parents=True, exist_ok=True)
+
+    camera_type = None
+    get_properties = getattr(camera_object, "GetProperties", None)
+    if callable(get_properties):
+        camera_properties = get_properties()
+        if isinstance(camera_properties, dict):
+            camera_type = camera_properties.get("camera_type")
+    if camera_type is None:
+        camera_type = getattr(camera_object, "CameraType", None)
+    if camera_type is None:
+        camera_type = getattr(camera_object, "camera_type", None)
+    if camera_type is None:
+        camera_type = getattr(camera_object, "camModel", None)
+    if camera_type is None:
+        camera_class = type(camera_object)
+        camera_type = f"{camera_class.__module__}.{camera_class.__qualname__}"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    darkframe_path = save_directory / f"darkframe_{timestamp}.npy"
+    darkframe_path_meta = save_directory / f"darkframe_meta_{timestamp}.npy"
+
+    np.save(darkframe_path, darkframe)
+    np.save(darkframe_path_meta, {
+        "num_frames": num_frames,
+        "wait_time": wait_time,
+        "timestamp": timestamp,
+        "camera_type": str(camera_type),
+        "camera_serial_number": str(camera_object.GetSerialNumber()),
+        "exposure_time": camera_object.GetExposureTime(),
+        "fps": camera_object.GetFPS(),
+        "gain": camera_object.GetGain(),
+        "frame_shape": darkframe.shape,
+    })
+    print(f"Dark frame saved to: {darkframe_path}")
     camera_object.SetContinuousMode()
 
     return darkframe

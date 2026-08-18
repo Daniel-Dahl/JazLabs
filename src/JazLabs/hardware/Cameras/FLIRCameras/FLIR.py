@@ -42,8 +42,15 @@ class CameraObject:
     server and upstream clients call those names directly.
     """
 
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=6.9e-6, dll_path=None, verbose=False):
-        self.CameraIdx = int(CameraIdx)
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=6.9e-6, dll_path=None, verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "FLIR"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
         self.verbose = bool(verbose)
@@ -61,21 +68,28 @@ class CameraObject:
         self.spin.get_cameras(self.system, self.camera_list)
         self.num_cameras = self.spin.get_camera_list_size(self.camera_list)
 
-        print(f"{self.num_cameras} cameras detected:")
-        for k in range(self.num_cameras):
-            print(f"{k}: FLIR Spinnaker camera {k}")
-        print(f"Using camera {self.CameraIdx}")
+        print(f"{self.num_cameras} FLIR Spinnaker cameras detected")
 
         if self.num_cameras <= 0:
             self.shutdown()
             raise RuntimeError("No FLIR Spinnaker cameras detected")
-        if self.CameraIdx < 0 or self.CameraIdx >= self.num_cameras:
+        try:
+            self.camera = self.spin.get_camera_from_serial_number(
+                self.camera_list,
+                requested_serial_number,
+            )
+        except Exception as error:
             self.shutdown()
-            raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
+            raise ValueError(
+                "FLIR camera with serial number "
+                f"{requested_serial_number!r} was not found"
+            ) from error
 
-        self.camera = self.spin.get_camera_from_index(self.camera_list, self.CameraIdx)
         self.spin.init_camera(self.camera)
         self.node_map = self.spin.get_node_map(self.camera)
+        self.tl_device_node_map = self.spin.get_tl_device_node_map(self.camera)
+        self.CameraSerialNumber = self.GetSerialNumber()
+        print(f"Using FLIR camera serial number {self.CameraSerialNumber}")
 
         self.trigger_mode = "Off"
         self.trigger_source = "FreeRun"
@@ -116,6 +130,13 @@ class CameraObject:
         self.StartAcquisition()
 
         atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
+    def GetSerialNumber(self):
+        self.CameraSerialNumber = self.spin.get_string(
+            self.tl_device_node_map,
+            "DeviceSerialNumber",
+        )
+        return self.CameraSerialNumber
 
     def __del__(self):
         self.shutdown()

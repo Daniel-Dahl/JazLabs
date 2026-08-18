@@ -15,7 +15,8 @@ CAMERA_SERVERS = [
     {
         "name": "cam_slm",
         "camera_type": "FLIR",
-        "camera_idx": 0,
+        # Required: replace with the serial number printed on the camera.
+        "camera_serial_number": None,
         "command_port": 50731,
         "frame_pub_port": 50732,
         "frame_topic": "camera.frame",

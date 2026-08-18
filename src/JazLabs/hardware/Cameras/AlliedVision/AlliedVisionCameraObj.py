@@ -39,8 +39,15 @@ class CameraObject:
     The method names follow the FLIR, PointGrey, Lucid, and QImag wrappers.
     """
 
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=3.45e-6, verbose=False):
-        self.CameraIdx = int(CameraIdx)
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=3.45e-6, verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "Allied Vision"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
         self.verbose = bool(verbose)
@@ -59,19 +66,30 @@ class CameraObject:
         self.num_cameras = len(self.cameras)
 
         print(f"{self.num_cameras} cameras detected:")
+        selected_camera = None
+        discovered_serial_numbers = []
         for k, camera in enumerate(self.cameras):
-            print(f"{k}: Allied Vision camera {camera}")
-        print(f"Using camera {self.CameraIdx}")
+            serial_number = str(camera.get_serial()).strip()
+            discovered_serial_numbers.append(serial_number)
+            print(f"{k}: Allied Vision camera serial number {serial_number}")
+            if serial_number.casefold() == requested_serial_number.casefold():
+                selected_camera = camera
 
         if self.num_cameras <= 0:
             self.shutdown()
             raise RuntimeError("No Allied Vision cameras detected")
-        if self.CameraIdx < 0 or self.CameraIdx >= self.num_cameras:
+        if selected_camera is None:
             self.shutdown()
-            raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
+            raise ValueError(
+                "Allied Vision camera with serial number "
+                f"{requested_serial_number!r} was not found. Discovered serial "
+                f"numbers: {', '.join(discovered_serial_numbers)}"
+            )
 
-        self.camera = self.cameras[self.CameraIdx]
+        self.camera = selected_camera
         self.camera.__enter__()
+        self.CameraSerialNumber = str(self.camera.get_serial()).strip()
+        print(f"Using Allied Vision camera serial number {self.CameraSerialNumber}")
 
         self.trigger_mode = "Off"
         self.trigger_source = "FreeRun"
@@ -113,6 +131,10 @@ class CameraObject:
 
         self.StartAcquisition()
         atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
+    def GetSerialNumber(self):
+        self.CameraSerialNumber = str(self.camera.get_serial()).strip()
+        return self.CameraSerialNumber
 
     def __del__(self):
         self.shutdown()
@@ -217,7 +239,7 @@ class CameraObject:
             self.trigger_source = "FreeRun"
         else:
             source = self._get("TriggerSource")
-            self.trigger_source = "line " + source[4:] if source.startswith("Line") else source
+            self.trigger_source = ""#"line " + source[4:] if source.startswith("Line") else source
 
         return self.trigger_mode, self.trigger_source
 

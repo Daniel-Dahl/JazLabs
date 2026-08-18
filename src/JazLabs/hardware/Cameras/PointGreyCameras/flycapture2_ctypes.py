@@ -342,6 +342,20 @@ class FlyCapture2Library:
         lib.fc2GetCameraFromIndex.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(fc2PGRGuid)]
         lib.fc2GetCameraFromIndex.restype = ctypes.c_int
 
+        lib.fc2GetCameraFromSerialNumber.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.POINTER(fc2PGRGuid),
+        ]
+        lib.fc2GetCameraFromSerialNumber.restype = ctypes.c_int
+
+        lib.fc2GetCameraSerialNumberFromIndex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        lib.fc2GetCameraSerialNumberFromIndex.restype = ctypes.c_int
+
         lib.fc2Connect.argtypes = [ctypes.c_void_p, ctypes.POINTER(fc2PGRGuid)]
         lib.fc2Connect.restype = ctypes.c_int
 
@@ -460,6 +474,30 @@ class FlyCapture2Library:
 
     def get_camera_from_index(self, ctx, index):
         return self.get_camera_guid(ctx, index)
+
+    def get_camera_from_serial_number(self, ctx, serial_number):
+        guid = fc2PGRGuid()
+        _check_error(
+            self.lib.fc2GetCameraFromSerialNumber(
+                ctx,
+                ctypes.c_uint(int(serial_number)),
+                ctypes.byref(guid),
+            ),
+            f"fc2GetCameraFromSerialNumber({serial_number})",
+        )
+        return guid
+
+    def get_camera_serial_number_from_index(self, ctx, index):
+        serial_number = ctypes.c_uint()
+        _check_error(
+            self.lib.fc2GetCameraSerialNumberFromIndex(
+                ctx,
+                ctypes.c_uint(index),
+                ctypes.byref(serial_number),
+            ),
+            f"fc2GetCameraSerialNumberFromIndex({index})",
+        )
+        return int(serial_number.value)
 
     def connect(self, ctx, guid):
         _check_error(self.lib.fc2Connect(ctx, ctypes.byref(guid)), "fc2Connect")

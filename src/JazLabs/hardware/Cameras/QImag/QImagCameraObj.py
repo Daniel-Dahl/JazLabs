@@ -48,8 +48,15 @@ class CameraObject:
     TRIGGER_EDGE_LOW = 2
     TRIGGER_SOFTWARE = 5
 
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=6.45e-6, verbose=False):
-        self.CameraIdx = int(CameraIdx)
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=6.45e-6, verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "QImaging"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
         self.verbose = bool(verbose)
@@ -60,7 +67,7 @@ class CameraObject:
 
         self.cam = QCamCamera()
         self.cam.PARAM_KEYS.setdefault("Trigger Type", 7)
-        self._connect_to_camera(self.CameraIdx)
+        self._connect_to_camera(requested_serial_number)
         self.cam.setup_camera()
 
         self.trigger_mode = "Off"
@@ -105,7 +112,7 @@ class CameraObject:
         if result != 0:
             raise RuntimeError(f"{message} failed with QCam error {result}")
 
-    def _connect_to_camera(self, camera_idx):
+    def _connect_to_camera(self, requested_serial_number):
         self._check(self.cam.load_driver(), "QCam_LoadDriver")
 
         max_cameras = 10
@@ -115,19 +122,36 @@ class CameraObject:
 
         self.num_cameras = int(camera_count.value)
         print(f"{self.num_cameras} cameras detected:")
+        selected_camera_item = None
+        discovered_serial_numbers = []
         for k in range(self.num_cameras):
             item = camera_items[k]
-            print(f"{k}: QImaging camera id={item.cameraId} unique={item.uniqueId}")
-        print(f"Using camera {camera_idx}")
+            serial_number = str(item.uniqueId)
+            discovered_serial_numbers.append(serial_number)
+            print(f"{k}: QImaging camera serial number {serial_number}")
+            if serial_number.casefold() == requested_serial_number.casefold():
+                selected_camera_item = item
 
         if self.num_cameras <= 0:
             self.cam.release_driver()
             raise RuntimeError("No QImaging cameras detected")
-        if camera_idx < 0 or camera_idx >= self.num_cameras:
+        if selected_camera_item is None:
             self.cam.release_driver()
-            raise IndexError(f"CameraIdx {camera_idx} out of range for {self.num_cameras} cameras")
+            raise ValueError(
+                "QImaging camera with serial number "
+                f"{requested_serial_number!r} was not found. Discovered serial "
+                f"numbers: {', '.join(discovered_serial_numbers)}"
+            )
 
-        self._check(self.cam.open_camera(camera_items[camera_idx].cameraId), "QCam_OpenCamera")
+        self.CameraSerialNumber = str(selected_camera_item.uniqueId)
+        self._check(
+            self.cam.open_camera(selected_camera_item.cameraId),
+            "QCam_OpenCamera",
+        )
+        print(f"Using QImaging camera serial number {self.CameraSerialNumber}")
+
+    def GetSerialNumber(self):
+        return self.CameraSerialNumber
 
     def shutdown(self):
         if getattr(self, "_closed", True):

@@ -9,7 +9,7 @@ from JazLabs.procedures.TipTiltMirror.calibration_scan_TTmirror import TTAttenCa
 datadir = '../temp/'
 darkframe_filename = 'darkframe_20260415_180343.npy'
 camera_model = 'FirstLightCred3_2Lite'
-camera_idx = 2
+camera_serial_number = "REPLACE_WITH_CAMERA_SERIAL_NUMBER"
 verbose = True
 exp_time_us = 100 # microseconds
 roi_geometry = [288,176,128,128]
@@ -25,7 +25,10 @@ elif camera_model == 'FirstLightCblue2':
 else:
     raise ValueError('Unknown camera model specified')
 
-camera_object = CamLib.CameraObject(CameraIdx=camera_idx, verbose=verbose)
+camera_object = CamLib.CameraObject(
+    CameraSerialNumber=camera_serial_number,
+    verbose=verbose,
+)
 camera_object.SetSoftwareTriggerMode()
 camera_object.SetROI(*roi_geometry, snap_values=False, enable=True)
 camera_object.SetExposureTime(exp_time_us)  # microseconds

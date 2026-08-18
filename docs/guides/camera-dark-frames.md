@@ -84,7 +84,43 @@ darkframe_20260810_143005_cam_slm_exp-100us_fps-30_lens-cap-fitted.png
 The NPY file contains the `float64` mean and is the file to use for numerical
 subtraction. The JSON sidecar contains the timestamp, camera connection,
 measured exposure and FPS, frame count, array shape and type, summary
-statistics, and operator description. The PNG is a visual preview only.
+statistics, camera serial number, and operator description. The PNG is a
+visual preview only.
+
+### Output from `take_darkframe`
+
+Code that calls `JazLabs.utils.camera_tools.take_darkframe` directly uses a
+simpler two-file format. If `save_path` is omitted or `None`, the files are
+saved in `calibrations/Camera/`. A supplied path overrides that directory.
+Both files use the same timestamp:
+
+```text
+darkframe_20260810_143005.npy
+darkframe_meta_20260810_143005.npy
+```
+
+The first file is the `float64` mean dark frame. The `darkframe_meta_...npy`
+file contains a Python dictionary with `num_frames`, `wait_time`, `timestamp`,
+`camera_type`, `camera_serial_number`, `exposure_time`, `fps`, `gain`, and
+`frame_shape`. For a camera client, `camera_type` is the configured hardware
+type reported by the server; direct camera objects fall back to their
+model/type attribute or Python class. The serial number is read through
+`GetSerialNumber()` in both cases. These settings should be checked against the
+illuminated acquisition before using the dark frame.
+
+Load a trusted metadata sidecar with:
+
+```python
+metadata = np.load(
+    "calibrations/Camera/darkframe_meta_....npy",
+    allow_pickle=True,
+).item()
+print(metadata)
+```
+
+Because this dictionary is stored as a pickled NumPy object, only load metadata
+files from a trusted source. The command-line procedure described above instead
+uses the JSON sidecar and optional PNG preview.
 
 Load and inspect the calibration with NumPy:
 

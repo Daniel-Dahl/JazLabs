@@ -68,8 +68,21 @@ class CameraObject:
     """
 
 
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=6.9e-6, dll_path=None,verbose=False):
-        self.CameraIdx = int(CameraIdx)
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=6.9e-6, dll_path=None,verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+        try:
+            numeric_serial_number = int(requested_serial_number)
+        except ValueError as error:
+            raise ValueError(
+                "FlyCapture2 camera serial numbers must be numeric"
+            ) from error
+
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "Point Grey"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
 
@@ -80,21 +93,49 @@ class CameraObject:
         self.context = self.fc2.create_context()
 
         self.num_cameras = self.fc2.get_num_cameras(self.context)
-        print(f"{self.num_cameras} cameras detected:")
-        for k in range(self.num_cameras):
-            print(f"{k}: FLIR camera {k}")
-        print(f"Using camera {self.CameraIdx}")
+        print(f"{self.num_cameras} FlyCapture2 cameras detected:")
         
         if self.num_cameras <= 0:
             self.shutdown()
             raise RuntimeError("No FLIR cameras detected")
-        if self.CameraIdx < 0 or self.CameraIdx >= self.num_cameras:
-            self.shutdown()
-            raise IndexError(f"CameraIdx {self.CameraIdx} out of range for {self.num_cameras} cameras")
 
-        self.guid = self.fc2.get_camera_from_index(self.context, self.CameraIdx)
-        
+        discovered_serial_numbers = []
+        for camera_index in range(self.num_cameras):
+            discovered_serial_number = str(
+                self.fc2.get_camera_serial_number_from_index(
+                    self.context,
+                    camera_index,
+                )
+            )
+            discovered_serial_numbers.append(discovered_serial_number)
+            print(
+                f"{camera_index}: FlyCapture2 camera serial number "
+                f"{discovered_serial_number}"
+            )
+
+        if requested_serial_number not in discovered_serial_numbers:
+            self.shutdown()
+            raise ValueError(
+                "FlyCapture2 camera with serial number "
+                f"{requested_serial_number!r} was not found. Discovered serial "
+                f"numbers: {', '.join(discovered_serial_numbers)}"
+            )
+
+        try:
+            self.guid = self.fc2.get_camera_from_serial_number(
+                self.context,
+                numeric_serial_number,
+            )
+        except Exception as error:
+            self.shutdown()
+            raise ValueError(
+                "FlyCapture2 camera with serial number "
+                f"{requested_serial_number!r} was not found"
+            ) from error
+
         self.fc2.connect(self.context, self.guid)
+        self.CameraSerialNumber = requested_serial_number
+        print(f"Using FlyCapture2 camera serial number {self.CameraSerialNumber}")
         
         self.StartAcquisition() 
         
@@ -148,6 +189,9 @@ class CameraObject:
             
 
         atexit.register(_shutdown_camera_ref, weakref.ref(self))
+
+    def GetSerialNumber(self):
+        return self.CameraSerialNumber
 
     def __del__(self):
         self.shutdown()

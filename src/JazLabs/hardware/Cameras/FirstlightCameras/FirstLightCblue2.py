@@ -50,30 +50,99 @@ def snap_to_value(value, step, mode='nearest', minimum=0):
     return int(snapped)
 
 class CameraObject:
-    def __init__(self, CameraIdx=0, CalibrationFile=None, PixelSize=4.5e-6, verbose=False):
+    def __init__(self, CameraSerialNumber, CalibrationFile=None, PixelSize=4.5e-6, verbose=False):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
         self.cam_context = FliSdk_V2.Init()
         self._closed = False
         self.verbose = verbose
+        self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "First Light C-Blue"
 
         self.grabber_list = FliSdk_V2.DetectGrabbers(self.cam_context)
         self.camera_list = FliSdk_V2.DetectCameras(self.cam_context)
 
         self.num_cameras = len(self.camera_list)
+        if self.num_cameras == 0:
+            self._closed = True
+            FliSdk_V2.Exit(self.cam_context)
+            raise RuntimeError("No First Light cameras detected")
+
         if self.verbose:
             print(f"{self.num_cameras} cameras detected:")
             for k, name in enumerate(self.camera_list):
                 print(f"{k}: {name}")
-            print(f"Using camera {CameraIdx}")
 
-        ok = FliSdk_V2.SetCamera(self.cam_context, self.camera_list[CameraIdx])
-        if not ok:
-            raise RuntimeError("Failed to set camera")
+        discovered_serial_numbers = []
+        selected_camera_index = None
+        for camera_index, camera_identifier in enumerate(self.camera_list):
+            camera_set = FliSdk_V2.SetCamera(
+                self.cam_context,
+                camera_identifier,
+            )
+            if not camera_set:
+                if self.verbose:
+                    print(f"Could not select detected camera {camera_index}")
+                continue
 
-        FliSdk_V2.SetMode(self.cam_context, FliSdk_V2.Mode.Full)
+            FliSdk_V2.SetMode(self.cam_context, FliSdk_V2.Mode.Full)
+            camera_updated = FliSdk_V2.Update(self.cam_context)
+            if not camera_updated:
+                if self.verbose:
+                    print(f"Could not initialise detected camera {camera_index}")
+                continue
 
-        ok = FliSdk_V2.Update(self.cam_context)
-        if not ok:
-            raise RuntimeError("Failed to update SDK after setting camera")
+            serial_read, serial_number = (
+                FliSdk_V2.FliGenicamCamera.GetStringFeature(
+                    self.cam_context,
+                    "DeviceSerialNumber",
+                )
+            )
+            if not serial_read:
+                if self.verbose:
+                    print(
+                        "Could not read the serial number of detected camera "
+                        f"{camera_index}"
+                    )
+                continue
+
+            discovered_serial_number = str(serial_number).strip()
+            discovered_serial_numbers.append(discovered_serial_number)
+            if self.verbose:
+                print(
+                    f"Camera {camera_index} serial number: "
+                    f"{discovered_serial_number}"
+                )
+
+            if (
+                discovered_serial_number.casefold()
+                == requested_serial_number.casefold()
+            ):
+                selected_camera_index = camera_index
+                self.CameraSerialNumber = discovered_serial_number
+                break
+
+        if selected_camera_index is None:
+            self._closed = True
+            FliSdk_V2.Exit(self.cam_context)
+            discovered_serials_text = ", ".join(discovered_serial_numbers)
+            if not discovered_serials_text:
+                discovered_serials_text = "none readable"
+            raise ValueError(
+                "First Light camera with serial number "
+                f"{requested_serial_number!r} was not found. "
+                f"Discovered serial numbers: {discovered_serials_text}"
+            )
+
+        if self.verbose:
+            print(
+                f"Using camera serial number {self.CameraSerialNumber} "
+                f"(detected index {selected_camera_index})"
+            )
 
         self.Nx, self.Ny = FliSdk_V2.GetCurrentImageDimension(self.cam_context)
 
@@ -95,6 +164,16 @@ class CameraObject:
                 print("First Light new-image callback unavailable:", e)
 
         atexit.register(self.shutdown)
+
+    def GetSerialNumber(self):
+        serial_read, serial_number = FliSdk_V2.FliGenicamCamera.GetStringFeature(
+            self.cam_context,
+            "DeviceSerialNumber",
+        )
+        if not serial_read:
+            raise RuntimeError("Failed to read camera serial number")
+        self.CameraSerialNumber = str(serial_number).strip()
+        return self.CameraSerialNumber
 
     def __del__(self):
         self.shutdown()

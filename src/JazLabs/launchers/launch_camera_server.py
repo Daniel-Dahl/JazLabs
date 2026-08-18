@@ -14,7 +14,12 @@ def build_parser():
     parser.add_argument("--frame-pub-port", type=int, default=None)
     parser.add_argument("--frame-topic", default=None)
     parser.add_argument("--camera-type", default=None)
-    parser.add_argument("--camera_serial_number", type=any, default=None)
+    parser.add_argument(
+        "--camera-serial-number",
+        "--camera_serial_number",
+        dest="camera_serial_number",
+        default=None,
+    )
     parser.add_argument("--poll-sleep", type=float, default=None)
     parser.add_argument("--verbose", action="store_true", default=None)
     return parser
@@ -42,6 +47,13 @@ def main(argv=None):
     camera.setdefault("poll_sleep", 0.0001)
     camera.setdefault("verbose", False)
 
+    camera_serial_number = str(camera.get("camera_serial_number") or "").strip()
+    if not camera_serial_number:
+        raise ValueError(
+            f"Camera {args.name!r} must define camera_serial_number in its "
+            "CAMERA_SERVERS configuration or via --camera-serial-number."
+        )
+
     mp.freeze_support()
 
     from JazLabs.hardware.Cameras.Camera_Server import CameraZMQServer
@@ -52,7 +64,7 @@ def main(argv=None):
         frame_pub_port=camera["frame_pub_port"],
         CameraType=camera["camera_type"],
         CameraKwargs={
-            "CameraSerialNumber": camera["camera_serial_number"],
+            "CameraSerialNumber": camera_serial_number,
             "verbose": camera["verbose"],
         },
         PollSleep=camera["poll_sleep"],
@@ -66,10 +78,9 @@ def main(argv=None):
     print(f"Frame PUB port: {camera['frame_pub_port']}")
     print(f"Frame topic: {camera['frame_topic']}")
     print(f"Camera type: {camera['camera_type']}")
-    print(f"Camera serial number: {camera['camera_serial_number']}")
+    print(f"Camera serial number: {camera_serial_number}")
     server.run_forever()
 
 
 if __name__ == "__main__":
     main()
-

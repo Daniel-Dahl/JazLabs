@@ -58,6 +58,8 @@ class CameraObject:
         PixelSize=17.0e-6,
         verbose=False,
     ):
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
         requested_serial_number = str(CameraSerialNumber).strip()
         if not requested_serial_number:
             raise ValueError("CameraSerialNumber must not be empty")
@@ -66,6 +68,7 @@ class CameraObject:
         self._closed = False
         self.verbose = verbose
         self.CameraSerialNumber = requested_serial_number
+        self.CameraType = "First Light C-Red3_2Lite"
 
         self.grabber_list = FliSdk_V2.DetectGrabbers(self.cam_context)
         self.camera_list = FliSdk_V2.DetectCameras(self.cam_context)
@@ -124,8 +127,8 @@ class CameraObject:
                 == requested_serial_number.casefold()
             ):
                 selected_camera_index = camera_index
-                self.CameraIdx = camera_index
-                self.camSerialNumber = hardware_uid
+                self.detected_camera_index = camera_index
+                self.camSerialNumber = discovered_serial_number
                 break
 
         if selected_camera_index is None:
@@ -198,9 +201,9 @@ class CameraObject:
 
     def GetSerialNumber(self):
         ok, hardware_uid = FliSdk_V2.FliCred.GetHwuid(self.cam_context)
-        self.camSerialNumber = hardware_uid
         if not ok:
             raise RuntimeError("Failed to read camera hardware UID")
+        self.camSerialNumber = str(hardware_uid).strip()
 
         print("Camera hardware UID:", hardware_uid)
         return self.camSerialNumber

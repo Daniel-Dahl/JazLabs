@@ -69,6 +69,8 @@ class CameraDarkFrameTests(unittest.TestCase):
                 dark_frame=dark_frame,
                 output_directory=temporary_directory,
                 camera_name="cam_slm",
+                camera_type="FLIR",
+                camera_serial_number="SN-12345",
                 exposure_time_us=100.5,
                 camera_fps=30.0,
                 description="Dark lab; lights OFF",
@@ -91,6 +93,8 @@ class CameraDarkFrameTests(unittest.TestCase):
             metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
             self.assertEqual(metadata["exposure_time_us"], 100.5)
             self.assertEqual(metadata["camera_fps"], 30.0)
+            self.assertEqual(metadata["camera_type"], "FLIR")
+            self.assertEqual(metadata["camera_serial_number"], "SN-12345")
             self.assertEqual(metadata["description"], "Dark lab; lights OFF")
             self.assertEqual(metadata["captured_at"], "2026-08-10T14:30:05+00:00")
             self.assertEqual(

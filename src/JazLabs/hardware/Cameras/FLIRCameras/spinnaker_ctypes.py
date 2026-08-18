@@ -103,6 +103,12 @@ class SpinnakerLibrary:
         lib.spinCameraListGetSize.restype = ctypes.c_int
         lib.spinCameraListGet.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]
         lib.spinCameraListGet.restype = ctypes.c_int
+        lib.spinCameraListGetBySerial.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        lib.spinCameraListGetBySerial.restype = ctypes.c_int
 
         lib.spinCameraInit.argtypes = [ctypes.c_void_p]
         lib.spinCameraInit.restype = ctypes.c_int
@@ -164,6 +170,13 @@ class SpinnakerLibrary:
         lib.spinBooleanGetValue.restype = ctypes.c_int
         lib.spinBooleanSetValue.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
         lib.spinBooleanSetValue.restype = ctypes.c_int
+
+        lib.spinStringGetValue.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        lib.spinStringGetValue.restype = ctypes.c_int
 
         lib.spinEnumerationGetEntryByName.argtypes = [
             ctypes.c_void_p,
@@ -244,6 +257,22 @@ class SpinnakerLibrary:
         )
         return camera
 
+    def get_camera_from_serial_number(self, camera_list, serial_number):
+        camera = ctypes.c_void_p()
+        _check_error(
+            self.lib.spinCameraListGetBySerial(
+                camera_list,
+                str(serial_number).encode("utf-8"),
+                ctypes.byref(camera),
+            ),
+            f"spinCameraListGetBySerial({serial_number})",
+        )
+        if not camera.value:
+            raise RuntimeError(
+                f"No Spinnaker camera matched serial number {serial_number!r}"
+            )
+        return camera
+
     def init_camera(self, camera):
         _check_error(self.lib.spinCameraInit(camera), "spinCameraInit")
 
@@ -256,6 +285,14 @@ class SpinnakerLibrary:
     def get_node_map(self, camera):
         node_map = ctypes.c_void_p()
         _check_error(self.lib.spinCameraGetNodeMap(camera, ctypes.byref(node_map)), "spinCameraGetNodeMap")
+        return node_map
+
+    def get_tl_device_node_map(self, camera):
+        node_map = ctypes.c_void_p()
+        _check_error(
+            self.lib.spinCameraGetTLDeviceNodeMap(camera, ctypes.byref(node_map)),
+            "spinCameraGetTLDeviceNodeMap",
+        )
         return node_map
 
     def begin_acquisition(self, camera):
@@ -341,6 +378,16 @@ class SpinnakerLibrary:
         value = ctypes.c_uint8()
         _check_error(self.lib.spinBooleanGetValue(node, ctypes.byref(value)), f"spinBooleanGetValue({name})")
         return bool(value.value)
+
+    def get_string(self, node_map, name):
+        node = self.get_node(node_map, name)
+        length = ctypes.c_size_t(MAX_STRING_LENGTH)
+        buffer = ctypes.create_string_buffer(MAX_STRING_LENGTH)
+        _check_error(
+            self.lib.spinStringGetValue(node, buffer, ctypes.byref(length)),
+            f"spinStringGetValue({name})",
+        )
+        return buffer.value.decode("utf-8", errors="replace")
 
     def set_boolean(self, node_map, name, value):
         node = self.get_node(node_map, name)

@@ -123,6 +123,8 @@ def save_dark_frame(
     dark_frame,
     output_directory,
     camera_name,
+    camera_type,
+    camera_serial_number,
     exposure_time_us,
     camera_fps,
     description,
@@ -156,6 +158,8 @@ def save_dark_frame(
     metadata = {
         "captured_at": captured_at.isoformat(),
         "camera_name": camera_name,
+        "camera_type": str(camera_type),
+        "camera_serial_number": str(camera_serial_number),
         "exposure_time_us": float(exposure_time_us),
         "camera_fps": float(camera_fps),
         "description": description,
@@ -241,6 +245,7 @@ def main(argv=None):
         )
         exposure_time_us = float(camera_client.GetExposureTime())
         camera_fps = float(camera_client.GetFPS())
+        camera_serial_number = camera_client.GetSerialNumber()
         captured_at = datetime.now().astimezone()
 
         print(
@@ -252,6 +257,8 @@ def main(argv=None):
             dark_frame=dark_frame,
             output_directory=procedure_config["output_directory"],
             camera_name=camera_name,
+            camera_type=camera_config["camera_type"],
+            camera_serial_number=camera_serial_number,
             exposure_time_us=exposure_time_us,
             camera_fps=camera_fps,
             description=description,

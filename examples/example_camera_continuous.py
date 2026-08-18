@@ -8,9 +8,7 @@
 camera_model = 'FLIR_pointgrey'
 
 
-# Todo - specify camera by serial number
-# Index of camera
-camera_idx = 0
+camera_serial_number = "REPLACE_WITH_CAMERA_SERIAL_NUMBER"
 
 # Set key camera settings
 exp_time_us = 100 # microseconds
@@ -44,7 +42,10 @@ if __name__ == '__main__':
     else:
         raise ValueError('Unknown camera model specified')
 
-    Camobject = CamLib.CameraObject(CameraIdx=camera_idx, verbose=verbose)
+    Camobject = CamLib.CameraObject(
+        CameraSerialNumber=camera_serial_number,
+        verbose=verbose,
+    )
     
 
     # Set camera settings

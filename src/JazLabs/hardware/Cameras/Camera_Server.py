@@ -14,7 +14,7 @@ class CameraZMQServer:
         host="127.0.0.1",
         command_port=50731,
         frame_pub_port=50732,
-        CameraType="FLIR Point Grey",
+        CameraType="FLIR",
         CameraKwargs=None,
         PollSleep=0.0001,
         ContinuousPublishFPS=None,
@@ -117,6 +117,7 @@ class CameraZMQServer:
 
         try:
             camOBJ = cameraobj.CameraObject(**self.CameraKwargs)
+            camera_serial_number = str(camOBJ.GetSerialNumber()).strip()
 
             # ----------------------------------------------------
             # Create shared memory from first frame
@@ -222,6 +223,7 @@ class CameraZMQServer:
                                     "ok": True,
                                     "result": {
                                         "camera_type": self.CameraType,
+                                        "camera_serial_number": camera_serial_number,
                                         "command_port": self.command_port,
                                         "frame_pub_port": self.frame_pub_port,
                                         "frame_shared_memory_name": self.frame_shm.name,
@@ -326,6 +328,10 @@ class CameraZMQServer:
                                     )
                                 result = camOBJ.GetCameraHealth()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
+
+                            elif cmd == "get_serial_number":
+                                result = camOBJ.GetSerialNumber()
+                                reply = {"ok": True, "result": str(result).strip(), "client_id": client_id}
 
                             elif cmd == "get_trigger_mode":
                                 result = camOBJ.GetTriggerMode()
@@ -705,9 +711,9 @@ if __name__ == "__main__":
         host="127.0.0.1",
         command_port=50731,
         frame_pub_port=50732,
-        CameraType="FLIR Point Grey",
+        CameraType="FLIR",
         CameraKwargs={
-            "CameraIdx": 0,
+            "CameraSerialNumber": "REPLACE_WITH_CAMERA_SERIAL_NUMBER",
             "verbose": True,
         },
         PollSleep=0.0,
