@@ -86,6 +86,9 @@ SLM_STACK_SERVER = {
     "display_pub_port": 5556,
     "display_topic": "slm.display",
     "slm_type": "Blink OverDrive Plus",
+    # Blink SLMs use board_number; HDMI SLMs use monitor_index.
+    "board_number": 1,
+    "monitor_index": 1,
     "refresh_rate": 0,
     "lut_file": None,
     "timeout_ms": 5000,

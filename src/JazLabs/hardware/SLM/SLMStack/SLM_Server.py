@@ -17,6 +17,8 @@ class SLMZMQServer:
         display_pub_port=5556,
         display_topic="slm.display",
         SLMType="Blink Plus",
+        BoardNumber=1,
+        MonitorIndex=1,
         RefreshRate=0,
         LutFile=None,
         timeout_ms=5000,
@@ -27,6 +29,8 @@ class SLMZMQServer:
         self.display_pub_port = int(display_pub_port)
         self.display_topic = str(display_topic)
         self.SLMType = SLMType
+        self.BoardNumber = int(BoardNumber)
+        self.MonitorIndex = int(MonitorIndex)
         self.RefreshRate = float(RefreshRate)
         self.LutFile = LutFile
         self.timeout_ms = int(timeout_ms)
@@ -79,12 +83,18 @@ class SLMZMQServer:
 
     def _open_slm(self):
         slmobj = self._load_slm_module()
-        slm_kwargs = {
-            "board_number_in": 1,
-            "RefreshRate": self.RefreshRate,
-        }
-        if self.LutFile is not None:
-            slm_kwargs["LutFile"] = self.LutFile
+        if self.SLMType == "HDMI SLM":
+            slm_kwargs = {
+                "monitor_index": self.MonitorIndex,
+                "RefreshRate": self.RefreshRate,
+            }
+        else:
+            slm_kwargs = {
+                "board_number_in": self.BoardNumber,
+                "RefreshRate": self.RefreshRate,
+            }
+            if self.LutFile is not None:
+                slm_kwargs["LutFile"] = self.LutFile
         return slmobj.SLMObject(**slm_kwargs)
 
     @staticmethod
@@ -376,6 +386,8 @@ if __name__ == "__main__":
     parser.add_argument("--display-pub-port", type=int, default=5556)
     parser.add_argument("--display-topic", default="slm.display")
     parser.add_argument("--slm-type", default="Blink Plus")
+    parser.add_argument("--board-number", type=int, default=1)
+    parser.add_argument("--monitor-index", type=int, default=1)
     parser.add_argument("--refresh-rate", type=float, default=0)
     parser.add_argument("--lut-file", default=None)
     args = parser.parse_args()
@@ -386,6 +398,8 @@ if __name__ == "__main__":
         display_pub_port=args.display_pub_port,
         display_topic=args.display_topic,
         SLMType=args.slm_type,
+        BoardNumber=args.board_number,
+        MonitorIndex=args.monitor_index,
         RefreshRate=args.refresh_rate,
         LutFile=args.lut_file,
     )

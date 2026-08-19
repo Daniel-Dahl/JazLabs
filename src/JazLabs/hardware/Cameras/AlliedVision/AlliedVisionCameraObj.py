@@ -1,4 +1,5 @@
 import atexit
+import threading
 import time
 import weakref
 
@@ -54,6 +55,13 @@ class CameraObject:
 
         self._closed = False
         self._capturing = False
+        self._stream_buffer_count = 5
+        self._frame_condition = threading.Condition()
+        self._latest_frame = None
+        self._frame_error = None
+        self._frame_sequence = 0
+        self._last_delivered_sequence = 0
+        self.frame_id_updates_asynchronously = True
         self.grab_timeout_ms = 1000
 
         from vmbpy import PixelFormat, VmbSystem
@@ -175,17 +183,71 @@ class CameraObject:
 
     def _limits(self, name):
         feature = self._feature(name)
-        minimum = feature.get_min() if hasattr(feature, "get_min") else feature.get()
-        maximum = feature.get_max() if hasattr(feature, "get_max") else feature.get()
+        if hasattr(feature, "get_range"):
+            minimum, maximum = feature.get_range()
+        else:
+            minimum = feature.get_min() if hasattr(feature, "get_min") else feature.get()
+            maximum = feature.get_max() if hasattr(feature, "get_max") else feature.get()
         increment = feature.get_increment() if hasattr(feature, "get_increment") else 1
         if increment in (None, 0):
             increment = 1
         return minimum, maximum, increment
 
+    def _enum_name(self, value):
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "as_tuple"):
+            return value.as_tuple()[0]
+        name = getattr(value, "name", None)
+        return name if name is not None else str(value)
+
+    def _frame_handler(self, camera, stream, frame):
+        try:
+            status = frame.get_status()
+            status_name = self._enum_name(status)
+            if status_name != "Complete" and status != 0:
+                raise RuntimeError(f"Received an incomplete VmbPy frame ({status_name})")
+
+            if hasattr(frame, "as_numpy_ndarray"):
+                image = np.array(frame.as_numpy_ndarray(), copy=True)
+            elif hasattr(frame, "as_opencv_image"):
+                image = np.array(frame.as_opencv_image(), copy=True)
+            else:
+                raise RuntimeError(
+                    "VmbPy Frame does not provide NumPy/OpenCV export. "
+                    "Install VmbPy with the numpy extra."
+                )
+
+            frame_id = frame.get_id()
+            with self._frame_condition:
+                self._latest_frame = image
+                self.frame_id = frame_id
+                self._frame_error = None
+                self._frame_sequence += 1
+                self._frame_condition.notify_all()
+        except Exception as error:
+            with self._frame_condition:
+                self._frame_error = error
+                self._frame_condition.notify_all()
+        finally:
+            camera.queue_frame(frame)
+
     def StartAcquisition(self):
+        if self._capturing:
+            return
+        self.ResetBuffer()
+        self.camera.start_streaming(
+            handler=self._frame_handler,
+            buffer_count=self._stream_buffer_count,
+        )
         self._capturing = True
 
     def StopAcquisition(self):
+        if not getattr(self, "_capturing", False):
+            return
+        camera = getattr(self, "camera", None)
+        if camera is not None:
+            camera.stop_streaming()
         self._capturing = False
 
     def ResetCamera(self):
@@ -195,11 +257,20 @@ class CameraObject:
         self.ResetBuffer()
 
     def ResetBuffer(self):
-        self.frame_id = None
+        with self._frame_condition:
+            self._latest_frame = None
+            self._frame_error = None
+            self.frame_id = None
+            self._last_delivered_sequence = self._frame_sequence
 
     def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
-        self.frame_id = None
-        return 0
+        with self._frame_condition:
+            discarded_frames = min(
+                int(max_frames),
+                max(0, self._frame_sequence - self._last_delivered_sequence),
+            )
+        self.ResetBuffer()
+        return discarded_frames
 
     def SetBufferSizeInNumberOfFrames(self, n_frames):
         raise NotImplementedError("VmbPy stream buffer sizing is not implemented in this simple wrapper.")
@@ -218,47 +289,72 @@ class CameraObject:
         return self.GetGrabTimeout()
 
     def IsSoftwareTriggerReady(self):
+        if not self._capturing:
+            return False
+        trigger_command = self._feature("TriggerSoftware")
+        if hasattr(trigger_command, "is_writeable"):
+            return bool(trigger_command.is_writeable())
+        if hasattr(trigger_command, "get_access_mode"):
+            return bool(trigger_command.get_access_mode()[1])
         return True
 
     def WaitForSoftwareTriggerReady(self, timeout_ms=1000, poll_interval_s=0.001):
-        return True
+        deadline = time.monotonic() + float(timeout_ms) / 1000.0
+        while time.monotonic() < deadline:
+            if self.IsSoftwareTriggerReady():
+                return True
+            time.sleep(poll_interval_s)
+        raise TimeoutError(f"Software trigger was not ready within {int(timeout_ms)} ms")
 
     def GetTriggerMode(self):
-        self.trigger_mode = self._get("TriggerMode")
+        self.trigger_mode = self._enum_name(self._get("TriggerMode"))
         try:
-            self.trigger_selector = self._get("TriggerSelector")
+            self.trigger_selector = self._enum_name(self._get("TriggerSelector"))
         except Exception:
             self.trigger_selector = "FrameStart"
 
         try:
-            self.acquisition_mode = self._get("AcquisitionMode")
+            self.acquisition_mode = self._enum_name(self._get("AcquisitionMode"))
         except Exception:
             self.acquisition_mode = "Continuous"
 
         if self.trigger_mode == "Off":
             self.trigger_source = "FreeRun"
         else:
-            source = self._get("TriggerSource")
-            self.trigger_source = ""#"line " + source[4:] if source.startswith("Line") else source
+            self.trigger_source = self._enum_name(self._get("TriggerSource"))
 
         return self.trigger_mode, self.trigger_source
 
     def SetContinuousMode(self):
-        self._set("AcquisitionMode", "Continuous")
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
         try:
-            self._set("TriggerSelector", "FrameStart")
-        except Exception:
-            pass
-        self._set("TriggerMode", "Off")
-        self.ResetBuffer()
+            self._set("AcquisitionMode", "Continuous")
+            try:
+                self._set("TriggerSelector", "FrameStart")
+            except Exception:
+                pass
+            self._set("TriggerMode", "Off")
+            self.ResetBuffer()
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         return self.GetTriggerMode()
 
     def SetSoftwareTriggerMode(self):
-        self._set("AcquisitionMode", "Continuous")
-        self._set("TriggerSelector", "FrameStart")
-        self._set("TriggerSource", "Software")
-        self._set("TriggerMode", "On")
-        self.ResetBuffer()
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set("AcquisitionMode", "Continuous")
+            self._set("TriggerSelector", "FrameStart")
+            self._set("TriggerSource", "Software")
+            self._set("TriggerMode", "On")
+            self.ResetBuffer()
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         return self.GetTriggerMode()
 
     def FireSoftwareTrigger(self, wait_ready=True, ready_timeout_ms=1000, drain_stale_frames=True):
@@ -269,28 +365,43 @@ class CameraObject:
 
         if wait_ready:
             self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
+        if drain_stale_frames:
+            self.ResetBuffer()
         self._run("TriggerSoftware")
         return 0
 
     def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
-        self._set("AcquisitionMode", "Continuous")
-        self._set("TriggerSelector", "FrameStart")
-        self._set("TriggerSource", f"Line{int(lineNumber)}")
-        self._set("TriggerActivation", "RisingEdge" if RiseEdgeOrFallEdge == 1 else "FallingEdge")
-        self._set("TriggerMode", "On")
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self._set("AcquisitionMode", "Continuous")
+            self._set("TriggerSelector", "FrameStart")
+            self._set("TriggerSource", f"Line{int(lineNumber)}")
+            self._set("TriggerActivation", "RisingEdge" if RiseEdgeOrFallEdge == 1 else "FallingEdge")
+            self._set("TriggerMode", "On")
+            self.ResetBuffer()
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.trigger_polarity = 1 if RiseEdgeOrFallEdge == 1 else -1
-        self.ResetBuffer()
         return self.GetTriggerMode()
 
     def SetExposureTime(self, exposure_time):
-        self.GetMaxMinFPS_ExposureTime()
-        exposure_time = max(self.ExposureTimeMin, min(float(exposure_time), self.ExposureTimeMax))
-
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
         try:
-            self._set("ExposureAuto", "Off")
-        except Exception:
-            pass
-        self._set("ExposureTime", exposure_time)
+            self.GetMaxMinFPS_ExposureTime()
+            exposure_time = max(self.ExposureTimeMin, min(float(exposure_time), self.ExposureTimeMax))
+            try:
+                self._set("ExposureAuto", "Off")
+            except Exception:
+                pass
+            self._set("ExposureTime", exposure_time)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.ExposureTime = self.GetExposureTime()
         return self.ExposureTime
 
@@ -299,14 +410,20 @@ class CameraObject:
         return self.ExposureTime
 
     def SetGain(self, gain):
-        gain_min, gain_max, _ = self._limits("Gain")
-        gain = max(float(gain_min), min(float(gain), float(gain_max)))
-
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
         try:
-            self._set("GainAuto", "Off")
-        except Exception:
-            pass
-        self._set("Gain", gain)
+            gain_min, gain_max, _ = self._limits("Gain")
+            gain = max(float(gain_min), min(float(gain), float(gain_max)))
+            try:
+                self._set("GainAuto", "Off")
+            except Exception:
+                pass
+            self._set("Gain", gain)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.gain = self.GetGain()
         return self.gain
 
@@ -315,14 +432,20 @@ class CameraObject:
         return self.gain
 
     def SetFPS(self, fps):
-        self.GetMaxMinFPS_ExposureTime()
-        fps = max(self.FPSMin, min(float(fps), self.FPSMax))
-
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
         try:
-            self._set("AcquisitionFrameRateEnable", True)
-        except Exception:
-            pass
-        self._set("AcquisitionFrameRate", fps)
+            self.GetMaxMinFPS_ExposureTime()
+            fps = max(self.FPSMin, min(float(fps), self.FPSMax))
+            try:
+                self._set("AcquisitionFrameRateEnable", True)
+            except Exception:
+                pass
+            self._set("AcquisitionFrameRate", fps)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.fps = self.GetFPS()
         return self.fps
 
@@ -452,20 +575,25 @@ class CameraObject:
     def GetFrame(self, timeout_ms=None):
         if timeout_ms is None:
             timeout_ms = self.grab_timeout_ms
+        if not self._capturing:
+            self.StartAcquisition()
 
-        try:
-            frame = self.camera.get_frame(timeout_ms=int(timeout_ms))
-        except TypeError:
-            frame = self.camera.get_frame()
+        deadline = time.monotonic() + float(timeout_ms) / 1000.0
+        with self._frame_condition:
+            while self._frame_sequence <= self._last_delivered_sequence:
+                if self._frame_error is not None:
+                    error = self._frame_error
+                    self._frame_error = None
+                    raise RuntimeError("VmbPy failed while receiving a frame") from error
 
-        self.frame_id = getattr(frame, "get_id", lambda: None)()
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    raise TimeoutError(f"No new camera frame arrived within {int(timeout_ms)} ms")
+                self._frame_condition.wait(remaining_seconds)
 
-        if hasattr(frame, "as_numpy_ndarray"):
-            return np.array(frame.as_numpy_ndarray(), copy=True)
-        if hasattr(frame, "as_opencv_image"):
-            return np.array(frame.as_opencv_image(), copy=True)
-
-        raise RuntimeError("VmbPy Frame does not provide NumPy/OpenCV export. Install VmbPy with the numpy extra.")
+            image = self._latest_frame
+            self._last_delivered_sequence = self._frame_sequence
+            return np.array(image, copy=True)
 
 
 AlliedVisionCameraObject = CameraObject
