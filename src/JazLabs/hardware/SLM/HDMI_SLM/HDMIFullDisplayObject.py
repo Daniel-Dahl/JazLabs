@@ -108,6 +108,10 @@ class SLMObject:
         return process
 
     def WriteImageToSLM(self,NewImage=None,channelIdx=0, wait=True):
+        if channelIdx not in (0, 1, 2):
+            print("channelIdx must be 0, 1, or 2.")
+            print("No image sent")
+            return 
         if NewImage is not None:
             NewImage.shape
             if  (NewImage.shape[0] == self.monitor_height and NewImage.shape[1]== self.monitor_width):
