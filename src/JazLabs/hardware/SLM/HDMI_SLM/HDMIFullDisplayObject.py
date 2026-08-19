@@ -34,13 +34,15 @@ class SLMObject:
         self.terminateThreadEvent = multiprocessing.Event()  # Signal to terminate thread
         # Queue for thread communication
         self.queue = multiprocessing.Queue()
+        self.channel = multiprocessing.Value('i', 0)  # Shared value for channel index
 
         self.monitor_x,self.monitor_y,self.monitor_height, self.monitor_width=_opencv_display_on_monitor(monitor_index)
 
-        # Shared memory buffer for oscilloscope data
-        self.sharedMemoryDisplayBuffer = shared_memory.SharedMemory(create=True, size=int(self.monitor_height* self.monitor_width* 3 * np.dtype(np.uint8).itemsize))
+        # Shared memory buffer 
+        self.sharedMemoryDisplayBuffer = shared_memory.SharedMemory(create=True, size=int(self.monitor_height* self.monitor_width * np.dtype(np.uint8).itemsize))
+
         self.sharedMemoryDisplayBufferName = self.sharedMemoryDisplayBuffer.name
-        self.DisplayBuffer_arr_shm = np.ndarray((self.monitor_height, self.monitor_width, 3), dtype=np.uint8, buffer=self.sharedMemoryDisplayBuffer.buf)
+        self.DisplayBuffer_arr_shm = np.ndarray((self.monitor_height, self.monitor_width), dtype=np.uint8, buffer=self.sharedMemoryDisplayBuffer.buf)
         self.RefreshRate=RefreshRate
         self.DisplayBuffer_arr_shm.fill(0)
       
@@ -99,7 +101,8 @@ class SLMObject:
              self.monitor_x,
              self.monitor_y,
              self.monitor_height, 
-             self.monitor_width
+             self.monitor_width,
+             self.channel
         ))
         process.start()  # Start the process
         return process
@@ -109,7 +112,8 @@ class SLMObject:
             NewImage.shape
             if  (NewImage.shape[0] == self.monitor_height and NewImage.shape[1]== self.monitor_width):
                 
-                np.copyto(self.DisplayBuffer_arr_shm[:,:,channelIdx],NewImage)
+                np.copyto(self.DisplayBuffer_arr_shm[:,:],NewImage)
+                self.channel.value=channelIdx
                 self.UpdateDisplay.set()
                 self.Doorbell.set()
                 
@@ -151,13 +155,16 @@ def _opencv_display_on_monitor(monitor_index=0):
     return monitor_x,monitor_y,monitor_height, monitor_width
 
 def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, sharedMemoryNameDisplayBuffer,
-                           monitor_x,monitor_y,monitor_height, monitor_width):
+                           monitor_x,monitor_y,monitor_height, monitor_width, channel):
     """
     A multiprocessing thread function to generate and display a sine wave.
     """
     # Access shared memory buffers
     DisplayBuffer = shared_memory.SharedMemory(name=sharedMemoryNameDisplayBuffer)
-    DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width, 3), dtype=np.uint8, buffer=DisplayBuffer.buf)
+    DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width), dtype=np.uint8, buffer=DisplayBuffer.buf)
+
+    DisplayBuffer_arr_Full = np.ndarray((monitor_height, monitor_width, 3), dtype=np.uint8, buffer=DisplayBuffer.buf)
+
     opencvWindowName = "SLMFullScreen"
     # Create a window that we can position manually
     cv2.namedWindow(opencvWindowName, cv2.WINDOW_NORMAL)
@@ -166,7 +173,7 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
     cv2.setWindowProperty(opencvWindowName, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     # Move the window to the monitor's position
     cv2.moveWindow(opencvWindowName, monitor_x, monitor_y)
-    cv2.imshow(opencvWindowName, DisplayBuffer_arr_shm)
+    cv2.imshow(opencvWindowName, DisplayBuffer_arr_Full)
     cv2.waitKey(1)
     
 
@@ -177,7 +184,8 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
         if terminateThreadEvent.is_set():
             break
         if UpdateDisplay.is_set():
-            cv2.imshow(opencvWindowName, DisplayBuffer_arr_shm)
+            DisplayBuffer_arr_Full[:, :, channel.value] = DisplayBuffer_arr_shm
+            cv2.imshow(opencvWindowName, DisplayBuffer_arr_Full)
             UpdateDisplay.clear()
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
