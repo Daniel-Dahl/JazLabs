@@ -39,10 +39,10 @@ class SLMObject:
         self.monitor_x,self.monitor_y,self.monitor_height, self.monitor_width=_opencv_display_on_monitor(monitor_index)
 
         # Shared memory buffer 
-        self.sharedMemoryDisplayBuffer = shared_memory.SharedMemory(create=True, size=int(self.monitor_height* self.monitor_width*1 * np.dtype(np.uint8).itemsize))
+        self.sharedMemoryDisplayBuffer = shared_memory.SharedMemory(create=True, size=int(self.monitor_height* self.monitor_width * np.dtype(np.uint8).itemsize))
 
         self.sharedMemoryDisplayBufferName = self.sharedMemoryDisplayBuffer.name
-        self.DisplayBuffer_arr_shm = np.ndarray((self.monitor_height, self.monitor_width,1), dtype=np.uint8, buffer=self.sharedMemoryDisplayBuffer.buf)
+        self.DisplayBuffer_arr_shm = np.ndarray((self.monitor_height, self.monitor_width), dtype=np.uint8, buffer=self.sharedMemoryDisplayBuffer.buf)
         self.RefreshRate=RefreshRate
         self.DisplayBuffer_arr_shm.fill(0)
       
@@ -161,7 +161,7 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
     """
     # Access shared memory buffers
     DisplayBuffer = shared_memory.SharedMemory(name=sharedMemoryNameDisplayBuffer)
-    DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width,1), dtype=np.uint8, buffer=DisplayBuffer.buf)
+    DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width), dtype=np.uint8, buffer=DisplayBuffer.buf)
 
     DisplayBuffer_arr_Full = np.ndarray((monitor_height, monitor_width, 3), dtype=np.uint8)
 
@@ -184,7 +184,7 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
         if terminateThreadEvent.is_set():
             break
         if UpdateDisplay.is_set():
-            DisplayBuffer_arr_Full[:, :, channel.value] = DisplayBuffer_arr_shm[:,:,0]
+            DisplayBuffer_arr_Full[:, :, channel.value] = DisplayBuffer_arr_shm[:,:]
             cv2.imshow(opencvWindowName, DisplayBuffer_arr_Full)
             UpdateDisplay.clear()
         if cv2.waitKey(1) & 0xFF == ord("q"):
