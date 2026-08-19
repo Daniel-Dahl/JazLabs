@@ -180,6 +180,22 @@ class AlliedVisionCameraTests(unittest.TestCase):
         camera_object.StopAcquisition()
         self.assertEqual(camera_object.camera.stop_count, 1)
 
+    def test_software_trigger_runs_when_stream_is_armed(self):
+        camera_object = make_camera_object()
+        camera_object._capturing = True
+        camera_object.trigger_mode = "On"
+        camera_object.trigger_source = "Software"
+        camera_object.camera = FakeStreamingCamera()
+        camera_object.camera.TriggerSoftware = FakeFeature(
+            value=None,
+            writeable=True,
+        )
+
+        result = camera_object.FireSoftwareTrigger()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(camera_object.camera.TriggerSoftware.run_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -326,7 +326,15 @@ class CameraObject:
             if self.IsSoftwareTriggerReady():
                 return True
             time.sleep(poll_interval_s)
-        raise TimeoutError(f"Software trigger was not ready within {int(timeout_ms)} ms")
+        trigger_mode, trigger_source = self.GetTriggerMode()
+        is_streaming = "unavailable"
+        if hasattr(self.camera, "is_streaming"):
+            is_streaming = bool(self.camera.is_streaming())
+        raise TimeoutError(
+            f"Software trigger was not ready within {int(timeout_ms)} ms. "
+            f"Streaming={is_streaming}, AcquisitionMode={self.acquisition_mode}, "
+            f"TriggerMode={trigger_mode}, TriggerSource={trigger_source}"
+        )
 
     def GetTriggerMode(self):
         self.trigger_mode = self._enum_name(self._get("TriggerMode"))
@@ -373,16 +381,32 @@ class CameraObject:
         if was_capturing:
             self.StopAcquisition()
         try:
-            self._set("AcquisitionMode", "Continuous")
             self._disable_all_trigger_modes()
-            self._set("TriggerSelector", "FrameStart")
             self._set("TriggerSource", "Software")
+            self._set("TriggerSelector", "FrameStart")
             self._set("TriggerMode", "On")
+            self._set("AcquisitionMode", "Continuous")
             self.ResetBuffer()
         finally:
             if was_capturing:
                 self.StartAcquisition()
-        return self.GetTriggerMode()
+
+        trigger_state = self.GetTriggerMode()
+        if trigger_state != ("On", "Software"):
+            raise RuntimeError(
+                "Failed to configure Allied Vision software trigger mode: "
+                f"camera reported TriggerMode={trigger_state[0]}, "
+                f"TriggerSource={trigger_state[1]}"
+            )
+        if self._capturing:
+            self.WaitForSoftwareTriggerReady(timeout_ms=2000)
+        if self.verbose:
+            print(
+                "Allied Vision software trigger armed: "
+                f"AcquisitionMode={self.acquisition_mode}, "
+                f"TriggerMode={self.trigger_mode}, TriggerSource={self.trigger_source}"
+            )
+        return trigger_state
 
     def FireSoftwareTrigger(self, wait_ready=True, ready_timeout_ms=1000, drain_stale_frames=True):
         if self.trigger_mode != "On" or self.trigger_source != "Software":
@@ -390,11 +414,21 @@ class CameraObject:
         if self.trigger_mode != "On" or self.trigger_source != "Software":
             raise RuntimeError("Camera is not in software trigger mode")
 
-        if wait_ready:
-            self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
         if drain_stale_frames:
             self.ResetBuffer()
-        self._run("TriggerSoftware")
+        if wait_ready:
+            self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
+
+        trigger_command = self._feature("TriggerSoftware")
+        trigger_command.run()
+        if hasattr(trigger_command, "is_done"):
+            command_deadline = time.monotonic() + float(ready_timeout_ms) / 1000.0
+            while not trigger_command.is_done():
+                if time.monotonic() >= command_deadline:
+                    raise TimeoutError(
+                        f"TriggerSoftware command did not complete within {int(ready_timeout_ms)} ms"
+                    )
+                time.sleep(0.001)
         return 0
 
     def SetHardwareTriggerMode(self, lineNumber=0, RiseEdgeOrFallEdge=1):
@@ -602,7 +636,25 @@ class CameraObject:
 
     def GetFrame(self, timeout_ms=None):
         if timeout_ms is None:
-            timeout_ms = self.grab_timeout_ms
+            timeout_ms = int(self.grab_timeout_ms)
+            try:
+                exposure_feature = self._feature("ExposureTime")
+                exposure_time = float(exposure_feature.get())
+                exposure_unit = "us"
+                if hasattr(exposure_feature, "get_unit"):
+                    exposure_unit = str(exposure_feature.get_unit()).strip().lower()
+
+                if exposure_unit in ("s", "sec", "second", "seconds"):
+                    exposure_time_ms = exposure_time * 1000.0
+                elif exposure_unit in ("ms", "millisecond", "milliseconds"):
+                    exposure_time_ms = exposure_time
+                else:
+                    exposure_time_ms = exposure_time / 1000.0
+
+                exposure_aware_timeout_ms = int(exposure_time_ms + 1000.0)
+                timeout_ms = max(timeout_ms, exposure_aware_timeout_ms)
+            except Exception:
+                pass
         if not self._capturing:
             self.StartAcquisition()
 
