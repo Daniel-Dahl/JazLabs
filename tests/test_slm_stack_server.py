@@ -66,3 +66,9 @@ def test_launcher_accepts_device_selectors():
 
     assert args.board_number == 4
     assert args.monitor_index == 2
+
+
+def test_stack_launcher_default_config_exists():
+    args = build_parser().parse_args([])
+
+    assert args.config == "HDStokes"

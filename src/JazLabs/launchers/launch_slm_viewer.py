@@ -7,7 +7,7 @@ from JazLabs.launchers.config import load_config
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Open the configured JazLabs SLM viewer.")
+    parser = argparse.ArgumentParser(description="Open the configured pyMilk SLM viewer.")
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--shm-name", default=None)
     parser.add_argument("--window-name", default="SLM viewer")

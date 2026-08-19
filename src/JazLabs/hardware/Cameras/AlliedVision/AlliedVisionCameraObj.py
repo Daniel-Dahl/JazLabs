@@ -201,6 +201,28 @@ class CameraObject:
         name = getattr(value, "name", None)
         return name if name is not None else str(value)
 
+    def _disable_all_trigger_modes(self):
+        trigger_selector = self._feature("TriggerSelector")
+        trigger_mode = self._feature("TriggerMode")
+
+        if hasattr(trigger_selector, "get_available_entries"):
+            available_selectors = trigger_selector.get_available_entries()
+        else:
+            available_selectors = ("FrameStart",)
+
+        selector_names = [self._enum_name(selector) for selector in available_selectors]
+        if not selector_names:
+            selector_names = ["FrameStart"]
+
+        for selector_name in selector_names:
+            trigger_selector.set(selector_name)
+            trigger_mode.set("Off")
+
+        if "FrameStart" in selector_names:
+            trigger_selector.set("FrameStart")
+
+        return tuple(selector_names)
+
     def _frame_handler(self, camera, stream, frame):
         try:
             status = frame.get_status()
@@ -331,16 +353,20 @@ class CameraObject:
             self.StopAcquisition()
         try:
             self._set("AcquisitionMode", "Continuous")
-            try:
-                self._set("TriggerSelector", "FrameStart")
-            except Exception:
-                pass
-            self._set("TriggerMode", "Off")
+            disabled_trigger_selectors = self._disable_all_trigger_modes()
             self.ResetBuffer()
         finally:
             if was_capturing:
                 self.StartAcquisition()
-        return self.GetTriggerMode()
+        trigger_state = self.GetTriggerMode()
+        if self.verbose:
+            print(
+                "Allied Vision continuous mode: "
+                f"AcquisitionMode={self.acquisition_mode}, "
+                f"TriggerMode={self.trigger_mode}, "
+                f"disabled selectors={disabled_trigger_selectors}"
+            )
+        return trigger_state
 
     def SetSoftwareTriggerMode(self):
         was_capturing = self._capturing
@@ -348,6 +374,7 @@ class CameraObject:
             self.StopAcquisition()
         try:
             self._set("AcquisitionMode", "Continuous")
+            self._disable_all_trigger_modes()
             self._set("TriggerSelector", "FrameStart")
             self._set("TriggerSource", "Software")
             self._set("TriggerMode", "On")
@@ -376,6 +403,7 @@ class CameraObject:
             self.StopAcquisition()
         try:
             self._set("AcquisitionMode", "Continuous")
+            self._disable_all_trigger_modes()
             self._set("TriggerSelector", "FrameStart")
             self._set("TriggerSource", f"Line{int(lineNumber)}")
             self._set("TriggerActivation", "RisingEdge" if RiseEdgeOrFallEdge == 1 else "FallingEdge")
@@ -588,7 +616,26 @@ class CameraObject:
 
                 remaining_seconds = deadline - time.monotonic()
                 if remaining_seconds <= 0:
-                    raise TimeoutError(f"No new camera frame arrived within {int(timeout_ms)} ms")
+                    try:
+                        trigger_mode, trigger_source = self.GetTriggerMode()
+                        acquisition_mode = self.acquisition_mode
+                    except Exception as state_error:
+                        trigger_mode = f"unavailable ({state_error})"
+                        trigger_source = "unavailable"
+                        acquisition_mode = "unavailable"
+
+                    is_streaming = "unavailable"
+                    if hasattr(self.camera, "is_streaming"):
+                        try:
+                            is_streaming = bool(self.camera.is_streaming())
+                        except Exception:
+                            pass
+
+                    raise TimeoutError(
+                        f"No new camera frame arrived within {int(timeout_ms)} ms. "
+                        f"Streaming={is_streaming}, AcquisitionMode={acquisition_mode}, "
+                        f"TriggerMode={trigger_mode}, TriggerSource={trigger_source}"
+                    )
                 self._frame_condition.wait(remaining_seconds)
 
             image = self._latest_frame

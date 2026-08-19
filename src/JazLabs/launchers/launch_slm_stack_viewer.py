@@ -8,7 +8,7 @@ from JazLabs.launchers.config import load_config, merge_overrides
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Open the local SLMStack viewer.")
-    parser.add_argument("--config", default="HDStokes_SLMStack")
+    parser.add_argument("--config", default="HDStokes")
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
     parser.add_argument("--display-pub-port", type=int, default=None)
@@ -20,7 +20,7 @@ def build_parser():
 
 
 def start_slm_stack_viewer(
-    config_name="HDStokes_SLMStack",
+    config_name="HDStokes",
     host=None,
     command_port=None,
     display_pub_port=None,

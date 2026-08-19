@@ -94,8 +94,8 @@ hardware/
 
 Camera vendor implementations currently include Allied Vision, First Light,
 FLIR, Lucid Vision, NiT, Point Grey, QImaging, and Xenic cameras. SLM support
-includes direct SLM modules, SLMStack, SLMStackMilk, HDMI SLM, and Meadowlark
-backends.
+includes SLMStack, the separate pyMilk-based SLMStackMilk, HDMI SLM, and
+Meadowlark backends.
 
 digHolo support is split between `hardware/digHolo/digHolo_v1.0.0/`, which
 contains the upstream `joelacarpenter/digHolo` library and reference material,
@@ -122,6 +122,7 @@ launchers/
 |-- launch_daq_bridge.py
 |-- launch_slm_server.py
 |-- launch_slm_bridge.py
+|-- launch_slm_stack_bridge.py
 |-- launch_slm_stack_server.py
 |-- launch_time_tagger_server.py
 |-- launch_time_tagger_bridge.py
@@ -143,7 +144,8 @@ Configured console commands include:
 - `jazlabs-server-daq`
 - `jazlabs-server-slm`
 - `jazlabs-bridge-slm`
-- `jazlabs-server-slm-stack`
+- `jazlabs-server-slm-milk`
+- `jazlabs-bridge-slm-milk`
 - `jazlabs-bridge-camera`
 - `jazlabs-bridge-daq`
 - `jazlabs-server-time-tagger`
@@ -151,7 +153,7 @@ Configured console commands include:
 - `jazlabs-view`
 - `jazlabs-view-camera`
 - `jazlabs-view-slm`
-- `jazlabs-view-slm-stack`
+- `jazlabs-view-slm-milk`
 - `jazlabs-tmux`
 - `jazlabs-slm-center-alignment`
 - `jazlabs-camera-dark-frame`
@@ -271,7 +273,7 @@ there is a deliberate reason to version them.
 - Several hardware folders contain vendor SDKs, DLLs, PDFs, ZIPs, old versions,
   or examples. Treat those as reference/vendor material unless a task is
   explicitly about updating that integration.
-- `graveyard/`, `oldversion/`, and similarly named folders contain legacy code.
+- `oldversion/` and similarly named folders contain legacy code.
   Prefer active stack modules when adding new behavior.
 
 ## Where To Add New Code

@@ -74,6 +74,26 @@ class FakeStreamingCamera:
         self.queued_frames.append(frame)
 
 
+class FakeTriggerSelectorFeature:
+    def __init__(self, camera, selector_names):
+        self.camera = camera
+        self.selector_names = selector_names
+
+    def get_available_entries(self):
+        return tuple(FakeEnumEntry(name) for name in self.selector_names)
+
+    def set(self, selector_name):
+        self.camera.selected_trigger = selector_name
+
+
+class FakeTriggerModeFeature:
+    def __init__(self, camera):
+        self.camera = camera
+
+    def set(self, mode):
+        self.camera.trigger_modes[self.camera.selected_trigger] = mode
+
+
 def make_camera_object():
     camera_object = object.__new__(CameraObject)
     camera_object._closed = False
@@ -113,6 +133,30 @@ class AlliedVisionCameraTests(unittest.TestCase):
         camera_object.camera.AcquisitionMode = FakeFeature(FakeEnumEntry("Continuous"))
 
         self.assertEqual(camera_object.GetTriggerMode(), ("On", "Software"))
+
+    def test_continuous_setup_disables_every_trigger_selector(self):
+        camera_object = make_camera_object()
+        fake_camera = type("TriggerCamera", (), {})()
+        fake_camera.selected_trigger = "ExposureStart"
+        fake_camera.trigger_modes = {
+            "FrameStart": "On",
+            "ExposureStart": "On",
+        }
+        fake_camera.TriggerSelector = FakeTriggerSelectorFeature(
+            fake_camera,
+            ("FrameStart", "ExposureStart"),
+        )
+        fake_camera.TriggerMode = FakeTriggerModeFeature(fake_camera)
+        camera_object.camera = fake_camera
+
+        disabled_selectors = camera_object._disable_all_trigger_modes()
+
+        self.assertEqual(disabled_selectors, ("FrameStart", "ExposureStart"))
+        self.assertEqual(
+            fake_camera.trigger_modes,
+            {"FrameStart": "Off", "ExposureStart": "Off"},
+        )
+        self.assertEqual(fake_camera.selected_trigger, "FrameStart")
 
     def test_stream_callback_delivers_a_fresh_copied_frame(self):
         camera_object = make_camera_object()

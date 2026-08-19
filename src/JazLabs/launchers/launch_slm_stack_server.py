@@ -7,7 +7,7 @@ from JazLabs.launchers.config import load_config, merge_overrides
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Run the local SLMStack ZMQ server.")
-    parser.add_argument("--config", default="HDStokes_SLMStack")
+    parser.add_argument("--config", default="HDStokes")
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
     parser.add_argument("--display-pub-port", type=int, default=None)

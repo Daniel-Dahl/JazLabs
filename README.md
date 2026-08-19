@@ -93,7 +93,8 @@ jazlabs-server-daq
 jazlabs-server-optical-switch
 jazlabs-server-slm
 jazlabs-bridge-slm
-jazlabs-server-slm-stack
+jazlabs-server-slm-milk
+jazlabs-bridge-slm-milk
 jazlabs-bridge-camera
 jazlabs-bridge-daq
 jazlabs-server-time-tagger
@@ -102,7 +103,7 @@ jazlabs-view
 jazlabs-view-camera
 jazlabs-view-optical-switch
 jazlabs-view-slm
-jazlabs-view-slm-stack
+jazlabs-view-slm-milk
 jazlabs-view-laser
 jazlabs-tmux
 jazlabs-slm-center-alignment

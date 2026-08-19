@@ -6,7 +6,7 @@ from JazLabs.launchers.config import load_config, merge_overrides
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Run the hardware-facing SLM server.")
+    parser = argparse.ArgumentParser(description="Run the pyMilk SLM server.")
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
@@ -23,8 +23,16 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if "SLM_SERVER" not in config:
+        if "SLM_STACK_SERVER" in config:
+            raise ValueError(
+                f"Config {args.config!r} defines SLM_STACK_SERVER, not SLM_SERVER. "
+                "Launch it with jazlabs-server-slm."
+            )
+        raise ValueError(f"Config {args.config!r} does not define SLM_SERVER.")
+
     slm = merge_overrides(
-        config.get("SLM_SERVER", {}),
+        config["SLM_SERVER"],
         {
             "host": args.host,
             "command_port": args.command_port,
@@ -54,7 +62,7 @@ def main(argv=None):
         LutFile=slm["lut_file"],
     )
 
-    print("Launching SLM server.")
+    print("Launching pyMilk SLM server.")
     print(f"Host: {slm['host']}")
     print(
         "Ports: "

@@ -6,7 +6,7 @@ from JazLabs.launchers.config import load_config, merge_overrides
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Run the SLM bridge server.")
+    parser = argparse.ArgumentParser(description="Run the pyMilk SLM bridge server.")
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--client-id", default=None)
     parser.add_argument("--shm-name", default=None)
@@ -69,7 +69,7 @@ def main(argv=None):
         poll_timeout_s=slm["poll_timeout_s"],
     )
 
-    print("Launching SLM bridge server.")
+    print("Launching pyMilk SLM bridge server.")
     print(f"SHM name: {slm['shm_name']}")
     print(f"Local command: {slm['bind_host']}:{slm['local_command_port']}")
     print(f"SLM server host: {slm['server_host']}")
