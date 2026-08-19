@@ -127,7 +127,7 @@ class SLMZMQServer:
             slmOBJ = self._open_slm()
             monitor_height = int(slmOBJ.monitor_height)
             monitor_width = int(slmOBJ.monitor_width)
-            number_of_channels = int(slmOBJ.NumberOfChannels)
+            number_of_channels = 1#int(slmOBJ.NumberOfChannels)
             single_channel_shape = (monitor_height, monitor_width)
             image_shape = (monitor_height, monitor_width, number_of_channels)
             image_dtype = np.dtype(np.uint8)
