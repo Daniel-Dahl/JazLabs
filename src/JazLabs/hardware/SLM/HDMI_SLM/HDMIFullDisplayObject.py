@@ -107,7 +107,7 @@ class SLMObject:
         process.start()  # Start the process
         return process
 
-    def WriteImageToSLM(self,NewImage=None,channelIdx=0):
+    def WriteImageToSLM(self,NewImage=None,channelIdx=0, wait=True):
         if NewImage is not None:
             NewImage.shape
             if  (NewImage.shape[0] == self.monitor_height and NewImage.shape[1]== self.monitor_width):
