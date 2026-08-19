@@ -112,7 +112,7 @@ class SLMObject:
             NewImage.shape
             if  (NewImage.shape[0] == self.monitor_height and NewImage.shape[1]== self.monitor_width):
                 
-                np.copyto(self.DisplayBuffer_arr_shm[:,:,0],NewImage)
+                np.copyto(self.DisplayBuffer_arr_shm[:,:],NewImage)
                 self.channel.value=channelIdx
                 self.UpdateDisplay.set()
                 self.Doorbell.set()
