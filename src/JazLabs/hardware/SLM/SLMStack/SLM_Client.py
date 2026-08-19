@@ -150,40 +150,23 @@ class SLMClient:
     def _prepare_image_for_display(self, image, channelIdx):
         arr = np.asarray(image, dtype=np.uint8)
 
-        if arr.shape == self.single_channel_shape:
-            if self.NumberOfChannels == 1:
-                channelIdx = 0
-            elif channelIdx is None:
-                raise ValueError("channelIdx must be specified for multi-channel SLM")
+        if arr.shape != self.image_shape:
+            raise ValueError(
+                f"Expected 2D image shape {self.image_shape}; got {arr.shape}"
+            )
 
-            channelIdx = int(channelIdx)
-            if channelIdx < 0 or channelIdx >= self.NumberOfChannels:
-                raise ValueError(
-                    f"channelIdx {channelIdx} out of range for {self.NumberOfChannels} channels"
-                )
+        if self.NumberOfChannels == 1:
+            channelIdx = 0
+        elif channelIdx is None:
+            raise ValueError("channelIdx must be specified for multi-channel SLM")
 
-            image_cube = np.zeros(self.image_shape, dtype=np.uint8)
-            image_cube[:, :, channelIdx] = arr
-            return np.ascontiguousarray(image_cube), channelIdx
+        channelIdx = int(channelIdx)
+        if channelIdx < 0 or channelIdx >= self.NumberOfChannels:
+            raise ValueError(
+                f"channelIdx {channelIdx} out of range for {self.NumberOfChannels} channels"
+            )
 
-        if arr.shape == self.image_shape:
-            if channelIdx is None:
-                channelIdx = 0
-            return np.ascontiguousarray(arr), int(channelIdx)
-
-        if (
-            arr.ndim == 3
-            and arr.shape[0] == self.NumberOfChannels
-            and arr.shape[1:] == self.single_channel_shape
-        ):
-            if channelIdx is None:
-                channelIdx = 0
-            return np.ascontiguousarray(np.transpose(arr, (1, 2, 0))), int(channelIdx)
-
-        raise ValueError(
-            f"Expected image shape {self.single_channel_shape}, "
-            f"{self.image_shape}, or channels-first equivalent; got {arr.shape}"
-        )
+        return np.ascontiguousarray(arr), channelIdx
 
     def WriteToDisplay(self, image, channelIdx=0, wait=True, display_timeout_ms=None):
         return self.SendImageCommand(

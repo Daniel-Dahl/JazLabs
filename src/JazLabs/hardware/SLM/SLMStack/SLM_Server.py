@@ -127,9 +127,8 @@ class SLMZMQServer:
             slmOBJ = self._open_slm()
             monitor_height = int(slmOBJ.monitor_height)
             monitor_width = int(slmOBJ.monitor_width)
-            number_of_channels = 1#int(slmOBJ.NumberOfChannels)
+            number_of_channels = int(slmOBJ.NumberOfChannels)
             single_channel_shape = (monitor_height, monitor_width)
-            # image_shape = (monitor_height, monitor_width, number_of_channels)
             image_shape = (monitor_height, monitor_width)
 
             image_dtype = np.dtype(np.uint8)
@@ -285,11 +284,11 @@ class SLMZMQServer:
                                 f"channelIdx {channelIdx} out of range for {number_of_channels} channels"
                             )
 
-                        image_cube = np.frombuffer(parts[1], dtype=dtype).reshape(shape)
-                        image_cube = np.ascontiguousarray(image_cube, dtype=np.uint8)
+                        image = np.frombuffer(parts[1], dtype=dtype).reshape(shape)
+                        image = np.ascontiguousarray(image, dtype=np.uint8)
 
                         write_start_ns = time.perf_counter_ns()
-                        display_ok = bool(slmOBJ.WriteImageToSLM(image_cube, channelIdx))
+                        display_ok = bool(slmOBJ.WriteImageToSLM(image, channelIdx))
                         write_done_ns = time.perf_counter_ns()
 
                         last_frame_id += 1
@@ -300,11 +299,11 @@ class SLMZMQServer:
                             "write_start_perf_ns": int(write_start_ns),
                             "write_done_perf_ns": int(write_done_ns),
                             "sdk_write_ms": (write_done_ns - write_start_ns) / 1e6,
-                            "image_nbytes": int(image_cube.nbytes),
+                            "image_nbytes": int(image.nbytes),
                         }
 
                         if display_ok:
-                            np.copyto(viewer_arr, image_cube)
+                            np.copyto(viewer_arr, image)
 
                         publish_header = {
                             "type": "slm_display",
