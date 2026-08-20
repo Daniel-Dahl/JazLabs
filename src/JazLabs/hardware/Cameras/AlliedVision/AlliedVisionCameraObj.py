@@ -428,6 +428,120 @@ class CameraObject:
 
         return self.trigger_mode, self.trigger_source
 
+    def GetTriggerDiagnostics(self):
+        was_capturing = self._is_acquisition_running()
+        if was_capturing:
+            self.StopAcquisition()
+
+        diagnostic_lines = []
+        try:
+            camera_model = "unavailable"
+            camera_name = "unavailable"
+            if hasattr(self.camera, "get_model"):
+                camera_model = self.camera.get_model()
+            if hasattr(self.camera, "get_name"):
+                camera_name = self.camera.get_name()
+            diagnostic_lines.append(f"Camera model: {camera_model}")
+            diagnostic_lines.append(f"Camera name: {camera_name}")
+            diagnostic_lines.append(
+                f"Streaming while inspected: {self._is_acquisition_running()}"
+            )
+
+            relevant_name_fragments = (
+                "Trigger",
+                "Acquisition",
+                "Exposure",
+                "Sequencer",
+                "MasterSlave",
+                "SensorScan",
+                "ScanMode",
+                "Burst",
+                "Sync",
+            )
+            if hasattr(self.camera, "get_all_features"):
+                relevant_features = []
+                for feature in self.camera.get_all_features():
+                    feature_name = feature.get_name()
+                    if any(
+                        fragment in feature_name
+                        for fragment in relevant_name_fragments
+                    ):
+                        relevant_features.append(feature)
+
+                diagnostic_lines.append("Relevant feature state:")
+                for feature in sorted(
+                    relevant_features,
+                    key=lambda item: item.get_name(),
+                ):
+                    feature_name = feature.get_name()
+                    try:
+                        read_allowed, write_allowed = feature.get_access_mode()
+                    except Exception as error:
+                        diagnostic_lines.append(
+                            f"  {feature_name}: access query failed: {error}"
+                        )
+                        continue
+
+                    feature_value = "not readable"
+                    if read_allowed and hasattr(feature, "get"):
+                        try:
+                            feature_value = self._enum_name(feature.get())
+                        except Exception as error:
+                            feature_value = f"read failed: {error}"
+                    elif hasattr(feature, "run"):
+                        feature_value = "command"
+
+                    diagnostic_lines.append(
+                        f"  {feature_name}: read={read_allowed}, "
+                        f"write={write_allowed}, value={feature_value}"
+                    )
+
+            trigger_selector = self._feature("TriggerSelector")
+            trigger_mode = self._feature("TriggerMode")
+            trigger_source = self._feature("TriggerSource")
+            original_selector = self._enum_name(trigger_selector.get())
+            if hasattr(trigger_selector, "get_available_entries"):
+                selector_names = [
+                    self._enum_name(entry)
+                    for entry in trigger_selector.get_available_entries()
+                ]
+            else:
+                selector_names = [original_selector]
+
+            diagnostic_lines.append("Access by TriggerSelector:")
+            for selector_name in selector_names:
+                try:
+                    trigger_selector.set(selector_name)
+                    mode_value = self._enum_name(trigger_mode.get())
+                    mode_access = trigger_mode.get_access_mode()
+                    source_value = self._enum_name(trigger_source.get())
+                    source_access = trigger_source.get_access_mode()
+                    if hasattr(trigger_source, "get_available_entries"):
+                        available_sources = tuple(
+                            self._enum_name(entry)
+                            for entry in trigger_source.get_available_entries()
+                        )
+                    else:
+                        available_sources = "unavailable"
+                    diagnostic_lines.append(
+                        f"  {selector_name}: TriggerMode={mode_value}, "
+                        f"mode_access={mode_access}, TriggerSource={source_value}, "
+                        f"source_access={source_access}, "
+                        f"available_sources={available_sources}"
+                    )
+                except Exception as error:
+                    diagnostic_lines.append(f"  {selector_name}: inspection failed: {error}")
+
+            try:
+                trigger_selector.set(original_selector)
+            except Exception:
+                pass
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        return "\n".join(diagnostic_lines)
+
     def SetContinuousMode(self):
         was_capturing = self._capturing
         if was_capturing:
@@ -519,7 +633,8 @@ class CameraObject:
                             f"TriggerActivation={trigger_activation_value}, "
                             f"MasterSlaveMode={master_slave_mode}. "
                             "TriggerMode cannot be changed while the camera is grabbing; "
-                            "it can also be unavailable when MasterSlaveMode is Slave."
+                            "it can also be unavailable when MasterSlaveMode is Slave. "
+                            "Call GetTriggerDiagnostics() for the model-specific feature state."
                         )
                     time.sleep(0.005)
 
