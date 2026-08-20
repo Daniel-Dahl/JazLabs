@@ -63,6 +63,7 @@ class CameraObject:
         self._last_delivered_sequence = 0
         self.frame_id_updates_asynchronously = True
         self.grab_timeout_ms = 1000
+        self._frame_rate_enable_before_software_trigger = None
 
         from vmbpy import PixelFormat, VmbFeatureError, VmbSystem
 
@@ -543,12 +544,27 @@ class CameraObject:
         return "\n".join(diagnostic_lines)
 
     def SetContinuousMode(self):
-        was_capturing = self._capturing
+        was_capturing = self._is_acquisition_running()
         if was_capturing:
             self.StopAcquisition()
         try:
             self._set("AcquisitionMode", "Continuous")
             disabled_trigger_selectors = self._disable_all_trigger_modes()
+
+            frame_rate_enable_to_restore = getattr(
+                self,
+                "_frame_rate_enable_before_software_trigger",
+                None,
+            )
+            if frame_rate_enable_to_restore is not None:
+                try:
+                    self._set(
+                        "AcquisitionFrameRateEnable",
+                        frame_rate_enable_to_restore,
+                    )
+                except AttributeError:
+                    pass
+                self._frame_rate_enable_before_software_trigger = None
             self.ResetBuffer()
         finally:
             if was_capturing:
@@ -567,10 +583,25 @@ class CameraObject:
         was_capturing = self._is_acquisition_running()
         if was_capturing:
             self.StopAcquisition()
+        frame_rate_enable_changed = False
         try:
             self._disable_all_trigger_modes()
             self._set("TriggerSelector", "FrameStart")
             self._set("AcquisitionMode", "Continuous")
+
+            try:
+                frame_rate_enable = self._feature("AcquisitionFrameRateEnable")
+            except AttributeError:
+                frame_rate_enable = None
+            if frame_rate_enable is not None:
+                current_frame_rate_enable = bool(frame_rate_enable.get())
+                if self._frame_rate_enable_before_software_trigger is None:
+                    self._frame_rate_enable_before_software_trigger = (
+                        current_frame_rate_enable
+                    )
+                if current_frame_rate_enable:
+                    frame_rate_enable.set(False)
+                    frame_rate_enable_changed = True
 
             try:
                 exposure_mode = self._feature("ExposureMode")
@@ -624,6 +655,9 @@ class CameraObject:
                             trigger_activation_value = self._enum_name(
                                 trigger_activation.get()
                             )
+                        frame_rate_enable_value = "not available"
+                        if frame_rate_enable is not None:
+                            frame_rate_enable_value = bool(frame_rate_enable.get())
                         raise RuntimeError(
                             "Allied Vision TriggerMode remained read-only after image "
                             "streaming was stopped. "
@@ -631,6 +665,8 @@ class CameraObject:
                             "TriggerSelector=FrameStart, TriggerSource=Software, "
                             f"AcquisitionMode=Continuous, ExposureMode={exposure_mode_value}, "
                             f"TriggerActivation={trigger_activation_value}, "
+                            "AcquisitionFrameRateEnable="
+                            f"{frame_rate_enable_value}, "
                             f"MasterSlaveMode={master_slave_mode}. "
                             "TriggerMode cannot be changed while the camera is grabbing; "
                             "it can also be unavailable when MasterSlaveMode is Slave. "
@@ -640,6 +676,14 @@ class CameraObject:
 
                 trigger_mode.set("On")
             self.ResetBuffer()
+        except Exception:
+            if frame_rate_enable_changed:
+                try:
+                    self._set("AcquisitionFrameRateEnable", True)
+                    self._frame_rate_enable_before_software_trigger = None
+                except Exception:
+                    pass
+            raise
         finally:
             if was_capturing:
                 self.StartAcquisition()

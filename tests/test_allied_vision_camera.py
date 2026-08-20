@@ -120,10 +120,12 @@ class FakeStreamingLockedTriggerMode(FakeFeature):
     def is_writeable(self):
         exposure_is_timed = self.camera.ExposureMode.get() == "Timed"
         activation_is_rising_edge = self.camera.TriggerActivation.get() == "RisingEdge"
+        fixed_frame_rate_is_disabled = not self.camera.AcquisitionFrameRateEnable.get()
         return (
             not self.camera.is_streaming()
             and exposure_is_timed
             and activation_is_rising_edge
+            and fixed_frame_rate_is_disabled
         )
 
     def set(self, value):
@@ -170,6 +172,7 @@ def make_camera_object():
     camera_object.grab_timeout_ms = 100
     camera_object.verbose = False
     camera_object.VmbFeatureError = RuntimeError
+    camera_object._frame_rate_enable_before_software_trigger = None
     return camera_object
 
 
@@ -305,6 +308,7 @@ class AlliedVisionCameraTests(unittest.TestCase):
         )
         fake_camera.TriggerSource = FakeFeature(FakeEnumEntry("Freerun"))
         fake_camera.AcquisitionMode = FakeFeature(FakeEnumEntry("Continuous"))
+        fake_camera.AcquisitionFrameRateEnable = FakeFeature(True)
         fake_camera.ExposureMode = FakeFeature(FakeEnumEntry("TriggerWidth"))
         fake_camera.TriggerActivation = FakeFeature(FakeEnumEntry("FallingEdge"))
         fake_camera.TriggerSoftware = FakeFeature(value=None, writeable=True)
@@ -317,8 +321,14 @@ class AlliedVisionCameraTests(unittest.TestCase):
         self.assertEqual(fake_camera.stop_count, 1)
         self.assertEqual(fake_camera.start_count, 1)
         self.assertTrue(fake_camera.is_streaming())
+        self.assertFalse(fake_camera.AcquisitionFrameRateEnable.get())
         self.assertEqual(fake_camera.ExposureMode.get(), "Timed")
         self.assertEqual(fake_camera.TriggerActivation.get(), "RisingEdge")
+
+        continuous_result = camera_object.SetContinuousMode()
+
+        self.assertEqual(continuous_result, ("Off", "FreeRun"))
+        self.assertTrue(fake_camera.AcquisitionFrameRateEnable.get())
 
     def test_gige_packet_size_adjustment_matches_vmbpy_example(self):
         camera_object = make_camera_object()
