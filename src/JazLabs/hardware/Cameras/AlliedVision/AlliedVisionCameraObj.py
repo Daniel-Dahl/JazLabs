@@ -185,6 +185,12 @@ class CameraObject:
     def _run(self, name):
         self._feature(name).run()
 
+    def _is_acquisition_running(self):
+        camera = getattr(self, "camera", None)
+        if camera is not None and hasattr(camera, "is_streaming"):
+            return bool(camera.is_streaming())
+        return bool(getattr(self, "_capturing", False))
+
     def _limits(self, name):
         feature = self._feature(name)
         if hasattr(feature, "get_range"):
@@ -308,7 +314,8 @@ class CameraObject:
                     self._frame_condition.notify_all()
 
     def StartAcquisition(self):
-        if self._capturing:
+        if self._is_acquisition_running():
+            self._capturing = True
             return
         self.ResetBuffer()
         self.camera.start_streaming(
@@ -320,11 +327,9 @@ class CameraObject:
         self._capturing = True
 
     def StopAcquisition(self):
-        if not getattr(self, "_capturing", False):
-            return
         camera = getattr(self, "camera", None)
         try:
-            if camera is not None:
+            if camera is not None and self._is_acquisition_running():
                 camera.stop_streaming()
         finally:
             self._capturing = False
@@ -379,7 +384,7 @@ class CameraObject:
         return self.GetGrabTimeout()
 
     def IsSoftwareTriggerReady(self):
-        if not self._capturing:
+        if not self._is_acquisition_running():
             return False
         trigger_command = self._feature("TriggerSoftware")
         if hasattr(trigger_command, "is_writeable"):
@@ -445,15 +450,47 @@ class CameraObject:
         return trigger_state
 
     def SetSoftwareTriggerMode(self):
-        was_capturing = self._capturing
+        was_capturing = self._is_acquisition_running()
         if was_capturing:
             self.StopAcquisition()
         try:
             self._disable_all_trigger_modes()
-            self._set("TriggerSource", "Software")
             self._set("TriggerSelector", "FrameStart")
-            self._set("TriggerMode", "On")
             self._set("AcquisitionMode", "Continuous")
+            self._set("TriggerSource", "Software")
+
+            trigger_mode = self._feature("TriggerMode")
+            current_trigger_mode = self._enum_name(trigger_mode.get())
+            if current_trigger_mode != "On":
+                deadline = time.monotonic() + 2.0
+                while True:
+                    if hasattr(trigger_mode, "is_writeable"):
+                        trigger_mode_is_writeable = bool(trigger_mode.is_writeable())
+                    elif hasattr(trigger_mode, "get_access_mode"):
+                        trigger_mode_is_writeable = bool(trigger_mode.get_access_mode()[1])
+                    else:
+                        trigger_mode_is_writeable = True
+
+                    if trigger_mode_is_writeable:
+                        break
+                    if time.monotonic() >= deadline:
+                        master_slave_mode = "not available"
+                        try:
+                            master_slave_mode = self._enum_name(self._get("MasterSlaveMode"))
+                        except (AttributeError, self.VmbFeatureError):
+                            pass
+                        raise RuntimeError(
+                            "Allied Vision TriggerMode remained read-only after image "
+                            "streaming was stopped. "
+                            f"Streaming={self._is_acquisition_running()}, "
+                            "TriggerSelector=FrameStart, TriggerSource=Software, "
+                            f"AcquisitionMode=Continuous, MasterSlaveMode={master_slave_mode}. "
+                            "TriggerMode cannot be changed while the camera is grabbing; "
+                            "it can also be unavailable when MasterSlaveMode is Slave."
+                        )
+                    time.sleep(0.005)
+
+                trigger_mode.set("On")
             self.ResetBuffer()
         finally:
             if was_capturing:

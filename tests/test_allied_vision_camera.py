@@ -112,6 +112,20 @@ class FakeTriggerModeFeature:
         self.camera.trigger_modes[self.camera.selected_trigger] = mode
 
 
+class FakeStreamingLockedTriggerMode(FakeFeature):
+    def __init__(self, camera, value):
+        super().__init__(value=value)
+        self.camera = camera
+
+    def is_writeable(self):
+        return not self.camera.is_streaming()
+
+    def set(self, value):
+        if not self.is_writeable():
+            raise RuntimeError("TriggerMode is read-only while streaming")
+        self.value = value
+
+
 class FakeDynamicROIFeature:
     def __init__(self, camera, name):
         self.camera = camera
@@ -263,6 +277,39 @@ class AlliedVisionCameraTests(unittest.TestCase):
         self.assertEqual(camera_object.camera.stop_count, 1)
         camera_object.StopAcquisition()
 
+    def test_stop_acquisition_uses_vmbpy_stream_state_when_flag_is_stale(self):
+        camera_object = make_camera_object()
+        camera_object.camera = FakeStreamingCamera()
+        camera_object.camera.handler = camera_object._frame_handler
+        camera_object._capturing = False
+
+        camera_object.StopAcquisition()
+
+        self.assertFalse(camera_object.camera.is_streaming())
+        self.assertEqual(camera_object.camera.stop_count, 1)
+
+    def test_software_trigger_stops_real_stream_before_enabling_trigger_mode(self):
+        camera_object = make_camera_object()
+        fake_camera = FakeStreamingCamera()
+        fake_camera.handler = camera_object._frame_handler
+        fake_camera.TriggerSelector = FakeFeature(FakeEnumEntry("FrameStart"))
+        fake_camera.TriggerMode = FakeStreamingLockedTriggerMode(
+            fake_camera,
+            FakeEnumEntry("Off"),
+        )
+        fake_camera.TriggerSource = FakeFeature(FakeEnumEntry("Freerun"))
+        fake_camera.AcquisitionMode = FakeFeature(FakeEnumEntry("Continuous"))
+        fake_camera.TriggerSoftware = FakeFeature(value=None, writeable=True)
+        camera_object.camera = fake_camera
+        camera_object._capturing = False
+
+        result = camera_object.SetSoftwareTriggerMode()
+
+        self.assertEqual(result, ("On", "Software"))
+        self.assertEqual(fake_camera.stop_count, 1)
+        self.assertEqual(fake_camera.start_count, 1)
+        self.assertTrue(fake_camera.is_streaming())
+
     def test_gige_packet_size_adjustment_matches_vmbpy_example(self):
         camera_object = make_camera_object()
         packet_size_command = FakeFeature(value=None)
@@ -304,6 +351,7 @@ class AlliedVisionCameraTests(unittest.TestCase):
         camera_object.trigger_mode = "On"
         camera_object.trigger_source = "Software"
         camera_object.camera = FakeStreamingCamera()
+        camera_object.camera.handler = camera_object._frame_handler
         camera_object.camera.TriggerSoftware = FakeFeature(
             value=None,
             writeable=True,
