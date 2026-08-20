@@ -121,26 +121,27 @@ class SLMObject:
         if channelIdx not in (0, 1, 2):
             print("channelIdx must be 0, 1, or 2.")
             print("No image sent")
-            return 
-        if NewImage is not None:
-            NewImage.shape
-            if  (NewImage.shape[0] == self.monitor_height and NewImage.shape[1]== self.monitor_width):
-                
-                np.copyto(self.DisplayBuffer_arr_shm[:,:],NewImage)
-                self.channel.value=channelIdx
-                self.UpdateDisplay.set()
-                self.Doorbell.set()
-                
-                if self.RefreshRate > 0:
-                    time.sleep(self.RefreshRate)
-            else:
-                print("New image incorrect dimensions for screen display. Display not updated")
-        else:
+            return 0
+
+        if NewImage is None:
             print("No image sent")
-            return 
-             
-        
-            
+            return 0
+
+        expected_shape = (self.monitor_height, self.monitor_width)
+        if NewImage.shape != expected_shape:
+            print("New image incorrect dimensions for screen display. Display not updated")
+            return 0
+
+        np.copyto(self.DisplayBuffer_arr_shm[:, :], NewImage)
+        self.channel.value = channelIdx
+        self.UpdateDisplay.set()
+        self.Doorbell.set()
+
+        if self.RefreshRate > 0:
+            time.sleep(self.RefreshRate)
+
+        return 1
+
     def SetRefreshRate(self,NewRefreshRate):
         self.RefreshRate=NewRefreshRate
     def LoadLutFile(self, *args, **kwargs):

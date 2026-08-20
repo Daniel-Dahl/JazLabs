@@ -225,6 +225,22 @@ def test_camera_accepts_a_hexadecimal_serial_number(monkeypatch):
     camera.shutdown()
 
 
+def test_camera_lists_available_devices_when_serial_is_omitted(
+    monkeypatch,
+    capsys,
+):
+    FakeXenethLibrary.instances.clear()
+    monkeypatch.setattr(xeneth_camera, "XenethLibrary", FakeXenethLibrary)
+
+    with pytest.raises(ValueError, match="choose one"):
+        xeneth_camera.CameraObject()
+
+    output = capsys.readouterr().out
+    assert "Available Xeneth cameras:" in output
+    assert "Xeva-1.7-320 | serial 8755 | cam://0 | available" in output
+    assert "Xeva-1.7-320 | serial 5920 | cam://1 | available" in output
+
+
 def test_device_information_layout_matches_xcamera_header():
     assert xeneth_ctypes.XDeviceInformation._pack_ == 1
     assert ctypes.sizeof(xeneth_ctypes.XDeviceInformation) == 464

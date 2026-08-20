@@ -30,17 +30,45 @@ class CameraObject:
 
     def __init__(
         self,
-        CameraSerialNumber,
+        CameraSerialNumber=None,
         CalibrationFile=None,
         PixelSize=30e-6,
         dll_path=None,
         verbose=False,
     ):
-        if CameraSerialNumber is None:
-            raise ValueError("CameraSerialNumber must not be None")
-        requested_serial_number = str(CameraSerialNumber).strip()
+        self.CameraType = "Xeneth"
+        self.CalibrationFile = CalibrationFile
+        self.PixelSize = PixelSize
+        self.verbose = bool(verbose)
+
+        self._closed = False
+        self._capturing = False
+        self.xeneth = XenethLibrary(dll_path=dll_path)
+        self.handle = 0
+
+        discovered_devices = self.xeneth.enumerate_devices()
+        requested_serial_number = (
+            "" if CameraSerialNumber is None else str(CameraSerialNumber).strip()
+        )
+
         if not requested_serial_number:
-            raise ValueError("CameraSerialNumber must not be empty")
+            print("Available Xeneth cameras:")
+            if not discovered_devices:
+                print("  none detected")
+            for device_index, device in enumerate(discovered_devices):
+                state_name = {
+                    XDS_AVAILABLE: "available",
+                    XDS_BUSY: "busy",
+                    XDS_UNREACHABLE: "unreachable",
+                }.get(device["state"], f"unknown ({device['state']})")
+                print(
+                    f"  {device_index}: {device['name']} | serial "
+                    f"{device['serial']} | {device['url']} | {state_name}"
+                )
+            raise ValueError(
+                "CameraSerialNumber must be provided; choose one of the "
+                "serial numbers listed above"
+            )
 
         try:
             if requested_serial_number.casefold().startswith("0x"):
@@ -53,17 +81,6 @@ class CameraObject:
                 "hexadecimal integers beginning with 0x"
             ) from error
 
-        self.CameraType = "Xeneth"
-        self.CalibrationFile = CalibrationFile
-        self.PixelSize = PixelSize
-        self.verbose = bool(verbose)
-
-        self._closed = False
-        self._capturing = False
-        self.xeneth = XenethLibrary(dll_path=dll_path)
-        self.handle = 0
-
-        discovered_devices = self.xeneth.enumerate_devices()
         if not discovered_devices:
             raise RuntimeError("No Xeneth cameras detected")
 
