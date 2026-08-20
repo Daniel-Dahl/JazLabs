@@ -218,14 +218,36 @@ class CameraObject:
         if not selector_names:
             selector_names = ["FrameStart"]
 
+        disabled_selectors = []
+        read_only_active_selectors = []
         for selector_name in selector_names:
             trigger_selector.set(selector_name)
-            trigger_mode.set("Off")
+            current_mode = self._enum_name(trigger_mode.get())
+            if current_mode == "Off":
+                continue
+
+            is_writeable = True
+            if hasattr(trigger_mode, "is_writeable"):
+                is_writeable = bool(trigger_mode.is_writeable())
+            elif hasattr(trigger_mode, "get_access_mode"):
+                is_writeable = bool(trigger_mode.get_access_mode()[1])
+
+            if is_writeable:
+                trigger_mode.set("Off")
+                disabled_selectors.append(selector_name)
+            else:
+                read_only_active_selectors.append(selector_name)
 
         if "FrameStart" in selector_names:
             trigger_selector.set("FrameStart")
 
-        return tuple(selector_names)
+        if read_only_active_selectors and self.verbose:
+            print(
+                "Allied Vision trigger selectors are active but read-only: "
+                f"{tuple(read_only_active_selectors)}"
+            )
+
+        return tuple(disabled_selectors)
 
     def _configure_stream_transport(self):
         streams = self.camera.get_streams()

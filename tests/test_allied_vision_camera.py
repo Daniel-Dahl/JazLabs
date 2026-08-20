@@ -99,7 +99,16 @@ class FakeTriggerModeFeature:
     def __init__(self, camera):
         self.camera = camera
 
+    def get(self):
+        return FakeEnumEntry(self.camera.trigger_modes[self.camera.selected_trigger])
+
+    def is_writeable(self):
+        writeable_by_selector = getattr(self.camera, "trigger_writeable", {})
+        return writeable_by_selector.get(self.camera.selected_trigger, True)
+
     def set(self, mode):
+        if not self.is_writeable():
+            raise RuntimeError("TriggerMode is read-only")
         self.camera.trigger_modes[self.camera.selected_trigger] = mode
 
 
@@ -192,6 +201,33 @@ class AlliedVisionCameraTests(unittest.TestCase):
             {"FrameStart": "Off", "ExposureStart": "Off"},
         )
         self.assertEqual(fake_camera.selected_trigger, "FrameStart")
+
+    def test_continuous_setup_does_not_write_read_only_trigger_mode(self):
+        camera_object = make_camera_object()
+        fake_camera = type("TriggerCamera", (), {})()
+        fake_camera.selected_trigger = "ExposureStart"
+        fake_camera.trigger_modes = {
+            "FrameStart": "On",
+            "ExposureStart": "Off",
+        }
+        fake_camera.trigger_writeable = {
+            "FrameStart": True,
+            "ExposureStart": False,
+        }
+        fake_camera.TriggerSelector = FakeTriggerSelectorFeature(
+            fake_camera,
+            ("FrameStart", "ExposureStart"),
+        )
+        fake_camera.TriggerMode = FakeTriggerModeFeature(fake_camera)
+        camera_object.camera = fake_camera
+
+        disabled_selectors = camera_object._disable_all_trigger_modes()
+
+        self.assertEqual(disabled_selectors, ("FrameStart",))
+        self.assertEqual(
+            fake_camera.trigger_modes,
+            {"FrameStart": "Off", "ExposureStart": "Off"},
+        )
 
     def test_stream_callback_delivers_a_fresh_copied_frame(self):
         camera_object = make_camera_object()
