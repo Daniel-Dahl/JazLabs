@@ -457,7 +457,30 @@ class CameraObject:
             self._disable_all_trigger_modes()
             self._set("TriggerSelector", "FrameStart")
             self._set("AcquisitionMode", "Continuous")
+
+            try:
+                exposure_mode = self._feature("ExposureMode")
+            except AttributeError:
+                exposure_mode = None
+            if exposure_mode is not None:
+                current_exposure_mode = self._enum_name(exposure_mode.get())
+                if current_exposure_mode != "Timed":
+                    exposure_mode.set("Timed")
+
             self._set("TriggerSource", "Software")
+
+            try:
+                trigger_activation = self._feature("TriggerActivation")
+            except AttributeError:
+                trigger_activation = None
+            if trigger_activation is not None:
+                current_trigger_activation = self._enum_name(trigger_activation.get())
+                if current_trigger_activation != "RisingEdge":
+                    if (
+                        not hasattr(trigger_activation, "is_writeable")
+                        or trigger_activation.is_writeable()
+                    ):
+                        trigger_activation.set("RisingEdge")
 
             trigger_mode = self._feature("TriggerMode")
             current_trigger_mode = self._enum_name(trigger_mode.get())
@@ -479,12 +502,22 @@ class CameraObject:
                             master_slave_mode = self._enum_name(self._get("MasterSlaveMode"))
                         except (AttributeError, self.VmbFeatureError):
                             pass
+                        exposure_mode_value = "not available"
+                        if exposure_mode is not None:
+                            exposure_mode_value = self._enum_name(exposure_mode.get())
+                        trigger_activation_value = "not available"
+                        if trigger_activation is not None:
+                            trigger_activation_value = self._enum_name(
+                                trigger_activation.get()
+                            )
                         raise RuntimeError(
                             "Allied Vision TriggerMode remained read-only after image "
                             "streaming was stopped. "
                             f"Streaming={self._is_acquisition_running()}, "
                             "TriggerSelector=FrameStart, TriggerSource=Software, "
-                            f"AcquisitionMode=Continuous, MasterSlaveMode={master_slave_mode}. "
+                            f"AcquisitionMode=Continuous, ExposureMode={exposure_mode_value}, "
+                            f"TriggerActivation={trigger_activation_value}, "
+                            f"MasterSlaveMode={master_slave_mode}. "
                             "TriggerMode cannot be changed while the camera is grabbing; "
                             "it can also be unavailable when MasterSlaveMode is Slave."
                         )

@@ -118,7 +118,13 @@ class FakeStreamingLockedTriggerMode(FakeFeature):
         self.camera = camera
 
     def is_writeable(self):
-        return not self.camera.is_streaming()
+        exposure_is_timed = self.camera.ExposureMode.get() == "Timed"
+        activation_is_rising_edge = self.camera.TriggerActivation.get() == "RisingEdge"
+        return (
+            not self.camera.is_streaming()
+            and exposure_is_timed
+            and activation_is_rising_edge
+        )
 
     def set(self, value):
         if not self.is_writeable():
@@ -299,6 +305,8 @@ class AlliedVisionCameraTests(unittest.TestCase):
         )
         fake_camera.TriggerSource = FakeFeature(FakeEnumEntry("Freerun"))
         fake_camera.AcquisitionMode = FakeFeature(FakeEnumEntry("Continuous"))
+        fake_camera.ExposureMode = FakeFeature(FakeEnumEntry("TriggerWidth"))
+        fake_camera.TriggerActivation = FakeFeature(FakeEnumEntry("FallingEdge"))
         fake_camera.TriggerSoftware = FakeFeature(value=None, writeable=True)
         camera_object.camera = fake_camera
         camera_object._capturing = False
@@ -309,6 +317,8 @@ class AlliedVisionCameraTests(unittest.TestCase):
         self.assertEqual(fake_camera.stop_count, 1)
         self.assertEqual(fake_camera.start_count, 1)
         self.assertTrue(fake_camera.is_streaming())
+        self.assertEqual(fake_camera.ExposureMode.get(), "Timed")
+        self.assertEqual(fake_camera.TriggerActivation.get(), "RisingEdge")
 
     def test_gige_packet_size_adjustment_matches_vmbpy_example(self):
         camera_object = make_camera_object()
