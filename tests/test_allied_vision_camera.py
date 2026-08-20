@@ -40,6 +40,9 @@ class FakeFeature:
     def run(self):
         self.run_count += 1
 
+    def is_done(self):
+        return True
+
 
 class FakeFrame:
     def __init__(self, frame_id, image):
@@ -61,14 +64,20 @@ class FakeStreamingCamera:
         self.handler = None
         self.start_count = 0
         self.stop_count = 0
+        self.start_buffer_counts = []
         self.queued_frames = []
 
     def start_streaming(self, handler, buffer_count):
         self.handler = handler
         self.start_count += 1
+        self.start_buffer_counts.append(buffer_count)
 
     def stop_streaming(self):
+        self.handler = None
         self.stop_count += 1
+
+    def is_streaming(self):
+        return self.handler is not None
 
     def queue_frame(self, frame):
         self.queued_frames.append(frame)
@@ -94,6 +103,30 @@ class FakeTriggerModeFeature:
         self.camera.trigger_modes[self.camera.selected_trigger] = mode
 
 
+class FakeDynamicROIFeature:
+    def __init__(self, camera, name):
+        self.camera = camera
+        self.name = name
+
+    def get(self):
+        return self.camera.roi_values[self.name]
+
+    def set(self, value):
+        self.camera.roi_values[self.name] = int(value)
+
+    def get_increment(self):
+        return 2
+
+    def get_range(self):
+        if self.name == "Width":
+            return 2, self.camera.sensor_width - self.camera.roi_values["OffsetX"]
+        if self.name == "Height":
+            return 2, self.camera.sensor_height - self.camera.roi_values["OffsetY"]
+        if self.name == "OffsetX":
+            return 0, self.camera.sensor_width - self.camera.roi_values["Width"]
+        return 0, self.camera.sensor_height - self.camera.roi_values["Height"]
+
+
 def make_camera_object():
     camera_object = object.__new__(CameraObject)
     camera_object._closed = False
@@ -106,6 +139,8 @@ def make_camera_object():
     camera_object._last_delivered_sequence = 0
     camera_object.frame_id = None
     camera_object.grab_timeout_ms = 100
+    camera_object.verbose = False
+    camera_object.VmbFeatureError = RuntimeError
     return camera_object
 
 
@@ -179,6 +214,53 @@ class AlliedVisionCameraTests(unittest.TestCase):
 
         camera_object.StopAcquisition()
         self.assertEqual(camera_object.camera.stop_count, 1)
+
+    def test_stream_buffer_size_restarts_acquisition_with_new_count(self):
+        camera_object = make_camera_object()
+        camera_object.camera = FakeStreamingCamera()
+
+        camera_object.StartAcquisition()
+        result = camera_object.SetBufferSizeInNumberOfFrames(9)
+
+        self.assertEqual(result, 9)
+        self.assertEqual(camera_object.camera.start_buffer_counts, [5, 9])
+        self.assertEqual(camera_object.camera.stop_count, 1)
+        camera_object.StopAcquisition()
+
+    def test_gige_packet_size_adjustment_matches_vmbpy_example(self):
+        camera_object = make_camera_object()
+        packet_size_command = FakeFeature(value=None)
+        stream = type("FakeStream", (), {})()
+        stream.GVSPAdjustPacketSize = packet_size_command
+        camera_object.camera = type("TransportCamera", (), {})()
+        camera_object.camera.get_streams = lambda: (stream,)
+
+        camera_object._configure_stream_transport()
+
+        self.assertEqual(packet_size_command.run_count, 1)
+
+    def test_full_sensor_roi_queries_size_after_resetting_offsets(self):
+        camera_object = make_camera_object()
+        fake_camera = type("ROICamera", (), {})()
+        fake_camera.sensor_width = 100
+        fake_camera.sensor_height = 80
+        fake_camera.roi_values = {
+            "OffsetX": 20,
+            "OffsetY": 10,
+            "Width": 80,
+            "Height": 70,
+        }
+        for feature_name in ("OffsetX", "OffsetY", "Width", "Height"):
+            setattr(
+                fake_camera,
+                feature_name,
+                FakeDynamicROIFeature(fake_camera, feature_name),
+            )
+        camera_object.camera = fake_camera
+
+        roi = camera_object.SetROI(enable=False)
+
+        self.assertEqual(roi, (0, 0, 100, 80))
 
     def test_software_trigger_runs_when_stream_is_armed(self):
         camera_object = make_camera_object()

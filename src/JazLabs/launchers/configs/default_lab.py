@@ -48,38 +48,82 @@ DARK_FRAME_CONFIG = {
     "camera_client_id": "camera_dark_frame",
 }
 
-SLM_SHM_NAME = "slm_shared"
-
 SLM_BRIDGE = {
     "name": "slm_bridge",
-    "client_id": "slm_bridge",
-    "shm_name": SLM_SHM_NAME,
-    "bind_host": "127.0.0.1",
+    "local_host": "127.0.0.1",
     "local_command_port": 5565,
-    "server_host": "10.196.0.67",
-    "server_command_port": 5555,
-    "server_image_port": 5556,
-    "server_ack_port": 5557,
-    "image_topic": "slm.image",
-    "ack_topic": "slm.ack",
+    "local_display_pub_port": 5566,
+    "remote_host": "10.161.4.65",
+    "remote_command_port": 5555,
+    "remote_display_pub_port": 5556,
+    "display_topic": "slm.display",
     "timeout_ms": 5000,
-    "create_shm": True,
-    "acquire_control": False,
-    "poll_timeout_s": 1e-3,
+    "poll_sleep": 0.0,
+    "enabled": True,
 }
 
 SLM_SERVER = {
     "name": "slm_server",
     "host": "0.0.0.0",
     "command_port": 5555,
-    "image_sub_port": 5556,
-    "ack_pub_port": 5557,
-    "image_topic": "slm.image",
-    "ack_topic": "slm.ack",
+    "display_pub_port": 5556,
+    "display_topic": "slm.display",
     "slm_type": "Blink Plus",
+    "board_number": 1,
+    "monitor_index": 1,
     "refresh_rate": 0.5,
     "lut_file": None,
+    "timeout_ms": 5000,
+    "enabled": False,
 }
+
+SLM_VIEWER = {
+    "host": SLM_BRIDGE["local_host"],
+    "command_port": SLM_BRIDGE["local_command_port"],
+    "display_pub_port": SLM_BRIDGE["local_display_pub_port"],
+    "window_name": "SLM viewer",
+    "zoom": 0.2,
+    "fps": 30,
+    "timeout_ms": SLM_BRIDGE["timeout_ms"],
+}
+
+# Optional pyMilk SLM transport. Uncomment these settings only when using the
+# explicit jazlabs-*-slm-milk commands.
+#
+# SLM_MILK_SHM_NAME = "slm_shared"
+#
+# SLM_MILK_BRIDGE = {
+#     "name": "slm_milk_bridge",
+#     "client_id": "slm_milk_bridge",
+#     "shm_name": SLM_MILK_SHM_NAME,
+#     "bind_host": "127.0.0.1",
+#     "local_command_port": 5565,
+#     "server_host": "10.161.4.65",
+#     "server_command_port": 5555,
+#     "server_image_port": 5556,
+#     "server_ack_port": 5557,
+#     "image_topic": "slm.image",
+#     "ack_topic": "slm.ack",
+#     "timeout_ms": 5000,
+#     "create_shm": True,
+#     "acquire_control": False,
+#     "poll_timeout_s": 1e-3,
+#     "enabled": True,
+# }
+#
+# SLM_MILK_SERVER = {
+#     "name": "slm_milk_server",
+#     "host": "0.0.0.0",
+#     "command_port": 5555,
+#     "image_sub_port": 5556,
+#     "ack_pub_port": 5557,
+#     "image_topic": "slm.image",
+#     "ack_topic": "slm.ack",
+#     "slm_type": "Blink Plus",
+#     "refresh_rate": 0.5,
+#     "lut_file": None,
+#     "enabled": False,
+# }
 
 SLM_CENTER_ALIGNMENT_CONFIG = {
     # Camera measurement window, determined with the camera viewer.
@@ -109,9 +153,9 @@ SLM_CENTER_ALIGNMENT_CONFIG = {
     "camera_frame_port": CAMERA_SERVERS[0]["frame_pub_port"],
     "camera_timeout_ms": 60000,
     "camera_client_id": "slm_center_alignment",
-    "slm_host": SLM_BRIDGE["bind_host"],
+    "slm_host": SLM_BRIDGE["local_host"],
     "slm_command_port": SLM_BRIDGE["local_command_port"],
-    "slm_shm_name": SLM_BRIDGE["shm_name"],
+    "slm_display_port": SLM_BRIDGE["local_display_pub_port"],
     "slm_timeout_ms": SLM_BRIDGE["timeout_ms"],
 
     # SLM properties.

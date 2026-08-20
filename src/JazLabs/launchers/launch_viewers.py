@@ -5,13 +5,13 @@ import time
 
 from JazLabs.launchers.launch_camera_viewer import start_camera_viewers
 from JazLabs.launchers.config import load_config
+from JazLabs.launchers.launch_slm_milk_viewer import start_slm_milk_viewer
 from JazLabs.launchers.launch_slm_viewer import start_slm_viewer
-from JazLabs.launchers.launch_slm_stack_viewer import start_slm_stack_viewer
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Open configured JazLabs viewers.")
-    parser.add_argument("target", choices=("all", "camera", "slm", "slm-stack"))
+    parser.add_argument("target", choices=("all", "camera", "slm", "slm-milk"))
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--name", "--camera", dest="name", default=None)
     parser.add_argument("--viewer", action=argparse.BooleanOptionalAction, default=True)
@@ -56,7 +56,11 @@ def main(argv=None):
         )
 
     if args.target == "slm" or (
-        args.target == "all" and config.get("SLM_BRIDGE", {}).get("enabled", True)
+        args.target == "all"
+        and (
+            config.get("SLM_BRIDGE", {}).get("enabled", False)
+            or config.get("SLM_SERVER", {}).get("enabled", False)
+        )
     ):
         processes.extend(
             start_slm_viewer(
@@ -66,11 +70,12 @@ def main(argv=None):
             )
         )
 
-    if args.target == "slm-stack" or (
-        args.target == "all" and config.get("SLM_STACK_SERVER", {}).get("enabled", False)
+    if args.target == "slm-milk" or (
+        args.target == "all"
+        and config.get("SLM_MILK_BRIDGE", {}).get("enabled", False)
     ):
         processes.extend(
-            start_slm_stack_viewer(
+            start_slm_milk_viewer(
                 config_name=args.config,
                 zoom=args.slm_zoom,
                 fps=args.slm_fps,

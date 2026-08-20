@@ -17,12 +17,12 @@ CAMERA_SERVERS = [
     
 ]
 
-SLM_SHM_NAME = "slm_shared"
+SLM_MILK_SHM_NAME = "slm_shared"
 
-SLM_BRIDGE = {
-    "name": "slm_bridge",
-    "client_id": "slm_bridge",
-    "shm_name": SLM_SHM_NAME,
+SLM_MILK_BRIDGE = {
+    "name": "slm_milk_bridge",
+    "client_id": "slm_milk_bridge",
+    "shm_name": SLM_MILK_SHM_NAME,
     "bind_host": "127.0.0.1",
     "local_command_port": 5565,
     "server_host": "10.196.0.67",
@@ -37,8 +37,8 @@ SLM_BRIDGE = {
     "poll_timeout_s": 1e-3,
 }
 
-SLM_SERVER = {
-    "name": "slm_server",
+SLM_MILK_SERVER = {
+    "name": "slm_milk_server",
     "host": "0.0.0.0",
     "command_port": 5555,
     "image_sub_port": 5556,
@@ -48,6 +48,7 @@ SLM_SERVER = {
     "slm_type": "Blink Plus",
     "refresh_rate": 0.5,
     "lut_file": None,
+    "enabled": False,
 }
 
 DAQ_SERVERS = [

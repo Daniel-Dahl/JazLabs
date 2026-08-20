@@ -363,6 +363,12 @@ class SLMZMQServer:
                     pass
 
             try:
+                if slmOBJ is not None and self.SLMType == "HDMI SLM":
+                    slmOBJ.shutdown()
+            except Exception as exc:
+                print(f"SLM shutdown failed: {type(exc).__name__}: {exc}")
+
+            try:
                 if context is not None:
                     context.term()
             except Exception:

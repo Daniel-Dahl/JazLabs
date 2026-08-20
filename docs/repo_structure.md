@@ -122,12 +122,12 @@ launchers/
 |-- launch_daq_bridge.py
 |-- launch_slm_server.py
 |-- launch_slm_bridge.py
-|-- launch_slm_stack_bridge.py
-|-- launch_slm_stack_server.py
+|-- launch_slm_milk_server.py
+|-- launch_slm_milk_bridge.py
 |-- launch_time_tagger_server.py
 |-- launch_time_tagger_bridge.py
 |-- launch_slm_viewer.py
-|-- launch_slm_stack_viewer.py
+|-- launch_slm_milk_viewer.py
 |-- launch_viewers.py
 |-- tmux.py
 |-- config.py

@@ -64,11 +64,14 @@ class CameraObject:
         self.frame_id_updates_asynchronously = True
         self.grab_timeout_ms = 1000
 
-        from vmbpy import PixelFormat, VmbSystem
+        from vmbpy import PixelFormat, VmbFeatureError, VmbSystem
 
         self.PixelFormat = PixelFormat
+        self.VmbFeatureError = VmbFeatureError
         self.vmb_context = VmbSystem.get_instance()
         self.vmb = self.vmb_context.__enter__()
+        if self.verbose:
+            print(f"Using {self.vmb.get_version()}")
 
         self.cameras = self.vmb.get_all_cameras()
         self.num_cameras = len(self.cameras)
@@ -98,6 +101,7 @@ class CameraObject:
         self.camera.__enter__()
         self.CameraSerialNumber = str(self.camera.get_serial()).strip()
         print(f"Using Allied Vision camera serial number {self.CameraSerialNumber}")
+        self._configure_stream_transport()
 
         self.trigger_mode = "Off"
         self.trigger_source = "FreeRun"
@@ -223,6 +227,28 @@ class CameraObject:
 
         return tuple(selector_names)
 
+    def _configure_stream_transport(self):
+        streams = self.camera.get_streams()
+        if not streams:
+            raise RuntimeError("Allied Vision camera does not provide an image stream")
+
+        stream = streams[0]
+        try:
+            adjust_packet_size = stream.GVSPAdjustPacketSize
+        except AttributeError:
+            return
+
+        try:
+            adjust_packet_size.run()
+            deadline = time.monotonic() + 5.0
+            while not adjust_packet_size.is_done():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("GVSPAdjustPacketSize did not complete within 5 seconds")
+                time.sleep(0.001)
+        except self.VmbFeatureError as error:
+            if self.verbose:
+                print(f"Could not adjust Allied Vision GigE packet size: {error}")
+
     def _frame_handler(self, camera, stream, frame):
         try:
             status = frame.get_status()
@@ -252,7 +278,12 @@ class CameraObject:
                 self._frame_error = error
                 self._frame_condition.notify_all()
         finally:
-            camera.queue_frame(frame)
+            try:
+                camera.queue_frame(frame)
+            except Exception as queue_error:
+                with self._frame_condition:
+                    self._frame_error = queue_error
+                    self._frame_condition.notify_all()
 
     def StartAcquisition(self):
         if self._capturing:
@@ -262,15 +293,19 @@ class CameraObject:
             handler=self._frame_handler,
             buffer_count=self._stream_buffer_count,
         )
+        if hasattr(self.camera, "is_streaming") and not self.camera.is_streaming():
+            raise RuntimeError("VmbPy returned without starting the Allied Vision image stream")
         self._capturing = True
 
     def StopAcquisition(self):
         if not getattr(self, "_capturing", False):
             return
         camera = getattr(self, "camera", None)
-        if camera is not None:
-            camera.stop_streaming()
-        self._capturing = False
+        try:
+            if camera is not None:
+                camera.stop_streaming()
+        finally:
+            self._capturing = False
 
     def ResetCamera(self):
         self.StopAcquisition()
@@ -295,13 +330,24 @@ class CameraObject:
         return discarded_frames
 
     def SetBufferSizeInNumberOfFrames(self, n_frames):
-        raise NotImplementedError("VmbPy stream buffer sizing is not implemented in this simple wrapper.")
+        n_frames = int(n_frames)
+        if n_frames <= 0:
+            raise ValueError("n_frames must be greater than zero")
+
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        self._stream_buffer_count = n_frames
+        if was_capturing:
+            self.StartAcquisition()
+        return self.GetBufferSizeInNumberOfFrames()
 
     def GetBufferSizeInNumberOfFrames(self):
-        return None
+        return int(self._stream_buffer_count)
 
     def GetNumberOfFramesInBuffer(self):
-        return None
+        with self._frame_condition:
+            return int(self._frame_sequence > self._last_delivered_sequence)
 
     def GetGrabTimeout(self):
         return int(self.grab_timeout_ms)
@@ -568,10 +614,25 @@ class CameraObject:
             self.StopAcquisition()
 
         try:
+            current_offset_x = int(self._get("OffsetX"))
+            current_offset_y = int(self._get("OffsetY"))
+            current_width = int(self._get("Width"))
+            current_height = int(self._get("Height"))
+
+            offset_x_min, _, offset_x_step = self._limits("OffsetX")
+            offset_y_min, _, offset_y_step = self._limits("OffsetY")
+            offset_x_min = int(offset_x_min)
+            offset_y_min = int(offset_y_min)
+            offset_x_step = int(offset_x_step)
+            offset_y_step = int(offset_y_step)
+
+            # Width and Height maxima can depend on the current offsets. Move
+            # the ROI to the sensor origin before querying the full size range.
+            self._set("OffsetX", offset_x_min)
+            self._set("OffsetY", offset_y_min)
+
             width_min, width_max, width_step = self._limits("Width")
             height_min, height_max, height_step = self._limits("Height")
-            offset_x_min, offset_x_max, offset_x_step = self._limits("OffsetX")
-            offset_y_min, offset_y_max, offset_y_step = self._limits("OffsetY")
 
             width_min = int(width_min)
             width_max = int(width_max)
@@ -579,6 +640,27 @@ class CameraObject:
             height_min = int(height_min)
             height_max = int(height_max)
             height_step = int(height_step)
+
+            if not enable:
+                width = width_max
+                height = height_max
+            else:
+                width = current_width if width is None else width
+                height = current_height if height is None else height
+
+            if snap_values:
+                width = snap_to_value(width, width_step, mode, minimum=width_min)
+                height = snap_to_value(height, height_step, mode, minimum=height_min)
+                width = min(width, width_max)
+                height = min(height, height_max)
+
+            self._set("Width", int(width))
+            self._set("Height", int(height))
+
+            # Offset ranges depend on the selected Width and Height, so query
+            # them only after applying the requested dimensions.
+            offset_x_min, offset_x_max, offset_x_step = self._limits("OffsetX")
+            offset_y_min, offset_y_max, offset_y_step = self._limits("OffsetY")
             offset_x_min = int(offset_x_min)
             offset_x_max = int(offset_x_max)
             offset_x_step = int(offset_x_step)
@@ -589,31 +671,16 @@ class CameraObject:
             if not enable:
                 offset_x = offset_x_min
                 offset_y = offset_y_min
-                width = width_max
-                height = height_max
             else:
-                offset_x = self._get("OffsetX") if offset_x is None else offset_x
-                offset_y = self._get("OffsetY") if offset_y is None else offset_y
-                width = self._get("Width") if width is None else width
-                height = self._get("Height") if height is None else height
+                offset_x = current_offset_x if offset_x is None else offset_x
+                offset_y = current_offset_y if offset_y is None else offset_y
 
             if snap_values:
-                width = snap_to_value(width, width_step, mode, minimum=width_min)
-                height = snap_to_value(height, height_step, mode, minimum=height_min)
-                width = min(width, width_max)
-                height = min(height, height_max)
-
-                max_offset_x = min(offset_x_max, width_max - width)
-                max_offset_y = min(offset_y_max, height_max - height)
                 offset_x = snap_to_value(offset_x, offset_x_step, mode, minimum=offset_x_min)
                 offset_y = snap_to_value(offset_y, offset_y_step, mode, minimum=offset_y_min)
-                offset_x = min(offset_x, snap_to_value(max_offset_x, offset_x_step, "floor", minimum=offset_x_min))
-                offset_y = min(offset_y, snap_to_value(max_offset_y, offset_y_step, "floor", minimum=offset_y_min))
+                offset_x = min(offset_x, offset_x_max)
+                offset_y = min(offset_y, offset_y_max)
 
-            self._set("OffsetX", offset_x_min)
-            self._set("OffsetY", offset_y_min)
-            self._set("Width", int(width))
-            self._set("Height", int(height))
             self._set("OffsetX", int(offset_x))
             self._set("OffsetY", int(offset_y))
         finally:

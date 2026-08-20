@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 import multiprocessing
 from multiprocessing import shared_memory
+import signal
 import time
 import copy
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
@@ -22,7 +23,7 @@ class SLMObject:
     """
 
     def __init__(self,monitor_index=1,RefreshRate=500e-3):
-        
+        self._shutdown_complete = False
         self.NumberOfChannels=3
         
         """
@@ -58,19 +59,23 @@ class SLMObject:
         """
         Clean up child process and shared memory.
         """
+        if getattr(self, "_shutdown_complete", False):
+            return
+        self._shutdown_complete = True
+
         try:
             print("Cleaning up resources...")
             if hasattr(self, "terminateThreadEvent"):
                 self.terminateThreadEvent.set()
             if hasattr(self, "Doorbell"):
                 self.Doorbell.set()
-            time.sleep(0.2)
             if hasattr(self, "Process") and self.Process is not None:
                 if self.Process.is_alive():
                     self.Process.join(timeout=2)
                 if self.Process.is_alive():
                     self.Process.terminate()
                     self.Process.join(timeout=1)
+                self.Process = None
             if hasattr(self, "sharedMemoryDisplayBuffer"):
                 try:
                     self.sharedMemoryDisplayBuffer.close()
@@ -80,6 +85,7 @@ class SLMObject:
                     self.sharedMemoryDisplayBuffer.unlink()
                 except Exception:
                     pass
+                self.sharedMemoryDisplayBuffer = None
             print("Destroyed SLMObject and cleaned up resources.")
         except Exception as e:
             print(f"Error during shutdown: {e}")
@@ -92,18 +98,22 @@ class SLMObject:
 
         The thread runs the `HelloWorldThread` function with required parameters.
         """
-        process = multiprocessing.Process(target=SLMScreenDisplayThread, args=(
-            self.queue,
-            self.terminateThreadEvent,
-            self.Doorbell,
-            self.UpdateDisplay,
-            self.sharedMemoryDisplayBufferName,
-             self.monitor_x,
-             self.monitor_y,
-             self.monitor_height, 
-             self.monitor_width,
-             self.channel
-        ))
+        process = multiprocessing.Process(
+            target=SLMScreenDisplayThread,
+            args=(
+                self.queue,
+                self.terminateThreadEvent,
+                self.Doorbell,
+                self.UpdateDisplay,
+                self.sharedMemoryDisplayBufferName,
+                self.monitor_x,
+                self.monitor_y,
+                self.monitor_height,
+                self.monitor_width,
+                self.channel,
+            ),
+            daemon=True,
+        )
         process.start()  # Start the process
         return process
 
@@ -163,6 +173,10 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
     """
     A multiprocessing thread function to generate and display a sine wave.
     """
+    # The server process owns terminal interrupt handling and signals this child
+    # through terminateThreadEvent during cleanup.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     # Access shared memory buffers
     DisplayBuffer = shared_memory.SharedMemory(name=sharedMemoryNameDisplayBuffer)
     DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width), dtype=np.uint8, buffer=DisplayBuffer.buf)

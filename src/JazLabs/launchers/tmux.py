@@ -37,9 +37,9 @@ def python_can_import(python, module_name):
     return result.returncode == 0
 
 
-def choose_slm_bridge_python():
-    python = os.environ.get("JAZLABS_SLM_BRIDGE_PYTHON", sys.executable)
-    if "JAZLABS_SLM_BRIDGE_PYTHON" in os.environ or python_can_import(python, "pyMilk"):
+def choose_slm_milk_python():
+    python = os.environ.get("JAZLABS_SLM_MILK_PYTHON", sys.executable)
+    if "JAZLABS_SLM_MILK_PYTHON" in os.environ or python_can_import(python, "pyMilk"):
         return python
 
     base_python = Path.home() / "miniforge3" / "bin" / "python"
@@ -92,6 +92,30 @@ def camera_tasks(config_name, config, camera_name=None):
             )
 
 
+def slm_milk_bridge_task(config_name, config):
+    bridge = config.get("SLM_MILK_BRIDGE", {})
+    return (
+        bridge.get("name", "slm_milk_bridge"),
+        module_command(
+            "JazLabs.launchers.launch_slm_milk_bridge",
+            [("--config", config_name)],
+            choose_slm_milk_python(),
+        ),
+    )
+
+
+def slm_milk_server_task(config_name, config):
+    server = config.get("SLM_MILK_SERVER", {})
+    return (
+        server.get("name", "slm_milk_server"),
+        module_command(
+            "JazLabs.launchers.launch_slm_milk_server",
+            [("--config", config_name)],
+            choose_slm_milk_python(),
+        ),
+    )
+
+
 def slm_bridge_task(config_name, config):
     bridge = config.get("SLM_BRIDGE", {})
     return (
@@ -99,7 +123,7 @@ def slm_bridge_task(config_name, config):
         module_command(
             "JazLabs.launchers.launch_slm_bridge",
             [("--config", config_name)],
-            choose_slm_bridge_python(),
+            os.environ.get("JAZLABS_SLM_BRIDGE_PYTHON", sys.executable),
         ),
     )
 
@@ -112,18 +136,6 @@ def slm_server_task(config_name, config):
             "JazLabs.launchers.launch_slm_server",
             [("--config", config_name)],
             os.environ.get("JAZLABS_SLM_SERVER_PYTHON", sys.executable),
-        ),
-    )
-
-
-def slm_stack_task(config_name, config):
-    slm = config.get("SLM_STACK_SERVER", {})
-    return (
-        slm.get("name", "slm_stack"),
-        module_command(
-            "JazLabs.launchers.launch_slm_stack_server",
-            [("--config", config_name)],
-            os.environ.get("JAZLABS_SLM_STACK_SERVER_PYTHON", sys.executable),
         ),
     )
 
@@ -181,7 +193,8 @@ def build_parser():
             "camera",
             "slm-bridge",
             "slm-server",
-            "slm-stack",
+            "slm-milk-bridge",
+            "slm-milk-server",
             "daq",
             "optical-switch",
         ),
@@ -218,12 +231,30 @@ def main(argv=None):
     if args.target in ("all", "camera"):
         camera_name = args.name if args.target == "camera" else None
         tasks.extend(camera_tasks(args.config, config, camera_name))
-    if args.target in ("all", "slm-bridge") and config.get("SLM_BRIDGE", {}).get("enabled", True):
+    if (
+        args.target in ("all", "slm-bridge")
+        and "SLM_BRIDGE" in config
+        and config["SLM_BRIDGE"].get("enabled", True)
+    ):
         tasks.append(slm_bridge_task(args.config, config))
-    if args.target == "slm-server" and config.get("SLM_SERVER", {}).get("enabled", True):
+    if (
+        args.target in ("all", "slm-server")
+        and "SLM_SERVER" in config
+        and config["SLM_SERVER"].get("enabled", True)
+    ):
         tasks.append(slm_server_task(args.config, config))
-    if args.target in ("all", "slm-stack") and config.get("SLM_STACK_SERVER", {}).get("enabled", False):
-        tasks.append(slm_stack_task(args.config, config))
+    if (
+        args.target in ("all", "slm-milk-bridge")
+        and "SLM_MILK_BRIDGE" in config
+        and config["SLM_MILK_BRIDGE"].get("enabled", True)
+    ):
+        tasks.append(slm_milk_bridge_task(args.config, config))
+    if (
+        args.target in ("all", "slm-milk-server")
+        and "SLM_MILK_SERVER" in config
+        and config["SLM_MILK_SERVER"].get("enabled", True)
+    ):
+        tasks.append(slm_milk_server_task(args.config, config))
     if args.target in ("all", "daq"):
         daq_name = args.name if args.target == "daq" else None
         tasks.extend(daq_tasks(args.config, config, daq_name))

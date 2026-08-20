@@ -213,8 +213,9 @@ SLM bridge (Linux)
 
 The order matters: start the hardware-facing server first, the bridge
 second, and the Linux viewer or other clients last. The commands below use the
-`SLM_SERVER`, `SLM_BRIDGE`, and `SLM_SHM_NAME` settings in
-`default_lab.py`.
+`SLM_MILK_SERVER`, `SLM_MILK_BRIDGE`, and `SLM_MILK_SHM_NAME` settings in
+`default_lab.py`. These optional pyMilk settings are commented out by default;
+uncomment them before running the pyMilk commands.
 
 ### 1. Start the hardware-facing server on Windows
 
@@ -222,7 +223,7 @@ On the computer physically connected to the SLM, open PowerShell in the
 JazLabs environment and run:
 
 ```powershell
-jazlabs-server-slm --config default_lab
+jazlabs-server-slm-milk --config default_lab
 ```
 
 Wait until the server has opened the SLM and reports its command, image, and
@@ -233,7 +234,7 @@ acknowledgement ports. Leave the PowerShell window open.
 On the Linux computer, run:
 
 ```bash
-jazlabs-bridge-slm --config default_lab
+jazlabs-bridge-slm-milk --config default_lab
 ```
 
 The bridge connects to the SLM server configured by `server_host`, creates
@@ -246,7 +247,7 @@ opening the viewer.
 In another Linux terminal, run:
 
 ```bash
-jazlabs-view-slm --config default_lab
+jazlabs-view-slm-milk --config default_lab
 ```
 
 The viewer reads the configured shared-memory stream and displays the image
@@ -274,9 +275,9 @@ when confirming that the physical SLM updated.
 
 | Order | Computer | Process | Command |
 |---:|---|---|---|
-| 1 | Windows SLM computer | Hardware-facing server | `jazlabs-server-slm --config default_lab` |
-| 2 | Linux computer | SLM bridge | `jazlabs-bridge-slm --config default_lab` |
-| 3 | Linux computer | Shared-memory viewer client | `jazlabs-view-slm --config default_lab` |
+| 1 | Windows SLM computer | Hardware-facing server | `jazlabs-server-slm-milk --config default_lab` |
+| 2 | Linux computer | SLM bridge | `jazlabs-bridge-slm-milk --config default_lab` |
+| 3 | Linux computer | Shared-memory viewer client | `jazlabs-view-slm-milk --config default_lab` |
 
 ## Stopping the Processes
 
@@ -299,7 +300,7 @@ server so they do not continue waiting for a connection that has disappeared.
   first.
 - **The SLM viewer reports missing shared memory:** wait for the Linux bridge
   to create the configured stream and confirm that the viewer and bridge use
-  the same `SLM_SHM_NAME` or `shm_name`.
+  the same `SLM_MILK_SHM_NAME` or `shm_name`.
 - **The SLM viewer changes but the hardware does not:** inspect the Linux
   bridge and Windows server for acknowledgement or LUT/hardware errors. The
   viewer alone proves that shared memory changed, not that the SLM accepted the

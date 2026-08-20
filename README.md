@@ -113,6 +113,10 @@ jazlabs-camera-dark-frame
 These commands are configured in `pyproject.toml` and implemented under
 `src/JazLabs/launchers/` and `src/JazLabs/procedures/`.
 
+The unsuffixed SLM commands and `SLM_SERVER`/`SLM_BRIDGE` settings use the
+standard SLM implementation. The separate pyMilk transport always uses a
+`-milk` command and an `SLM_MILK_*` configuration name.
+
 ## Direct Object Example
 
 For a simple script or driver debugging session, load the instrument object

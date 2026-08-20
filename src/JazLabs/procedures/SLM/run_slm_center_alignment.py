@@ -71,6 +71,7 @@ def main(argv=None):
         "camera_frame_port",
         "slm_host",
         "slm_command_port",
+        "slm_display_port",
         "slm_pixel_size",
         "slm_wavelength",
         "slm_refresh_time",
@@ -105,7 +106,7 @@ def main(argv=None):
 
     import JazLabs.hardware.Cameras.Camera_Client as CameraClientLib
     import JazLabs.hardware.SLM.PhaseMaskClass as PhaseMaskClass
-    from JazLabs.hardware.SLM.SLMStackMilk.SLM_Client import SLMClient
+    from JazLabs.hardware.SLM.SLMStack.SLM_Client import SLMClient
     import JazLabs.procedures.SLM.SLM_CenterAlignment as SLM_CenterAlignment
 
     plt.style.use("dark_background")
@@ -125,11 +126,11 @@ def main(argv=None):
 
         slm_client = SLMClient(
             client_id=alignment_config.get("slm_client_id"),
-            bridge_host=alignment_config["slm_host"],
-            bridge_command_port=alignment_config["slm_command_port"],
-            shm_name=alignment_config.get("slm_shm_name"),
+            host=alignment_config["slm_host"],
+            command_port=alignment_config["slm_command_port"],
+            display_pub_port=alignment_config["slm_display_port"],
             timeout_ms=alignment_config.get("slm_timeout_ms", 5000),
-            create_shm_if_missing=False,
+            attach_viewer_shared_memory=False,
         )
         slm_channel = alignment_config["slm_channel"]
         polarisation = alignment_config["polarisation"]

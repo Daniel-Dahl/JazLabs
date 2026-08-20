@@ -78,8 +78,8 @@ LASER_SERVERS = [
     },
 ]
 
-SLM_STACK_SERVER = {
-    "name": "slm_stack",
+SLM_SERVER = {
+    "name": "slm_server",
     "host": "0.0.0.0",
     "viewer_host": "127.0.0.1",
     "command_port": 5555,
@@ -95,14 +95,14 @@ SLM_STACK_SERVER = {
     "enabled": True,
 }
 
-SLM_STACK_VIEWER = {
+SLM_VIEWER = {
     "host": "127.0.0.1",
-    "command_port": SLM_STACK_SERVER["command_port"],
-    "display_pub_port": SLM_STACK_SERVER["display_pub_port"],
+    "command_port": SLM_SERVER["command_port"],
+    "display_pub_port": SLM_SERVER["display_pub_port"],
     "window_name": "HDStokes SLM viewer",
     "zoom": 0.2,
     "fps": 30,
-    "timeout_ms": SLM_STACK_SERVER["timeout_ms"],
+    "timeout_ms": SLM_SERVER["timeout_ms"],
 }
 
 DAQ_SERVERS = [

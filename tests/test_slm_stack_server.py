@@ -1,13 +1,15 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 try:
     import cv2  # noqa: F401
 except ImportError:
     sys.modules["cv2"] = SimpleNamespace()
 
 from JazLabs.hardware.SLM.SLMStack.SLM_Server import SLMZMQServer
-from JazLabs.launchers.launch_slm_stack_server import build_parser
+from JazLabs.launchers.launch_slm_server import build_parser
 
 
 class RecordingSLMObject:
@@ -68,7 +70,63 @@ def test_launcher_accepts_device_selectors():
     assert args.monitor_index == 2
 
 
-def test_stack_launcher_default_config_exists():
+def test_slm_launcher_uses_normal_default_config():
     args = build_parser().parse_args([])
 
-    assert args.config == "HDStokes"
+    assert args.config == "default_lab"
+
+
+def test_server_shuts_down_slm_when_server_loop_is_interrupted(monkeypatch):
+    class FakeSLM:
+        monitor_height = 2
+        monitor_width = 3
+        NumberOfChannels = 3
+
+        def __init__(self):
+            self.shutdown_calls = 0
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    class InterruptingSocket:
+        def bind(self, endpoint):
+            raise KeyboardInterrupt
+
+        def close(self, linger):
+            pass
+
+    class FakeContext:
+        def socket(self, socket_type):
+            return InterruptingSocket()
+
+        def term(self):
+            pass
+
+    class FakeViewerSharedMemory:
+        name = "test_slm_viewer"
+
+        def __init__(self, create, size):
+            self.buf = bytearray(size)
+
+        def close(self):
+            pass
+
+        def unlink(self):
+            pass
+
+    slm = FakeSLM()
+    server = SLMZMQServer(SLMType="HDMI SLM")
+    monkeypatch.setattr(server, "_open_slm", lambda: slm)
+    monkeypatch.setattr(
+        "JazLabs.hardware.SLM.SLMStack.SLM_Server.zmq.Context",
+        FakeContext,
+    )
+    monkeypatch.setattr(
+        "JazLabs.hardware.SLM.SLMStack.SLM_Server.shared_memory.SharedMemory",
+        FakeViewerSharedMemory,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        server.run_forever()
+
+    assert slm.shutdown_calls == 1
