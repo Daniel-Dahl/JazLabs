@@ -11,6 +11,10 @@ from .xeneth_ctypes import (
     FT_16_BPP_GRAY,
     FT_32_BPP_GRAY,
     FT_8_BPP_GRAY,
+    XDS_AVAILABLE,
+    XDS_BUSY,
+    XDS_UNREACHABLE,
+    XenethError,
     XenethLibrary,
 )
 
@@ -26,14 +30,29 @@ class CameraObject:
 
     def __init__(
         self,
-        CameraName="cam://0",
+        CameraSerialNumber,
         CalibrationFile=None,
         PixelSize=30e-6,
         dll_path=None,
         verbose=False,
     ):
-        self.CameraName = str(CameraName)
-        self.CameraSerialNumber = self.CameraName
+        if CameraSerialNumber is None:
+            raise ValueError("CameraSerialNumber must not be None")
+        requested_serial_number = str(CameraSerialNumber).strip()
+        if not requested_serial_number:
+            raise ValueError("CameraSerialNumber must not be empty")
+
+        try:
+            if requested_serial_number.casefold().startswith("0x"):
+                numeric_serial_number = int(requested_serial_number, 16)
+            else:
+                numeric_serial_number = int(requested_serial_number, 10)
+        except ValueError as error:
+            raise ValueError(
+                "Xeneth camera serial numbers must be decimal integers or "
+                "hexadecimal integers beginning with 0x"
+            ) from error
+
         self.CameraType = "Xeneth"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
@@ -42,9 +61,76 @@ class CameraObject:
         self._closed = False
         self._capturing = False
         self.xeneth = XenethLibrary(dll_path=dll_path)
+        self.handle = 0
+
+        discovered_devices = self.xeneth.enumerate_devices()
+        if not discovered_devices:
+            raise RuntimeError("No Xeneth cameras detected")
+
+        selected_device = None
+        for device_index, device in enumerate(discovered_devices):
+            if self.verbose:
+                state_name = {
+                    XDS_AVAILABLE: "available",
+                    XDS_BUSY: "busy",
+                    XDS_UNREACHABLE: "unreachable",
+                }.get(device["state"], f"unknown ({device['state']})")
+                print(
+                    f"{device_index}: {device['name']} serial "
+                    f"{device['serial']} at {device['url']} ({state_name})"
+                )
+            if device["serial"] == numeric_serial_number:
+                selected_device = device
+
+        if selected_device is None:
+            discovered_serial_numbers = ", ".join(
+                str(device["serial"]) for device in discovered_devices
+            )
+            raise ValueError(
+                "Xeneth camera with serial number "
+                f"{requested_serial_number!r} was not found. Discovered "
+                f"serial numbers: {discovered_serial_numbers}"
+            )
+
+        if selected_device["state"] != XDS_AVAILABLE:
+            state_name = {
+                XDS_BUSY: "busy",
+                XDS_UNREACHABLE: "unreachable",
+            }.get(
+                selected_device["state"],
+                f"in unknown state {selected_device['state']}",
+            )
+            raise RuntimeError(
+                f"Xeneth camera {selected_device['serial']} is {state_name}"
+            )
+
+        self.CameraSerialNumber = str(selected_device["serial"])
+        self.CameraName = selected_device["url"]
+        self.CameraModel = selected_device["name"]
+        self.CameraTransport = selected_device["transport"]
+        self.CameraAddress = selected_device["address"]
+        self.CameraProductID = selected_device["pid"]
         self.handle = self.xeneth.open_camera(self.CameraName)
 
         try:
+            connected_serial_number = self.GetSerialNumber()
+            if connected_serial_number != str(numeric_serial_number):
+                raise RuntimeError(
+                    "Xeneth opened a different camera than the selected "
+                    f"device: requested {numeric_serial_number}, connected "
+                    f"{connected_serial_number}"
+                )
+            self.CameraProductID = self.xeneth.get_property_long(
+                self.handle,
+                "_CAM_PID",
+            )
+
+            if self.verbose:
+                print(
+                    "Using Xeneth camera serial number "
+                    f"{self.CameraSerialNumber} at {self.CameraName}"
+                )
+
             self._load_calibration_file()
 
             self.trigger_mode = "Off"
@@ -61,6 +147,8 @@ class CameraObject:
             self.Ny = self.height
 
             self.frame_id = None
+            self.grab_timeout_ms = None
+            self.frame_id_updates_asynchronously = False
             self.ExposureTime = self.GetExposureTime()
             self.ExposureTimeMin, self.ExposureTimeMax = (
                 self.xeneth.get_property_range_float(
@@ -114,6 +202,9 @@ class CameraObject:
                 self.handle = 0
 
     def GetSerialNumber(self):
+        self.CameraSerialNumber = str(
+            self.xeneth.get_property_long(self.handle, "_CAM_SER")
+        )
         return self.CameraSerialNumber
 
     def StartAcquisition(self):
@@ -137,7 +228,25 @@ class CameraObject:
 
     def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
         self.ResetBuffer()
-        return 0
+        return self.xeneth.drain_frames(self.handle, max_frames=max_frames)
+
+    def SetBufferSizeInNumberOfFrames(self, n_frames):
+        raise NotImplementedError(
+            "Xeneth does not expose stream buffer sizing through this wrapper"
+        )
+
+    def GetBufferSizeInNumberOfFrames(self):
+        return None
+
+    def GetNumberOfFramesInBuffer(self):
+        return None
+
+    def GetGrabTimeout(self):
+        return self.grab_timeout_ms
+
+    def SetGrabTimeout(self, timeout_ms):
+        self.grab_timeout_ms = None if timeout_ms is None else int(timeout_ms)
+        return self.grab_timeout_ms
 
     def GetFrameID(self):
         self.frame_id = self.xeneth.get_frame_count(self.handle)
@@ -252,7 +361,7 @@ class CameraObject:
                     "FrameRate",
                 )
             )
-        except Exception:
+        except XenethError:
             self.FPSMin = None
             self.FPSMax = None
         return (
@@ -278,13 +387,28 @@ class CameraObject:
             )
         return self.pixel_format
 
+    def SetPixelFormat(self, pixel_format):
+        requested_format = str(pixel_format).strip().casefold()
+        accepted_names = {
+            "native",
+            self.pixel_format,
+            self.pixel_format.replace("mono", ""),
+            self.pixel_format.replace("mono", "") + "bit",
+        }
+        if requested_format not in accepted_names:
+            raise NotImplementedError(
+                "This simple Xeneth wrapper returns the camera's native pixel "
+                f"format ({self.pixel_format})"
+            )
+        return self.pixel_format
+
     def GetROI(self):
         try:
             start_x = self.xeneth.get_property_long(self.handle, "WoiSX(0)")
             end_x = self.xeneth.get_property_long(self.handle, "WoiEX(0)")
             start_y = self.xeneth.get_property_long(self.handle, "WoiSY(0)")
             end_y = self.xeneth.get_property_long(self.handle, "WoiEY(0)")
-        except Exception:
+        except XenethError:
             self.offset_x = 0
             self.offset_y = 0
             self.width = self.xeneth.get_width(self.handle)
@@ -371,19 +495,50 @@ class CameraObject:
         return self.trigger_mode, self.trigger_source
 
     def SetContinuousMode(self):
-        self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
-        self.xeneth.set_property_long(self.handle, "TriggerInMode", 0)
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
+            self.xeneth.set_property_long(self.handle, "TriggerOutEnable", 0)
+            self.xeneth.set_property_long(self.handle, "TriggerInMode", 0)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.trigger_mode = "Off"
         self.trigger_source = "FreeRun"
         self.acquisition_mode = "Continuous"
         return self.GetTriggerMode()
 
     def SetSoftwareTriggerMode(self):
-        self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
-        self.xeneth.set_property_long(self.handle, "TriggerInMode", 1)
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
+            self.xeneth.set_property_long(self.handle, "TriggerOutEnable", 0)
+            self.xeneth.set_property_long(self.handle, "TriggerInMode", 1)
+            self.xeneth.set_property_long(self.handle, "TriggerInTiming", 0)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        self.DrainImageBuffer()
         self.trigger_mode = "On"
         self.trigger_source = "Software"
         return self.GetTriggerMode()
+
+    def IsSoftwareTriggerReady(self):
+        return self._capturing and self.GetTriggerMode() == ("On", "Software")
+
+    def WaitForSoftwareTriggerReady(
+        self,
+        timeout_ms=1000,
+        poll_interval_s=0.001,
+    ):
+        if self.IsSoftwareTriggerReady():
+            return True
+        raise RuntimeError("Xeneth camera is not armed for software triggering")
 
     def FireSoftwareTrigger(
         self,
@@ -391,13 +546,19 @@ class CameraObject:
         ready_timeout_ms=1000,
         drain_stale_frames=True,
     ):
-        if self.GetTriggerMode() != ("On", "Software"):
-            raise RuntimeError("Camera is not in software trigger mode")
-        return self.xeneth.set_property_long(
+        if wait_ready:
+            self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
+        elif not self.IsSoftwareTriggerReady():
+            raise RuntimeError("Xeneth camera is not armed for software triggering")
+        if drain_stale_frames:
+            self.DrainImageBuffer()
+
+        self.xeneth.set_property_long(
             self.handle,
             "SoftwareTrigger",
             1,
         )
+        return 0
 
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=1, lineNumber=0):
         if RiseEdgeOrFallEdge not in (-1, 1):

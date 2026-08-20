@@ -7,6 +7,7 @@ import os
 I_OK = 0
 E_NOT_SUPPORTED = 10005
 E_NOT_FOUND = 10006
+E_NO_FRAME = 10008
 
 FT_NATIVE = 0
 FT_8_BPP_GRAY = 1
@@ -16,6 +17,29 @@ FT_32_BPP_GRAY = 3
 XGF_BLOCKING = 1
 XGF_NO_CONVERSION = 2
 XLC_START_SOFTWARE_CORRECTION = 1
+
+XEF_ENABLE_ALL = 0x0000FFFF
+XEF_USE_CACHED = 0x01000000
+
+XDS_AVAILABLE = 0
+XDS_BUSY = 1
+XDS_UNREACHABLE = 2
+
+
+class XDeviceInformation(ctypes.Structure):
+    """Packed layout from the SDK's XCamera.h header."""
+
+    _pack_ = 1
+    _fields_ = (
+        ("size", ctypes.c_int),
+        ("name", ctypes.c_char * 64),
+        ("transport", ctypes.c_char * 64),
+        ("url", ctypes.c_char * 256),
+        ("address", ctypes.c_char * 64),
+        ("serial", ctypes.c_uint),
+        ("pid", ctypes.c_uint),
+        ("state", ctypes.c_uint),
+    )
 
 
 class XenethError(RuntimeError):
@@ -75,22 +99,23 @@ class XenethLibrary:
             ctypes.c_void_p,
             ctypes.c_void_p,
         )
+        self.lib.XC_CloseCamera.restype = None
         self.lib.XC_CloseCamera.argtypes = (ctypes.c_int32,)
 
         self.lib.XC_ErrorToString.restype = ctypes.c_int32
         self.lib.XC_ErrorToString.argtypes = (
-            ctypes.c_int32,
+            ctypes.c_ulong,
             ctypes.c_char_p,
             ctypes.c_int32,
         )
 
-        self.lib.XC_IsInitialised.restype = ctypes.c_int32
+        self.lib.XC_IsInitialised.restype = ctypes.c_ubyte
         self.lib.XC_IsInitialised.argtypes = (ctypes.c_int32,)
         self.lib.XC_StartCapture.restype = ctypes.c_ulong
         self.lib.XC_StartCapture.argtypes = (ctypes.c_int32,)
         self.lib.XC_StopCapture.restype = ctypes.c_ulong
         self.lib.XC_StopCapture.argtypes = (ctypes.c_int32,)
-        self.lib.XC_IsCapturing.restype = ctypes.c_bool
+        self.lib.XC_IsCapturing.restype = ctypes.c_ubyte
         self.lib.XC_IsCapturing.argtypes = (ctypes.c_int32,)
 
         self.lib.XC_GetWidth.restype = ctypes.c_ulong
@@ -99,7 +124,7 @@ class XenethLibrary:
         self.lib.XC_GetHeight.argtypes = (ctypes.c_int32,)
         self.lib.XC_GetFrameSize.restype = ctypes.c_ulong
         self.lib.XC_GetFrameSize.argtypes = (ctypes.c_int32,)
-        self.lib.XC_GetFrameType.restype = ctypes.c_ulong
+        self.lib.XC_GetFrameType.restype = ctypes.c_int
         self.lib.XC_GetFrameType.argtypes = (ctypes.c_int32,)
         self.lib.XC_GetBitSize.restype = ctypes.c_ubyte
         self.lib.XC_GetBitSize.argtypes = (ctypes.c_int32,)
@@ -107,7 +132,7 @@ class XenethLibrary:
         self.lib.XC_GetFrame.restype = ctypes.c_ulong
         self.lib.XC_GetFrame.argtypes = (
             ctypes.c_int32,
-            ctypes.c_ulong,
+            ctypes.c_int,
             ctypes.c_ulong,
             ctypes.c_void_p,
             ctypes.c_uint,
@@ -176,11 +201,11 @@ class XenethLibrary:
             ctypes.POINTER(ctypes.c_double),
         )
 
-        self.lib.XC_FLT_Queue.restype = ctypes.c_ulong
-        self.lib.XC_FLT_Queue.argtypes = (
-            ctypes.c_int32,
-            ctypes.c_char_p,
-            ctypes.c_char_p,
+        self.lib.XCD_EnumerateDevices.restype = ctypes.c_ulong
+        self.lib.XCD_EnumerateDevices.argtypes = (
+            ctypes.POINTER(XDeviceInformation),
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_uint,
         )
 
     def error_to_string(self, code):
@@ -200,6 +225,50 @@ class XenethLibrary:
                 self.lib.XC_CloseCamera(handle)
             raise RuntimeError(f"Could not initialise Xeneth camera {camera_name!r}")
         return handle
+
+    def enumerate_devices(self):
+        device_count = ctypes.c_uint(0)
+        error = self.lib.XCD_EnumerateDevices(
+            None,
+            ctypes.byref(device_count),
+            XEF_ENABLE_ALL,
+        )
+        self.check_error(error, "XCD_EnumerateDevices(discover)")
+
+        if device_count.value == 0:
+            return []
+
+        device_array = (XDeviceInformation * device_count.value)()
+        for device_information in device_array:
+            device_information.size = ctypes.sizeof(XDeviceInformation)
+
+        cached_device_count = ctypes.c_uint(device_count.value)
+        error = self.lib.XCD_EnumerateDevices(
+            device_array,
+            ctypes.byref(cached_device_count),
+            XEF_USE_CACHED,
+        )
+        self.check_error(error, "XCD_EnumerateDevices(cached)")
+
+        devices = []
+        for index in range(cached_device_count.value):
+            device_information = device_array[index]
+            devices.append(
+                {
+                    "name": device_information.name.decode(errors="replace"),
+                    "transport": device_information.transport.decode(
+                        errors="replace"
+                    ),
+                    "url": device_information.url.decode(errors="replace"),
+                    "address": device_information.address.decode(
+                        errors="replace"
+                    ),
+                    "serial": int(device_information.serial),
+                    "pid": int(device_information.pid),
+                    "state": int(device_information.state),
+                }
+            )
+        return devices
 
     def close_camera(self, handle):
         self.lib.XC_CloseCamera(handle)
@@ -234,6 +303,26 @@ class XenethLibrary:
             ctypes.c_uint(frame_buffer.nbytes),
         )
         self.check_error(error, "XC_GetFrame")
+
+    def drain_frames(self, handle, max_frames=64):
+        frame_size = self.get_frame_size(handle)
+        frame_buffer = ctypes.create_string_buffer(frame_size)
+        drained_frame_count = 0
+
+        while drained_frame_count < int(max_frames):
+            error = self.lib.XC_GetFrame(
+                handle,
+                FT_NATIVE,
+                0,
+                frame_buffer,
+                ctypes.c_uint(frame_size),
+            )
+            if int(error) == E_NO_FRAME:
+                break
+            self.check_error(error, "XC_GetFrame(drain)")
+            drained_frame_count += 1
+
+        return drained_frame_count
 
     def get_frame_count(self, handle):
         return int(self.lib.XC_GetFrameCount(handle))
@@ -280,7 +369,7 @@ class XenethLibrary:
             unit.encode("utf-8"),
         )
         self.check_error(error, f"XC_SetPropertyValueL({property_name})")
-        return self.get_property_long(handle, property_name)
+        return int(value)
 
     def get_property_float(self, handle, property_name):
         value = ctypes.c_double()
@@ -328,5 +417,3 @@ class XenethLibrary:
             XLC_START_SOFTWARE_CORRECTION,
         )
         self.check_error(error, "XC_LoadCalibration")
-        error = self.lib.XC_FLT_Queue(handle, b"SoftwareCorrection", b"0")
-        self.check_error(error, "XC_FLT_Queue(SoftwareCorrection)")

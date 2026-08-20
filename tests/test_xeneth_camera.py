@@ -1,6 +1,10 @@
+import ctypes
+
 import numpy as np
+import pytest
 
 from JazLabs.hardware.Cameras.Xenic import Xeneth as xeneth_camera
+from JazLabs.hardware.Cameras.Xenic import xeneth_ctypes
 
 
 class FakeXenethLibrary:
@@ -10,6 +14,7 @@ class FakeXenethLibrary:
         self.dll_path = dll_path
         self.closed = False
         self.capturing = False
+        self.capture_events = []
         self.float_properties = {
             "IntegrationTime": 1250.0,
             "FrameRate": 50.0,
@@ -21,6 +26,8 @@ class FakeXenethLibrary:
             "WoiEY(0)": 2,
             "TriggerInEnable": 0,
             "TriggerInMode": 0,
+            "TriggerOutEnable": 0,
+            "TriggerInTiming": 0,
         }
         self.string_properties = {
             "LowGain": "False",
@@ -28,8 +35,35 @@ class FakeXenethLibrary:
         }
         self.instances.append(self)
 
+    def enumerate_devices(self):
+        return [
+            {
+                "name": "Xeva-1.7-320",
+                "transport": "USB",
+                "url": "cam://0",
+                "address": "USB0",
+                "serial": 8755,
+                "pid": 0xF027,
+                "state": xeneth_camera.XDS_AVAILABLE,
+            },
+            {
+                "name": "Xeva-1.7-320",
+                "transport": "USB",
+                "url": "cam://1",
+                "address": "USB1",
+                "serial": 5920,
+                "pid": 0xF027,
+                "state": xeneth_camera.XDS_AVAILABLE,
+            },
+        ]
+
     def open_camera(self, camera_name):
         self.camera_name = camera_name
+        self.long_properties["_CAM_SER"] = {
+            "cam://0": 8755,
+            "cam://1": 5920,
+        }[camera_name]
+        self.long_properties["_CAM_PID"] = 0xF027
         return 17
 
     def close_camera(self, handle):
@@ -39,10 +73,12 @@ class FakeXenethLibrary:
     def start_capture(self, handle):
         assert handle == 17
         self.capturing = True
+        self.capture_events.append("start")
 
     def stop_capture(self, handle):
         assert handle == 17
         self.capturing = False
+        self.capture_events.append("stop")
 
     def get_width(self, handle):
         return 4
@@ -65,6 +101,10 @@ class FakeXenethLibrary:
 
     def get_frame_count(self, handle):
         return 42
+
+    def drain_frames(self, handle, max_frames=64):
+        self.drained_frames = True
+        return 0
 
     def get_frame_rate(self, handle):
         return self.float_properties["FrameRate"]
@@ -110,12 +150,14 @@ def make_camera(monkeypatch, **camera_kwargs):
 
 
 def test_camera_returns_native_frame_and_closes_cleanly(monkeypatch):
-    camera, library = make_camera(monkeypatch, CameraName="cam://2")
+    camera, library = make_camera(monkeypatch, CameraSerialNumber="5920")
 
     frame = camera.GetFrame()
 
     assert camera.CameraType == "Xeneth"
-    assert camera.GetSerialNumber() == "cam://2"
+    assert camera.GetSerialNumber() == "5920"
+    assert camera.CameraName == "cam://1"
+    assert library.camera_name == "cam://1"
     assert frame.shape == (3, 4)
     assert frame.dtype == np.uint16
     np.testing.assert_array_equal(frame, np.arange(12).reshape(3, 4))
@@ -130,7 +172,7 @@ def test_camera_returns_native_frame_and_closes_cleanly(monkeypatch):
 
 
 def test_camera_controls_use_one_explicit_xeneth_property_set(monkeypatch):
-    camera, library = make_camera(monkeypatch)
+    camera, library = make_camera(monkeypatch, CameraSerialNumber=8755)
 
     assert camera.SetExposureTime(2500) == 2500.0
     assert library.float_properties["IntegrationTime"] == 2500.0
@@ -151,7 +193,92 @@ def test_camera_controls_use_one_explicit_xeneth_property_set(monkeypatch):
     assert library.long_properties["WoiEY(0)"] == 2
 
     assert camera.SetSoftwareTriggerMode() == ("On", "Software")
-    camera.FireSoftwareTrigger()
+    assert library.long_properties["TriggerInEnable"] == 0
+    assert library.long_properties["TriggerOutEnable"] == 0
+    assert library.long_properties["TriggerInMode"] == 1
+    assert library.long_properties["TriggerInTiming"] == 0
+    assert library.capture_events[-2:] == ["stop", "start"]
+    assert camera.FireSoftwareTrigger() == 0
     assert library.long_properties["SoftwareTrigger"] == 1
+    assert library.drained_frames is True
 
     camera.shutdown()
+
+
+def test_camera_rejects_a_serial_number_that_was_not_discovered(monkeypatch):
+    FakeXenethLibrary.instances.clear()
+    monkeypatch.setattr(xeneth_camera, "XenethLibrary", FakeXenethLibrary)
+
+    with pytest.raises(ValueError, match="8755, 5920"):
+        xeneth_camera.CameraObject(CameraSerialNumber="1234")
+
+
+def test_camera_accepts_a_hexadecimal_serial_number(monkeypatch):
+    camera, library = make_camera(
+        monkeypatch,
+        CameraSerialNumber=hex(8755),
+    )
+
+    assert camera.GetSerialNumber() == "8755"
+    assert library.camera_name == "cam://0"
+
+    camera.shutdown()
+
+
+def test_device_information_layout_matches_xcamera_header():
+    assert xeneth_ctypes.XDeviceInformation._pack_ == 1
+    assert ctypes.sizeof(xeneth_ctypes.XDeviceInformation) == 464
+
+
+def test_ctypes_wrapper_discovers_devices_using_the_sdk_cache():
+    calls = []
+
+    class FakeEnumerateDevices:
+        def __call__(self, device_array, device_count_pointer, flags):
+            device_count = ctypes.cast(
+                device_count_pointer,
+                ctypes.POINTER(ctypes.c_uint),
+            )
+            calls.append(int(flags))
+
+            if not device_array:
+                device_count.contents.value = 1
+                return xeneth_ctypes.I_OK
+
+            assert device_array[0].size == 464
+            device_array[0].name = b"Xeva-1.7-320"
+            device_array[0].transport = b"USB"
+            device_array[0].url = b"cam://3"
+            device_array[0].address = b"USB3"
+            device_array[0].serial = 8755
+            device_array[0].pid = 0xF027
+            device_array[0].state = xeneth_ctypes.XDS_AVAILABLE
+            device_count.contents.value = 1
+            return xeneth_ctypes.I_OK
+
+    library = xeneth_ctypes.XenethLibrary.__new__(
+        xeneth_ctypes.XenethLibrary
+    )
+    library.lib = type(
+        "FakeLibrary",
+        (),
+        {"XCD_EnumerateDevices": FakeEnumerateDevices()},
+    )()
+
+    devices = library.enumerate_devices()
+
+    assert calls == [
+        xeneth_ctypes.XEF_ENABLE_ALL,
+        xeneth_ctypes.XEF_USE_CACHED,
+    ]
+    assert devices == [
+        {
+            "name": "Xeva-1.7-320",
+            "transport": "USB",
+            "url": "cam://3",
+            "address": "USB3",
+            "serial": 8755,
+            "pid": 0xF027,
+            "state": xeneth_ctypes.XDS_AVAILABLE,
+        }
+    ]
