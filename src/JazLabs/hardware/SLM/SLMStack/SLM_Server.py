@@ -272,6 +272,7 @@ class SLMZMQServer:
                         shape = tuple(msg["shape"])
                         dtype = np.dtype(msg.get("dtype", "uint8"))
                         channelIdx = int(msg.get("channelIdx", 0))
+                        write_id = int(msg.get("write_id", last_frame_id + 1))
 
                         if shape != image_shape:
                             raise ValueError(
@@ -296,6 +297,7 @@ class SLMZMQServer:
                         last_display_success = display_ok
                         last_timing = {
                             "frame_id": int(last_frame_id),
+                            "write_id": int(write_id),
                             "write_start_perf_ns": int(write_start_ns),
                             "write_done_perf_ns": int(write_done_ns),
                             "sdk_write_ms": (write_done_ns - write_start_ns) / 1e6,
@@ -306,10 +308,9 @@ class SLMZMQServer:
                             np.copyto(viewer_arr, image)
 
                         publish_header = {
-                            "type": "slm_display",
+                            "type": "slm_display_ack",
                             "client_id": client_id,
-                            "shape": list(image_shape),
-                            "dtype": "uint8",
+                            "write_id": int(write_id),
                             "frame_id": int(last_frame_id),
                             "channelIdx": int(channelIdx),
                             "last_write_time_ns": int(last_write_time_ns),
@@ -320,7 +321,6 @@ class SLMZMQServer:
                             [
                                 self.display_topic.encode("utf-8"),
                                 json.dumps(publish_header).encode("utf-8"),
-                                viewer_arr.tobytes(),
                             ]
                         )
 
@@ -328,6 +328,7 @@ class SLMZMQServer:
                             "ok": True,
                             "result": {
                                 "display_ok": bool(display_ok),
+                                "write_id": int(write_id),
                                 "frame_id": int(last_frame_id),
                                 "last_write_time_ns": int(last_write_time_ns),
                                 "timing": last_timing,

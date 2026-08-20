@@ -54,6 +54,7 @@ class SLMClient:
         self.viewer_arr = None
         self.viewer_shape = None
         self.viewer_dtype = None
+        self.next_write_id = 1
 
         self._connect_command_socket()
 
@@ -116,9 +117,12 @@ class SLMClient:
 
     def SendImageCommand(self, image, channelIdx=0, wait=True, timeout_ms=None):
         image, channelIdx = self._prepare_image_for_display(image, channelIdx)
+        write_id = self.next_write_id
+        self.next_write_id += 1
         header = {
             "cmd": "write_to_display",
             "client_id": self.client_id,
+            "write_id": int(write_id),
             "shape": list(image.shape),
             "dtype": str(image.dtype),
             "channelIdx": int(channelIdx),
@@ -195,14 +199,18 @@ class SLMClient:
             if len(parts) == 3:
                 _, header_bytes, _ = parts
             elif len(parts) == 2:
-                header_bytes, _ = parts
+                topic_or_header, header_or_image = parts
+                if topic_or_header.startswith(b"{"):
+                    header_bytes = topic_or_header
+                else:
+                    header_bytes = header_or_image
             elif len(parts) == 1:
                 header_bytes = parts[0]
             else:
                 continue
 
             msg = json.loads(header_bytes.decode("utf-8"))
-            if msg.get("type") != "slm_display":
+            if msg.get("type") not in ("slm_display", "slm_display_ack"):
                 continue
             if LastFrameID is None:
                 return msg

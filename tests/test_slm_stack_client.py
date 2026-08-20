@@ -1,3 +1,4 @@
+import json
 import sys
 from types import SimpleNamespace
 
@@ -64,3 +65,27 @@ def test_prepare_image_rejects_obsolete_or_incorrect_layouts(shape):
 
     with pytest.raises(ValueError, match="Expected 2D image shape"):
         client._prepare_image_for_display(np.zeros(shape), channelIdx=0)
+
+
+def test_wait_for_display_notification_accepts_metadata_only_server_ack():
+    class MetadataSubscriber:
+        def recv_multipart(self):
+            return [
+                b"slm.display",
+                json.dumps(
+                    {
+                        "type": "slm_display_ack",
+                        "write_id": 4,
+                        "frame_id": 9,
+                        "ok": True,
+                    }
+                ).encode("utf-8"),
+            ]
+
+    client = make_client()
+    client.display_sub_socket = MetadataSubscriber()
+
+    notification = client.WaitForDisplayNotification()
+
+    assert notification["write_id"] == 4
+    assert notification["frame_id"] == 9

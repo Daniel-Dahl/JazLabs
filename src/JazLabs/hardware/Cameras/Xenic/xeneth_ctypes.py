@@ -1,228 +1,332 @@
+"""Small ctypes wrapper around the Xeneth C API."""
+
 import ctypes
 import os
 
 
 I_OK = 0
-I_DIRTY = 1
-E_BUG = 10000
-E_NOINIT = 10001
-E_LOGICLOADFAILED = 10002
-E_INTERFACE_ERROR = 10003
-E_OUT_OF_RANGE = 10004
 E_NOT_SUPPORTED = 10005
 E_NOT_FOUND = 10006
-E_FILTER_DONE = 10007
-E_NO_FRAME = 10008
-E_SAVE_ERROR = 10009
-E_MISMATCHED = 10010
-E_BUSY = 10011
-E_INVALID_HANDLE = 10012
-E_TIMEOUT = 10013
-E_FRAMEGRABBER = 10014
-E_NO_CONVERSION = 10015
-E_FILTER_SKIP_FRAME = 10016
-E_WRONG_VERSION = 10017
-E_PACKET_ERROR = 10018
-E_WRONG_FORMAT = 10019
-E_WRONG_SIZE = 10020
-E_CAPSTOP = 10021
-E_OUT_OF_MEMORY = 10022
+
+FT_NATIVE = 0
+FT_8_BPP_GRAY = 1
+FT_16_BPP_GRAY = 2
+FT_32_BPP_GRAY = 3
+
+XGF_BLOCKING = 1
+XGF_NO_CONVERSION = 2
+XLC_START_SOFTWARE_CORRECTION = 1
 
 
-class FrameType:
-    FT_UNKNOWN = -1
-    FT_NATIVE = 0
-    FT_8_BPP_GRAY = 1
-    FT_16_BPP_GRAY = 2
-    FT_32_BPP_GRAY = 3
-    FT_32_BPP_RGBA = 4
-    FT_32_BPP_RGB = 5
-    FT_32_BPP_BGRA = 6
-    FT_32_BPP_BGR = 7
+class XenethError(RuntimeError):
+    def __init__(self, code, function_name, message=None):
+        self.code = int(code)
+        self.function_name = str(function_name)
+        detail = message or f"Xeneth error code {self.code}"
+        super().__init__(f"{self.function_name} failed: {detail} ({self.code})")
 
 
-class XGetFrameFlags:
-    XGF_BLOCKING = 1
-    XGF_NO_CONVERSION = 2
-    XGF_FETCH_PFF = 4
+class XenethLibrary:
+    """Load Xeneth and expose its C functions as ordinary Python methods."""
 
-
-class XLoadCalibrationFlags:
-    XLC_START_SOFTWARE_CORRECTION = 1
-
-
-FT_NATIVE = FrameType.FT_NATIVE
-FT_8_BPP_GRAY = FrameType.FT_8_BPP_GRAY
-FT_16_BPP_GRAY = FrameType.FT_16_BPP_GRAY
-FT_32_BPP_GRAY = FrameType.FT_32_BPP_GRAY
-
-XGF_BLOCKING = XGetFrameFlags.XGF_BLOCKING
-XGF_NO_CONVERSION = XGetFrameFlags.XGF_NO_CONVERSION
-XLC_START_SOFTWARE_CORRECTION = XLoadCalibrationFlags.XLC_START_SOFTWARE_CORRECTION
-
-
-def _default_dll_path():
-    candidates = [
-        os.environ.get("XENETH_DLL_PATH"),
+    DEFAULT_DLL_PATHS = (
         r"C:\Program Files\Common Files\XenICs\Runtime\xeneth64.dll",
         r"C:\Program Files\Xeneth\Runtime\xeneth64.dll",
         r"C:\Program Files\Xeneth\Sdk\Bin\xeneth64.dll",
         "xeneth64.dll",
-    ]
-    for path in candidates:
-        if path and (os.path.exists(path) or path == "xeneth64.dll"):
-            return path
-    return "xeneth64.dll"
-
-
-def _load_xeneth_library(user_path=None):
-    candidates = []
-    if user_path:
-        candidates.append(user_path)
-
-    default_path = _default_dll_path()
-    if default_path not in candidates:
-        candidates.append(default_path)
-
-    load_errors = []
-    for candidate in candidates:
-        try:
-            if hasattr(os, "add_dll_directory"):
-                dll_dir = os.path.dirname(candidate)
-                if dll_dir and os.path.isdir(dll_dir):
-                    os.add_dll_directory(dll_dir)
-            return ctypes.cdll.LoadLibrary(candidate), candidate
-        except OSError as exc:
-            load_errors.append(f"{candidate}: {exc}")
-
-    joined = "\n".join(load_errors)
-    raise FileNotFoundError(
-        "Could not load Xeneth library.\n"
-        "Tried these candidates:\n"
-        f"{joined}\n\n"
-        "Set XENETH_DLL_PATH explicitly if needed."
     )
 
-
-class XenethError(RuntimeError):
-    def __init__(self, code, func, message=None):
-        self.code = int(code)
-        self.func = str(func)
-        detail = message or f"Xeneth error code {self.code}"
-        super().__init__(f"{self.func} failed: {detail} ({self.code})")
-
-
-class XenethLibrary:
     def __init__(self, dll_path=None):
-        self.lib, self.dll_path = _load_xeneth_library(dll_path)
-        self._set_prototypes()
+        self.lib, self.dll_path = self._load_library(dll_path)
+        self._set_function_signatures()
 
-    def _set_prototypes(self):
-        lib = self.lib
+    def _load_library(self, dll_path):
+        candidates = []
+        for candidate in (
+            dll_path,
+            os.environ.get("XENETH_DLL_PATH"),
+            *self.DEFAULT_DLL_PATHS,
+        ):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
 
-        lib.XC_OpenCamera.restype = ctypes.c_int32
-        lib.XC_OpenCamera.argtypes = (ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p)
+        load_errors = []
+        for candidate in candidates:
+            try:
+                if hasattr(os, "add_dll_directory"):
+                    dll_directory = os.path.dirname(candidate)
+                    if dll_directory and os.path.isdir(dll_directory):
+                        os.add_dll_directory(dll_directory)
+                return ctypes.cdll.LoadLibrary(candidate), candidate
+            except OSError as error:
+                load_errors.append(f"{candidate}: {error}")
 
-        lib.XC_CloseCamera.argtypes = (ctypes.c_int32,)
+        attempted_paths = "\n".join(load_errors)
+        raise FileNotFoundError(
+            "Could not load the Xeneth library.\n"
+            f"Tried:\n{attempted_paths}\n\n"
+            "Pass dll_path or set XENETH_DLL_PATH."
+        )
 
-        lib.XC_ErrorToString.restype = ctypes.c_int32
-        lib.XC_ErrorToString.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_int32)
+    def _set_function_signatures(self):
+        self.lib.XC_OpenCamera.restype = ctypes.c_int32
+        self.lib.XC_OpenCamera.argtypes = (
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+        self.lib.XC_CloseCamera.argtypes = (ctypes.c_int32,)
 
-        lib.XC_IsInitialised.restype = ctypes.c_int32
-        lib.XC_IsInitialised.argtypes = (ctypes.c_int32,)
+        self.lib.XC_ErrorToString.restype = ctypes.c_int32
+        self.lib.XC_ErrorToString.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+        )
 
-        lib.XC_StartCapture.restype = ctypes.c_ulong
-        lib.XC_StartCapture.argtypes = (ctypes.c_int32,)
+        self.lib.XC_IsInitialised.restype = ctypes.c_int32
+        self.lib.XC_IsInitialised.argtypes = (ctypes.c_int32,)
+        self.lib.XC_StartCapture.restype = ctypes.c_ulong
+        self.lib.XC_StartCapture.argtypes = (ctypes.c_int32,)
+        self.lib.XC_StopCapture.restype = ctypes.c_ulong
+        self.lib.XC_StopCapture.argtypes = (ctypes.c_int32,)
+        self.lib.XC_IsCapturing.restype = ctypes.c_bool
+        self.lib.XC_IsCapturing.argtypes = (ctypes.c_int32,)
 
-        lib.XC_StopCapture.restype = ctypes.c_ulong
-        lib.XC_StopCapture.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetWidth.restype = ctypes.c_ulong
+        self.lib.XC_GetWidth.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetHeight.restype = ctypes.c_ulong
+        self.lib.XC_GetHeight.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetFrameSize.restype = ctypes.c_ulong
+        self.lib.XC_GetFrameSize.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetFrameType.restype = ctypes.c_ulong
+        self.lib.XC_GetFrameType.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetBitSize.restype = ctypes.c_ubyte
+        self.lib.XC_GetBitSize.argtypes = (ctypes.c_int32,)
 
-        lib.XC_IsCapturing.restype = ctypes.c_bool
-        lib.XC_IsCapturing.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetFrame.restype = ctypes.c_ulong
+        self.lib.XC_GetFrame.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+        )
+        self.lib.XC_GetFrameCount.restype = ctypes.c_ulong
+        self.lib.XC_GetFrameCount.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetFrameRate.restype = ctypes.c_double
+        self.lib.XC_GetFrameRate.argtypes = (ctypes.c_int32,)
 
-        lib.XC_GetWidth.restype = ctypes.c_ulong
-        lib.XC_GetWidth.argtypes = (ctypes.c_int32,)
+        self.lib.XC_LoadSettings.restype = ctypes.c_ulong
+        self.lib.XC_LoadSettings.argtypes = (ctypes.c_int32, ctypes.c_char_p)
+        self.lib.XC_LoadCalibration.restype = ctypes.c_ulong
+        self.lib.XC_LoadCalibration.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_ulong,
+        )
 
-        lib.XC_GetHeight.restype = ctypes.c_ulong
-        lib.XC_GetHeight.argtypes = (ctypes.c_int32,)
+        self.lib.XC_SetPropertyValue.restype = ctypes.c_ulong
+        self.lib.XC_SetPropertyValue.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        )
+        self.lib.XC_GetPropertyValue.restype = ctypes.c_ulong
+        self.lib.XC_GetPropertyValue.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+        )
 
-        lib.XC_GetFrameSize.restype = ctypes.c_ulong
-        lib.XC_GetFrameSize.argtypes = (ctypes.c_int32,)
+        self.lib.XC_SetPropertyValueL.restype = ctypes.c_ulong
+        self.lib.XC_SetPropertyValueL.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_char_p,
+        )
+        self.lib.XC_GetPropertyValueL.restype = ctypes.c_ulong
+        self.lib.XC_GetPropertyValueL.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_long),
+        )
 
-        lib.XC_GetFrameType.restype = ctypes.c_ulong
-        lib.XC_GetFrameType.argtypes = (ctypes.c_int32,)
-
-        lib.XC_GetBitSize.restype = ctypes.c_ubyte
-        lib.XC_GetBitSize.argtypes = (ctypes.c_int32,)
-
-        lib.XC_GetFrame.restype = ctypes.c_ulong
-        lib.XC_GetFrame.argtypes = (ctypes.c_int32, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_uint)
-
-        lib.XC_GetFrameCount.restype = ctypes.c_ulong
-        lib.XC_GetFrameCount.argtypes = (ctypes.c_int32,)
-
-        lib.XC_GetFrameRate.restype = ctypes.c_double
-        lib.XC_GetFrameRate.argtypes = (ctypes.c_int32,)
-
-        lib.XC_LoadSettings.restype = ctypes.c_ulong
-        lib.XC_LoadSettings.argtypes = (ctypes.c_int32, ctypes.c_char_p)
-
-        lib.XC_LoadCalibration.restype = ctypes.c_ulong
-        lib.XC_LoadCalibration.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_ulong)
-
-        lib.XC_SetPropertyValue.restype = ctypes.c_ulong
-        lib.XC_SetPropertyValue.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
-
-        lib.XC_SetPropertyValueL.restype = ctypes.c_ulong
-        lib.XC_SetPropertyValueL.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_long, ctypes.c_char_p)
-
-        lib.XC_SetPropertyValueF.restype = ctypes.c_ulong
-        lib.XC_SetPropertyValueF.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_double, ctypes.c_char_p)
-
-        lib.XC_SetPropertyValueE.restype = ctypes.c_ulong
-        lib.XC_SetPropertyValueE.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_char_p)
-
-        lib.XC_GetPropertyValue.restype = ctypes.c_ulong
-        lib.XC_GetPropertyValue.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int32)
-
-        lib.XC_GetPropertyValueL.restype = ctypes.c_ulong
-        lib.XC_GetPropertyValueL.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.POINTER(ctypes.c_long))
-
-        lib.XC_GetPropertyValueF.restype = ctypes.c_ulong
-        lib.XC_GetPropertyValueF.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.POINTER(ctypes.c_double))
-
-        lib.XC_GetPropertyValueE.restype = ctypes.c_ulong
-        lib.XC_GetPropertyValueE.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int32)
-
-        lib.XC_GetPropertyRangeF.restype = ctypes.c_ulong
-        lib.XC_GetPropertyRangeF.argtypes = (
+        self.lib.XC_SetPropertyValueF.restype = ctypes.c_ulong
+        self.lib.XC_SetPropertyValueF.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_double,
+            ctypes.c_char_p,
+        )
+        self.lib.XC_GetPropertyValueF.restype = ctypes.c_ulong
+        self.lib.XC_GetPropertyValueF.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_double),
+        )
+        self.lib.XC_GetPropertyRangeF.restype = ctypes.c_ulong
+        self.lib.XC_GetPropertyRangeF.argtypes = (
             ctypes.c_int32,
             ctypes.c_char_p,
             ctypes.POINTER(ctypes.c_double),
             ctypes.POINTER(ctypes.c_double),
         )
 
-        lib.XC_GetPropertyRangeL.restype = ctypes.c_ulong
-        lib.XC_GetPropertyRangeL.argtypes = (
+        self.lib.XC_FLT_Queue.restype = ctypes.c_ulong
+        self.lib.XC_FLT_Queue.argtypes = (
             ctypes.c_int32,
             ctypes.c_char_p,
-            ctypes.POINTER(ctypes.c_long),
-            ctypes.POINTER(ctypes.c_long),
+            ctypes.c_char_p,
         )
-
-        lib.XC_FLT_Queue.restype = ctypes.c_ulong
-        lib.XC_FLT_Queue.argtypes = (ctypes.c_int32, ctypes.c_char_p, ctypes.c_char_p)
 
     def error_to_string(self, code):
-        buf = ctypes.create_string_buffer(512)
-        try:
-            self.lib.XC_ErrorToString(int(code), buf, len(buf))
-            msg = buf.value.decode(errors="replace")
-        except Exception:
-            msg = ""
-        return msg or f"Xeneth error code {int(code)}"
+        message_buffer = ctypes.create_string_buffer(512)
+        self.lib.XC_ErrorToString(int(code), message_buffer, len(message_buffer))
+        message = message_buffer.value.decode(errors="replace")
+        return message or f"Xeneth error code {int(code)}"
 
-    def check_error(self, code, func):
+    def check_error(self, code, function_name):
         if int(code) != I_OK:
-            raise XenethError(code, func, self.error_to_string(code))
+            raise XenethError(code, function_name, self.error_to_string(code))
 
+    def open_camera(self, camera_name):
+        handle = self.lib.XC_OpenCamera(camera_name.encode("utf-8"), None, None)
+        if not handle or not self.lib.XC_IsInitialised(handle):
+            if handle:
+                self.lib.XC_CloseCamera(handle)
+            raise RuntimeError(f"Could not initialise Xeneth camera {camera_name!r}")
+        return handle
+
+    def close_camera(self, handle):
+        self.lib.XC_CloseCamera(handle)
+
+    def start_capture(self, handle):
+        self.check_error(self.lib.XC_StartCapture(handle), "XC_StartCapture")
+
+    def stop_capture(self, handle):
+        self.check_error(self.lib.XC_StopCapture(handle), "XC_StopCapture")
+
+    def get_width(self, handle):
+        return int(self.lib.XC_GetWidth(handle))
+
+    def get_height(self, handle):
+        return int(self.lib.XC_GetHeight(handle))
+
+    def get_frame_size(self, handle):
+        return int(self.lib.XC_GetFrameSize(handle))
+
+    def get_frame_type(self, handle):
+        return int(self.lib.XC_GetFrameType(handle))
+
+    def get_bit_size(self, handle):
+        return int(self.lib.XC_GetBitSize(handle))
+
+    def get_frame(self, handle, frame_buffer):
+        error = self.lib.XC_GetFrame(
+            handle,
+            FT_NATIVE,
+            XGF_BLOCKING | XGF_NO_CONVERSION,
+            frame_buffer.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_uint(frame_buffer.nbytes),
+        )
+        self.check_error(error, "XC_GetFrame")
+
+    def get_frame_count(self, handle):
+        return int(self.lib.XC_GetFrameCount(handle))
+
+    def get_frame_rate(self, handle):
+        return float(self.lib.XC_GetFrameRate(handle))
+
+    def get_property(self, handle, property_name):
+        value_buffer = ctypes.create_string_buffer(256)
+        error = self.lib.XC_GetPropertyValue(
+            handle,
+            property_name.encode("utf-8"),
+            value_buffer,
+            len(value_buffer),
+        )
+        self.check_error(error, f"XC_GetPropertyValue({property_name})")
+        return value_buffer.value.decode(errors="replace")
+
+    def set_property(self, handle, property_name, value, unit=""):
+        error = self.lib.XC_SetPropertyValue(
+            handle,
+            property_name.encode("utf-8"),
+            str(value).encode("utf-8"),
+            unit.encode("utf-8"),
+        )
+        self.check_error(error, f"XC_SetPropertyValue({property_name})")
+        return self.get_property(handle, property_name)
+
+    def get_property_long(self, handle, property_name):
+        value = ctypes.c_long()
+        error = self.lib.XC_GetPropertyValueL(
+            handle,
+            property_name.encode("utf-8"),
+            ctypes.byref(value),
+        )
+        self.check_error(error, f"XC_GetPropertyValueL({property_name})")
+        return int(value.value)
+
+    def set_property_long(self, handle, property_name, value, unit=""):
+        error = self.lib.XC_SetPropertyValueL(
+            handle,
+            property_name.encode("utf-8"),
+            int(value),
+            unit.encode("utf-8"),
+        )
+        self.check_error(error, f"XC_SetPropertyValueL({property_name})")
+        return self.get_property_long(handle, property_name)
+
+    def get_property_float(self, handle, property_name):
+        value = ctypes.c_double()
+        error = self.lib.XC_GetPropertyValueF(
+            handle,
+            property_name.encode("utf-8"),
+            ctypes.byref(value),
+        )
+        self.check_error(error, f"XC_GetPropertyValueF({property_name})")
+        return float(value.value)
+
+    def set_property_float(self, handle, property_name, value, unit=""):
+        error = self.lib.XC_SetPropertyValueF(
+            handle,
+            property_name.encode("utf-8"),
+            float(value),
+            unit.encode("utf-8"),
+        )
+        self.check_error(error, f"XC_SetPropertyValueF({property_name})")
+        return self.get_property_float(handle, property_name)
+
+    def get_property_range_float(self, handle, property_name):
+        minimum = ctypes.c_double()
+        maximum = ctypes.c_double()
+        error = self.lib.XC_GetPropertyRangeF(
+            handle,
+            property_name.encode("utf-8"),
+            ctypes.byref(minimum),
+            ctypes.byref(maximum),
+        )
+        self.check_error(error, f"XC_GetPropertyRangeF({property_name})")
+        return float(minimum.value), float(maximum.value)
+
+    def load_settings(self, handle, settings_path):
+        error = self.lib.XC_LoadSettings(
+            handle,
+            os.fspath(settings_path).encode("utf-8"),
+        )
+        self.check_error(error, "XC_LoadSettings")
+
+    def load_calibration(self, handle, calibration_path):
+        error = self.lib.XC_LoadCalibration(
+            handle,
+            os.fspath(calibration_path).encode("utf-8"),
+            XLC_START_SOFTWARE_CORRECTION,
+        )
+        self.check_error(error, "XC_LoadCalibration")
+        error = self.lib.XC_FLT_Queue(handle, b"SoftwareCorrection", b"0")
+        self.check_error(error, "XC_FLT_Queue(SoftwareCorrection)")

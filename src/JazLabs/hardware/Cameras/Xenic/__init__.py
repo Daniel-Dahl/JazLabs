@@ -1,4 +1,3 @@
-from .Bobcat import BobcatCameraObject
-from .Wildcat import WildcatCameraObject
-from .Xeva import XevaCameraObject
+from .Xeneth import CameraObject, XenethCameraObject
 
+__all__ = ["CameraObject", "XenethCameraObject"]

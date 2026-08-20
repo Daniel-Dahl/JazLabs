@@ -14,8 +14,9 @@ class SLMZMQBridgeServer:
     Local bridge for a remote SLMZMQServer.
 
     The bridge exposes the same command interface as the physical SLM server.
-    It forwards WriteToDisplay commands to the remote server and keeps a local
-    multiprocessing shared-memory viewer buffer from the remote display stream.
+    It forwards WriteToDisplay commands to the remote server and commits the
+    retained image to local display state only after the remote server confirms
+    that the write succeeded.
     """
 
     def __init__(
@@ -50,6 +51,7 @@ class SLMZMQBridgeServer:
         self.last_write_time_ns = 0
         self.last_display_success = False
         self.last_timing = {}
+        self.next_write_id = 1
 
     def startProcess(self):
         if self.Process is not None and self.Process.is_alive():
@@ -154,36 +156,20 @@ class SLMZMQBridgeServer:
         properties["last_timing"] = self.last_timing
         return properties
 
-    def _receive_latest_remote_display(self, remote_display_sub_socket):
-        latest_parts = None
-
-        while True:
-            try:
-                latest_parts = remote_display_sub_socket.recv_multipart(flags=zmq.NOBLOCK)
-            except zmq.Again:
-                return latest_parts
-
-    def _write_remote_display_to_local_shared_memory(self, header, image_bytes):
+    def _image_from_command(self, header, image_bytes):
         shape = tuple(header["shape"])
         dtype = np.dtype(header.get("dtype", "uint8"))
 
         if shape != self.viewer_shape:
             raise ValueError(
-                f"Remote SLM shape changed from {self.viewer_shape} to {shape}"
+                f"Expected image shape {self.viewer_shape}, got {shape}"
             )
         if dtype != self.viewer_dtype:
             raise ValueError(
-                f"Remote SLM dtype changed from {self.viewer_dtype} to {dtype}"
+                f"Expected image dtype {self.viewer_dtype}, got {dtype}"
             )
 
-        image = np.frombuffer(image_bytes, dtype=dtype).reshape(shape)
-        np.copyto(self.viewer_arr, image)
-        self.last_frame_id = int(header.get("frame_id", self.last_frame_id))
-        self.last_write_time_ns = int(
-            header.get("last_write_time_ns", time.time_ns())
-        )
-        self.last_display_success = bool(header.get("ok", False))
-        self.last_timing = dict(header.get("timing", {}))
+        return np.frombuffer(image_bytes, dtype=dtype).reshape(shape)
 
     def _publish_local_display(self, local_display_pub_socket, header):
         local_header = dict(header)
@@ -203,11 +189,66 @@ class SLMZMQBridgeServer:
             ]
         )
 
+    def _submit_display_write(
+        self,
+        remote_command_socket,
+        local_display_pub_socket,
+        header,
+        image_bytes,
+    ):
+        pending_image = self._image_from_command(header, image_bytes)
+
+        remote_header = dict(header)
+        if "write_id" not in remote_header:
+            remote_header["write_id"] = int(self.next_write_id)
+            self.next_write_id += 1
+
+        expected_write_id = int(remote_header["write_id"])
+        expected_client_id = remote_header.get("client_id", "unknown_client")
+        remote_reply = self._send_remote_image_command(
+            remote_command_socket,
+            remote_header,
+            image_bytes,
+        )
+        result = remote_reply.get("result", {})
+
+        acknowledged_write_id = int(result.get("write_id", -1))
+        acknowledged_client_id = remote_reply.get("client_id")
+        if acknowledged_write_id != expected_write_id:
+            raise RuntimeError(
+                "Remote SLM acknowledgement write_id "
+                f"{acknowledged_write_id} does not match {expected_write_id}"
+            )
+        if acknowledged_client_id != expected_client_id:
+            raise RuntimeError(
+                "Remote SLM acknowledgement client_id "
+                f"{acknowledged_client_id!r} does not match {expected_client_id!r}"
+            )
+
+        if not bool(result.get("display_ok", False)):
+            self.last_display_success = False
+            return remote_reply
+
+        np.copyto(self.viewer_arr, pending_image)
+        self.last_frame_id = int(result["frame_id"])
+        self.last_write_time_ns = int(
+            result.get("last_write_time_ns", time.time_ns())
+        )
+        self.last_display_success = True
+        self.last_timing = dict(result.get("timing", {}))
+
+        confirmed_header = {
+            "client_id": expected_client_id,
+            "write_id": expected_write_id,
+            "channelIdx": int(remote_header.get("channelIdx", 0)),
+        }
+        self._publish_local_display(local_display_pub_socket, confirmed_header)
+        return remote_reply
+
     def run_forever(self):
         context = None
         local_command_socket = None
         local_display_pub_socket = None
-        remote_display_sub_socket = None
         remote_command_socket = None
 
         try:
@@ -231,22 +272,13 @@ class SLMZMQBridgeServer:
                 f"tcp://{self.local_host}:{self.local_display_pub_port}"
             )
 
-            remote_display_sub_socket = context.socket(zmq.SUB)
-            remote_display_sub_socket.setsockopt(zmq.RCVHWM, 1)
-            remote_display_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.display_topic)
-            remote_display_sub_socket.connect(
-                f"tcp://{self.remote_host}:{self.remote_display_pub_port}"
-            )
-
             poller = zmq.Poller()
             poller.register(local_command_socket, zmq.POLLIN)
-            poller.register(remote_display_sub_socket, zmq.POLLIN)
 
             print("SLM ZMQ bridge server running.")
             print(f"Local command socket: tcp://{self.local_host}:{self.local_command_port}")
             print(f"Local display PUB socket: tcp://{self.local_host}:{self.local_display_pub_port}")
             print(f"Remote command socket: tcp://{self.remote_host}:{self.remote_command_port}")
-            print(f"Remote display SUB socket: tcp://{self.remote_host}:{self.remote_display_pub_port}")
             print(f"Display topic: {self.display_topic}")
             print(f"Local viewer SHM name: {self.viewer_shm.name}")
             print(f"Viewer shape: {self.viewer_shape}")
@@ -255,32 +287,6 @@ class SLMZMQBridgeServer:
 
             while running:
                 events = dict(poller.poll(timeout=1000))
-
-                if remote_display_sub_socket in events:
-                    try:
-                        latest_parts = self._receive_latest_remote_display(
-                            remote_display_sub_socket
-                        )
-                        if latest_parts is not None:
-                            if len(latest_parts) != 3:
-                                raise ValueError(
-                                    "Remote SLM display must be [topic, header, image]"
-                                )
-                            _, header_bytes, image_bytes = latest_parts
-                            header = json.loads(header_bytes.decode("utf-8"))
-                            if header.get("type") != "slm_display":
-                                continue
-                            self._write_remote_display_to_local_shared_memory(
-                                header,
-                                image_bytes,
-                            )
-                            self._publish_local_display(local_display_pub_socket, header)
-
-                    except Exception as exc:
-                        print("SLM bridge display receive error:")
-                        print(f"{type(exc).__name__}: {exc}")
-                        print(traceback.format_exc())
-                        time.sleep(0.01)
 
                 if local_command_socket in events:
                     msg = {}
@@ -317,6 +323,19 @@ class SLMZMQBridgeServer:
                         elif cmd == "shutdown_bridge":
                             running = False
                             reply = {"ok": True, "result": None, "client_id": client_id}
+
+                        elif len(parts) == 2 and cmd == "write_to_display":
+                            remote_reply = self._submit_display_write(
+                                remote_command_socket,
+                                local_display_pub_socket,
+                                msg,
+                                parts[1],
+                            )
+                            reply = {
+                                "ok": True,
+                                "result": remote_reply.get("result", None),
+                                "client_id": client_id,
+                            }
 
                         elif len(parts) == 2:
                             remote_reply = self._send_remote_image_command(
@@ -369,7 +388,6 @@ class SLMZMQBridgeServer:
             for socket in (
                 local_command_socket,
                 local_display_pub_socket,
-                remote_display_sub_socket,
                 remote_command_socket,
             ):
                 try:
