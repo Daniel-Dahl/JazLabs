@@ -136,8 +136,13 @@ class FakeXenethLibrary:
 
     def get_property_range_long(self, handle, property_name):
         ranges = {
-            "WoiEX(0)": (0, 3),
-            "WoiEY(0)": (0, 2),
+            # End-coordinate minima describe the smallest supported ROI, not
+            # the detector origin. They must not be subtracted from the maxima
+            # when determining the full sensor dimensions.
+            "WoiSX(0)": (0, 2),
+            "WoiEX(0)": (1, 3),
+            "WoiSY(0)": (0, 1),
+            "WoiEY(0)": (1, 2),
         }
         return ranges[property_name]
 

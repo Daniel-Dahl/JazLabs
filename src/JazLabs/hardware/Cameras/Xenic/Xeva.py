@@ -188,19 +188,31 @@ class CameraObject:
             self.offset_y = 0
             self.width = self.xeneth.get_width(self.handle)
             self.height = self.xeneth.get_height(self.handle)
+            self.sensor_origin_x = 0
+            self.sensor_origin_y = 0
             self.sensor_width = self.width
             self.sensor_height = self.height
             try:
-                minimum_x, maximum_x = self.xeneth.get_property_range_long(
+                minimum_start_x, _ = self.xeneth.get_property_range_long(
+                    self.handle,
+                    "WoiSX(0)",
+                )
+                _, maximum_end_x = self.xeneth.get_property_range_long(
                     self.handle,
                     "WoiEX(0)",
                 )
-                minimum_y, maximum_y = self.xeneth.get_property_range_long(
+                minimum_start_y, _ = self.xeneth.get_property_range_long(
+                    self.handle,
+                    "WoiSY(0)",
+                )
+                _, maximum_end_y = self.xeneth.get_property_range_long(
                     self.handle,
                     "WoiEY(0)",
                 )
-                self.sensor_width = maximum_x - minimum_x + 1
-                self.sensor_height = maximum_y - minimum_y + 1
+                self.sensor_origin_x = minimum_start_x
+                self.sensor_origin_y = minimum_start_y
+                self.sensor_width = maximum_end_x - minimum_start_x + 1
+                self.sensor_height = maximum_end_y - minimum_start_y + 1
             except (AttributeError, XenethError):
                 # Older Xeneth runtimes may not report WOI ranges. At startup,
                 # XC_GetWidth/Height still provide the best available limits.
@@ -488,8 +500,8 @@ class CameraObject:
             self.width = self.xeneth.get_width(self.handle)
             self.height = self.xeneth.get_height(self.handle)
         else:
-            self.offset_x = start_x
-            self.offset_y = start_y
+            self.offset_x = start_x - self.sensor_origin_x
+            self.offset_y = start_y - self.sensor_origin_y
             self.width = end_x - start_x + 1
             self.height = end_y - start_y + 1
 
@@ -528,27 +540,59 @@ class CameraObject:
         height = min(max(int(height), 1), sensor_height)
         offset_x = min(max(int(offset_x), 0), sensor_width - width)
         offset_y = min(max(int(offset_y), 0), sensor_height - height)
+        target_start_x = self.sensor_origin_x + offset_x
+        target_start_y = self.sensor_origin_y + offset_y
+        target_end_x = target_start_x + width - 1
+        target_end_y = target_start_y + height - 1
+        sensor_end_x = self.sensor_origin_x + sensor_width - 1
+        sensor_end_y = self.sensor_origin_y + sensor_height - 1
 
         was_capturing = self._capturing
         if was_capturing:
             self.StopAcquisition()
         try:
-            self.xeneth.set_property_long(self.handle, "WoiSX(0)", offset_x)
+            # First expand both axes to their complete ranges. This keeps every
+            # intermediate pair of start/end coordinates valid when moving or
+            # enlarging an existing WOI. Then reduce the end coordinate before
+            # moving the start coordinate to the requested position.
             self.xeneth.set_property_long(
-                self.handle,
-                "WoiEX(0)",
-                offset_x + width - 1,
+                self.handle, "WoiSX(0)", self.sensor_origin_x
             )
-            self.xeneth.set_property_long(self.handle, "WoiSY(0)", offset_y)
             self.xeneth.set_property_long(
-                self.handle,
-                "WoiEY(0)",
-                offset_y + height - 1,
+                self.handle, "WoiEX(0)", sensor_end_x
             )
+            self.xeneth.set_property_long(
+                self.handle, "WoiSY(0)", self.sensor_origin_y
+            )
+            self.xeneth.set_property_long(
+                self.handle, "WoiEY(0)", sensor_end_y
+            )
+
+            self.xeneth.set_property_long(
+                self.handle, "WoiEX(0)", target_end_x
+            )
+            self.xeneth.set_property_long(
+                self.handle, "WoiSX(0)", target_start_x
+            )
+            self.xeneth.set_property_long(
+                self.handle, "WoiEY(0)", target_end_y
+            )
+            self.xeneth.set_property_long(
+                self.handle, "WoiSY(0)", target_start_y
+            )
+            self.ResetBuffer()
         finally:
             if was_capturing:
                 self.StartAcquisition()
-        return self.GetROI()
+
+        applied_roi = self.GetROI()
+        if not enable and applied_roi != (0, 0, sensor_width, sensor_height):
+            raise RuntimeError(
+                "Xeneth did not restore the full XEVA frame. Requested "
+                f"(0, 0, {sensor_width}, {sensor_height}), but the camera "
+                f"reported {applied_roi}"
+            )
+        return applied_roi
 
     def GetTriggerMode(self):
         if self._pseudo_software_trigger_enabled:
