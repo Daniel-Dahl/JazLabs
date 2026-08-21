@@ -1,3 +1,3 @@
-from .Xeneth import CameraObject, XenethCameraObject
+from .Xeva import CameraObject, XevaCameraObject
 
-__all__ = ["CameraObject", "XenethCameraObject"]
+__all__ = ["CameraObject", "XevaCameraObject"]

@@ -1,4 +1,4 @@
-"""JazLabs camera object for a camera controlled by Xeneth."""
+"""JazLabs camera object for Xenics XEVA cameras controlled by Xeneth."""
 
 import atexit
 import os
@@ -26,7 +26,10 @@ def _shutdown_camera(camera_reference):
 
 
 class CameraObject:
-    """A direct, single-camera wrapper with the common JazLabs camera API."""
+    """Camera object for the XEVA USB and Camera Link camera variants."""
+
+    XEVA_USB_PRODUCT_ID = 0x810A
+    XEVA_CAMERA_LINK_PRODUCT_ID = 0x8110
 
     def __init__(
         self,
@@ -36,7 +39,7 @@ class CameraObject:
         dll_path=None,
         verbose=False,
     ):
-        self.CameraType = "Xeneth"
+        self.CameraType = "Xeva"
         self.CalibrationFile = CalibrationFile
         self.PixelSize = PixelSize
         self.verbose = bool(verbose)
@@ -46,13 +49,19 @@ class CameraObject:
         self.xeneth = XenethLibrary(dll_path=dll_path)
         self.handle = 0
 
-        discovered_devices = self.xeneth.enumerate_devices()
+        discovered_devices = [
+            device
+            for device in self.xeneth.enumerate_devices()
+            if device["name"].strip().upper().startswith("XEVA")
+            or device["pid"]
+            in (self.XEVA_USB_PRODUCT_ID, self.XEVA_CAMERA_LINK_PRODUCT_ID)
+        ]
         requested_serial_number = (
             "" if CameraSerialNumber is None else str(CameraSerialNumber).strip()
         )
 
         if not requested_serial_number:
-            print("Available Xeneth cameras:")
+            print("Available XEVA cameras:")
             if not discovered_devices:
                 print("  none detected")
             for device_index, device in enumerate(discovered_devices):
@@ -63,7 +72,8 @@ class CameraObject:
                 }.get(device["state"], f"unknown ({device['state']})")
                 print(
                     f"  {device_index}: {device['name']} | serial "
-                    f"{device['serial']} | {device['url']} | {state_name}"
+                    f"{device['serial']} | PID 0x{device['pid']:04X} | "
+                    f"{device['url']} | {state_name}"
                 )
             raise ValueError(
                 "CameraSerialNumber must be provided; choose one of the "
@@ -77,12 +87,12 @@ class CameraObject:
                 numeric_serial_number = int(requested_serial_number, 10)
         except ValueError as error:
             raise ValueError(
-                "Xeneth camera serial numbers must be decimal integers or "
+                "XEVA camera serial numbers must be decimal integers or "
                 "hexadecimal integers beginning with 0x"
             ) from error
 
         if not discovered_devices:
-            raise RuntimeError("No Xeneth cameras detected")
+            raise RuntimeError("No XEVA cameras detected")
 
         selected_device = None
         for device_index, device in enumerate(discovered_devices):
@@ -104,7 +114,7 @@ class CameraObject:
                 str(device["serial"]) for device in discovered_devices
             )
             raise ValueError(
-                "Xeneth camera with serial number "
+                "XEVA camera with serial number "
                 f"{requested_serial_number!r} was not found. Discovered "
                 f"serial numbers: {discovered_serial_numbers}"
             )
@@ -118,7 +128,7 @@ class CameraObject:
                 f"in unknown state {selected_device['state']}",
             )
             raise RuntimeError(
-                f"Xeneth camera {selected_device['serial']} is {state_name}"
+                f"XEVA camera {selected_device['serial']} is {state_name}"
             )
 
         self.CameraSerialNumber = str(selected_device["serial"])
@@ -133,7 +143,7 @@ class CameraObject:
             connected_serial_number = self.GetSerialNumber()
             if connected_serial_number != str(numeric_serial_number):
                 raise RuntimeError(
-                    "Xeneth opened a different camera than the selected "
+                    "Xeneth opened a different XEVA camera than the selected "
                     f"device: requested {numeric_serial_number}, connected "
                     f"{connected_serial_number}"
                 )
@@ -141,10 +151,28 @@ class CameraObject:
                 self.handle,
                 "_CAM_PID",
             )
+            if self.CameraProductID not in (
+                self.XEVA_USB_PRODUCT_ID,
+                self.XEVA_CAMERA_LINK_PRODUCT_ID,
+            ):
+                raise ValueError(
+                    f"{self.CameraModel!r} with PID "
+                    f"0x{self.CameraProductID:04X} is not a supported XEVA "
+                    "USB or XEVA Camera Link camera"
+                )
+            if not self.CameraModel.strip().upper().startswith("XEVA"):
+                raise ValueError(
+                    f"Discovered camera {self.CameraModel!r} is not a XEVA"
+                )
+
+            if self.CameraProductID == self.XEVA_USB_PRODUCT_ID:
+                self.XevaInterface = "USB"
+            else:
+                self.XevaInterface = "CameraLink"
 
             if self.verbose:
                 print(
-                    "Using Xeneth camera serial number "
+                    f"Using XEVA-{self.XevaInterface} camera serial number "
                     f"{self.CameraSerialNumber} at {self.CameraName}"
                 )
 
@@ -166,6 +194,10 @@ class CameraObject:
             self.frame_id = None
             self.grab_timeout_ms = None
             self.frame_id_updates_asynchronously = False
+            self.software_trigger_is_emulated = True
+            self._pseudo_software_trigger_enabled = False
+            self._pending_software_trigger_frame = None
+            self._pending_software_trigger_frame_id = None
             self.ExposureTime = self.GetExposureTime()
             self.ExposureTimeMin, self.ExposureTimeMax = (
                 self.xeneth.get_property_range_float(
@@ -242,6 +274,8 @@ class CameraObject:
 
     def ResetBuffer(self):
         self.frame_id = None
+        self._pending_software_trigger_frame = None
+        self._pending_software_trigger_frame_id = None
 
     def DrainImageBuffer(self, max_frames=64, timeout_ms=1):
         self.ResetBuffer()
@@ -270,6 +304,23 @@ class CameraObject:
         return self.frame_id
 
     def GetFrame(self, timeout_ms=None):
+        """Return a continuous frame or consume the pending pseudo-triggered frame."""
+        if self._pseudo_software_trigger_enabled:
+            if self._pending_software_trigger_frame is None:
+                raise RuntimeError(
+                    "No pseudo-software-triggered XEVA frame is pending; "
+                    "call FireSoftwareTrigger() before GetFrame()"
+                )
+
+            triggered_frame = self._pending_software_trigger_frame
+            self.frame_id = self._pending_software_trigger_frame_id
+            self._pending_software_trigger_frame = None
+            self._pending_software_trigger_frame_id = None
+            return triggered_frame.copy()
+
+        return self._capture_frame_from_camera()
+
+    def _capture_frame_from_camera(self):
         if not self._capturing:
             self.StartAcquisition()
 
@@ -356,13 +407,10 @@ class CameraObject:
         return self.fps
 
     def SetFPS(self, fps):
-        self.fps = self.xeneth.set_property_float(
-            self.handle,
-            "FrameRate",
-            fps,
-            "Hz",
+        raise NotImplementedError(
+            "XEVA cameras expose Framerate as a camera-specific enumeration; "
+            "use IntegrationTime to control the acquisition rate"
         )
-        return self.fps
 
     def GetMaxMinFPS_ExposureTime(self):
         self.ExposureTimeMin, self.ExposureTimeMax = (
@@ -371,16 +419,8 @@ class CameraObject:
                 "IntegrationTime",
             )
         )
-        try:
-            self.FPSMin, self.FPSMax = (
-                self.xeneth.get_property_range_float(
-                    self.handle,
-                    "FrameRate",
-                )
-            )
-        except XenethError:
-            self.FPSMin = None
-            self.FPSMax = None
+        self.FPSMin = None
+        self.FPSMax = None
         return (
             self.ExposureTimeMin,
             self.ExposureTimeMax,
@@ -491,34 +531,43 @@ class CameraObject:
         return self.GetROI()
 
     def GetTriggerMode(self):
-        trigger_enabled = self.xeneth.get_property_long(
-            self.handle,
-            "TriggerInEnable",
-        )
+        if self._pseudo_software_trigger_enabled:
+            self.trigger_mode = "On"
+            self.trigger_source = "Software"
+            return self.trigger_mode, self.trigger_source
+
+        if self.CameraProductID == self.XEVA_USB_PRODUCT_ID:
+            self.trigger_mode = "Off"
+            self.trigger_source = "FreeRun"
+            return self.trigger_mode, self.trigger_source
+
         trigger_mode = self.xeneth.get_property_long(
             self.handle,
-            "TriggerInMode",
+            "TriggerMode",
         )
-
         if trigger_mode == 0:
             self.trigger_mode = "Off"
             self.trigger_source = "FreeRun"
-        elif trigger_enabled:
-            self.trigger_mode = "On"
-            self.trigger_source = "line 0"
         else:
             self.trigger_mode = "On"
-            self.trigger_source = "Software"
+            self.trigger_source = "Hardware"
         return self.trigger_mode, self.trigger_source
 
     def SetContinuousMode(self):
+        self._pseudo_software_trigger_enabled = False
+        self._pending_software_trigger_frame = None
+        self._pending_software_trigger_frame_id = None
+
         was_capturing = self._capturing
         if was_capturing:
             self.StopAcquisition()
         try:
-            self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
-            self.xeneth.set_property_long(self.handle, "TriggerOutEnable", 0)
-            self.xeneth.set_property_long(self.handle, "TriggerInMode", 0)
+            if self.CameraProductID == self.XEVA_CAMERA_LINK_PRODUCT_ID:
+                self.xeneth.set_property_long(
+                    self.handle,
+                    "TriggerMode",
+                    0,
+                )
         finally:
             if was_capturing:
                 self.StartAcquisition()
@@ -528,25 +577,17 @@ class CameraObject:
         return self.GetTriggerMode()
 
     def SetSoftwareTriggerMode(self):
-        was_capturing = self._capturing
-        if was_capturing:
-            self.StopAcquisition()
-        try:
-            self.xeneth.set_property_long(self.handle, "TriggerInEnable", 0)
-            self.xeneth.set_property_long(self.handle, "TriggerOutEnable", 0)
-            self.xeneth.set_property_long(self.handle, "TriggerInMode", 1)
-            self.xeneth.set_property_long(self.handle, "TriggerInTiming", 0)
-        finally:
-            if was_capturing:
-                self.StartAcquisition()
-
-        self.DrainImageBuffer()
+        """Arm host-side pseudo triggering while the XEVA remains free-running."""
+        self.SetContinuousMode()
+        self.DrainImageBuffer(max_frames=4096)
+        self._pseudo_software_trigger_enabled = True
         self.trigger_mode = "On"
         self.trigger_source = "Software"
+        self.acquisition_mode = "Continuous"
         return self.GetTriggerMode()
 
     def IsSoftwareTriggerReady(self):
-        return self._capturing and self.GetTriggerMode() == ("On", "Software")
+        return self._pseudo_software_trigger_enabled and self._capturing
 
     def WaitForSoftwareTriggerReady(
         self,
@@ -555,7 +596,10 @@ class CameraObject:
     ):
         if self.IsSoftwareTriggerReady():
             return True
-        raise RuntimeError("Xeneth camera is not armed for software triggering")
+        raise RuntimeError(
+            "XEVA pseudo software-trigger mode is not armed; call "
+            "SetSoftwareTriggerMode() first"
+        )
 
     def FireSoftwareTrigger(
         self,
@@ -563,36 +607,51 @@ class CameraObject:
         ready_timeout_ms=1000,
         drain_stale_frames=True,
     ):
+        """Drain stale frames, capture the next new frame, and hold it for GetFrame."""
         if wait_ready:
             self.WaitForSoftwareTriggerReady(timeout_ms=ready_timeout_ms)
         elif not self.IsSoftwareTriggerReady():
-            raise RuntimeError("Xeneth camera is not armed for software triggering")
-        if drain_stale_frames:
-            self.DrainImageBuffer()
+            raise RuntimeError(
+                "XEVA pseudo software-trigger mode is not armed; call "
+                "SetSoftwareTriggerMode() first"
+            )
 
-        self.xeneth.set_property_long(
-            self.handle,
-            "SoftwareTrigger",
-            1,
-        )
+        if drain_stale_frames:
+            self.DrainImageBuffer(max_frames=4096)
+
+        triggered_frame = self._capture_frame_from_camera()
+        self._pending_software_trigger_frame = triggered_frame
+        self._pending_software_trigger_frame_id = self.frame_id
         return 0
 
     def SetHardwareTriggerMode(self, RiseEdgeOrFallEdge=1, lineNumber=0):
-        if RiseEdgeOrFallEdge not in (-1, 1):
-            raise ValueError("RiseEdgeOrFallEdge must be 1 or -1")
+        self._pseudo_software_trigger_enabled = False
+        self._pending_software_trigger_frame = None
+        self._pending_software_trigger_frame_id = None
+
+        if self.CameraProductID == self.XEVA_USB_PRODUCT_ID:
+            raise NotImplementedError(
+                f"XEVA-USB serial {self.CameraSerialNumber} does not expose "
+                "hardware-trigger controls through Xeneth"
+            )
+        if RiseEdgeOrFallEdge != 1:
+            raise NotImplementedError(
+                "XEVA Camera Link does not expose trigger-edge polarity in "
+                "the supplied Xeneth property set"
+            )
         if int(lineNumber) != 0:
             raise ValueError("Xeneth exposes hardware trigger input line 0")
 
-        trigger_polarity = 1 if RiseEdgeOrFallEdge == 1 else 0
-        self.xeneth.set_property_long(
-            self.handle,
-            "TriggerInPolarity",
-            trigger_polarity,
-        )
-        self.xeneth.set_property_long(self.handle, "TriggerInMode", 1)
-        self.xeneth.set_property_long(self.handle, "TriggerInEnable", 1)
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self.xeneth.set_property_long(self.handle, "TriggerMode", 1)
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
         self.trigger_polarity = RiseEdgeOrFallEdge
         return self.GetTriggerMode()
 
 
-XenethCameraObject = CameraObject
+XevaCameraObject = CameraObject

@@ -107,8 +107,8 @@ class CameraZMQServer:
             import JazLabs.hardware.Cameras.QImag.QImagCameraObj as cameraobj
         elif self.CameraType == "Allied Vision":
             import JazLabs.hardware.Cameras.AlliedVision.AlliedVisionCameraObj as cameraobj
-        elif self.CameraType == "Xeneth":
-            import JazLabs.hardware.Cameras.Xenic.Xeneth as cameraobj
+        elif self.CameraType == "Xeva":
+            import JazLabs.hardware.Cameras.Xenic.Xeva as cameraobj
         else:
             raise ValueError(f"Unknown CameraType: {self.CameraType}")
 
