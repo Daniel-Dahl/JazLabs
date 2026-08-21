@@ -38,6 +38,8 @@ def make_bridge():
     bridge.viewer_shape = (2, 3)
     bridge.viewer_dtype = np.dtype(np.uint8)
     bridge.viewer_arr = np.zeros(bridge.viewer_shape, dtype=bridge.viewer_dtype)
+    bridge.viewer_metadata = np.zeros(4, dtype=np.int64)
+    bridge.viewer_metadata[3] = 3
     return bridge
 
 
@@ -82,6 +84,7 @@ def test_bridge_commits_retained_image_after_matching_success_acknowledgement():
     np.testing.assert_array_equal(bridge.viewer_arr, image)
     assert bridge.last_frame_id == 12
     assert bridge.last_display_success is True
+    assert bridge.viewer_metadata.tolist() == [2, 12, 0, 3]
     assert len(local_display_socket.messages) == 1
     topic, header_bytes, published_image = local_display_socket.messages[0]
     assert topic == b"slm.display"
@@ -128,3 +131,40 @@ def test_bridge_rejects_mismatched_write_acknowledgement_without_committing():
 
     np.testing.assert_array_equal(bridge.viewer_arr, np.full((2, 3), 4))
     assert local_display_socket.messages == []
+
+
+def test_bridge_keeps_viewer_image_two_dimensional_with_aligned_metadata(monkeypatch):
+    class FakeViewerSharedMemory:
+        name = "test_bridge_viewer"
+
+        def __init__(self, create, size):
+            self.buf = bytearray(size)
+
+        def close(self):
+            pass
+
+        def unlink(self):
+            pass
+
+    monkeypatch.setattr(
+        "JazLabs.hardware.SLM.SLMStack.SLM_BridgeServer.shared_memory.SharedMemory",
+        FakeViewerSharedMemory,
+    )
+    bridge = SLMZMQBridgeServer()
+    try:
+        bridge._create_local_viewer_shared_memory(
+            {
+                "input_expected_shape": [2, 3],
+                "number_of_channels": 3,
+            }
+        )
+        properties = bridge._get_local_properties()
+
+        assert bridge.viewer_arr.shape == (2, 3)
+        assert properties["viewer_shape"] == [2, 3]
+        assert properties["viewer_metadata_offset"] % 8 == 0
+        assert bridge.viewer_metadata.tolist() == [0, 0, 0, 3]
+    finally:
+        if bridge.viewer_shm is not None:
+            bridge.viewer_shm.close()
+            bridge.viewer_shm.unlink()

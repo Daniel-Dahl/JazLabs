@@ -9,6 +9,13 @@ import numpy as np
 import zmq
 
 
+VIEWER_METADATA_LENGTH = 4
+VIEWER_SEQUENCE_INDEX = 0
+VIEWER_FRAME_ID_INDEX = 1
+VIEWER_CHANNEL_INDEX = 2
+VIEWER_CHANNEL_COUNT_INDEX = 3
+
+
 class SLMZMQServer:
     def __init__(
         self,
@@ -111,6 +118,7 @@ class SLMZMQServer:
         display_pub_socket = None
         viewer_shm = None
         viewer_arr = None
+        viewer_metadata = None
         slmOBJ = None
 
         try:
@@ -133,10 +141,40 @@ class SLMZMQServer:
 
             image_dtype = np.dtype(np.uint8)
             image_nbytes = int(np.prod(image_shape) * image_dtype.itemsize)
+            metadata_itemsize = np.dtype(np.int64).itemsize
+            metadata_offset = (
+                (image_nbytes + metadata_itemsize - 1) // metadata_itemsize
+            ) * metadata_itemsize
+            metadata_nbytes = VIEWER_METADATA_LENGTH * metadata_itemsize
 
-            viewer_shm = shared_memory.SharedMemory(create=True, size=image_nbytes)
+            viewer_shm = shared_memory.SharedMemory(
+                create=True,
+                size=metadata_offset + metadata_nbytes,
+            )
             viewer_arr = np.ndarray(image_shape, dtype=image_dtype, buffer=viewer_shm.buf)
             viewer_arr.fill(0)
+            viewer_metadata = np.ndarray(
+                (VIEWER_METADATA_LENGTH,),
+                dtype=np.int64,
+                buffer=viewer_shm.buf,
+                offset=metadata_offset,
+            )
+            viewer_metadata.fill(0)
+            viewer_metadata[VIEWER_CHANNEL_COUNT_INDEX] = number_of_channels
+
+            confirmed_channel_images = [
+                np.zeros(image_shape, dtype=image_dtype)
+                for _ in range(number_of_channels)
+            ]
+            confirmed_channel_metadata = [
+                {
+                    "confirmed": False,
+                    "frame_id": 0,
+                    "write_id": None,
+                    "last_write_time_ns": 0,
+                }
+                for _ in range(number_of_channels)
+            ]
 
             active_controller = None
             output_pulse_image_flip = self._int_from_ctypes_or_int(
@@ -173,6 +211,8 @@ class SLMZMQServer:
                     "viewer_shared_memory_name": viewer_shm.name,
                     "viewer_shape": list(image_shape),
                     "viewer_dtype": str(image_dtype),
+                    "viewer_metadata_offset": int(metadata_offset),
+                    "viewer_metadata_length": VIEWER_METADATA_LENGTH,
                     "command_port": self.command_port,
                     "display_pub_port": self.display_pub_port,
                     "display_topic": self.display_topic,
@@ -189,6 +229,7 @@ class SLMZMQServer:
             while running:
                 parts = command_socket.recv_multipart()
                 msg = {}
+                reply_parts = None
 
                 try:
                     if len(parts) == 1:
@@ -258,6 +299,32 @@ class SLMZMQServer:
                         result = float(slmOBJ.GetSLMTemperature())
                         reply = {"ok": True, "result": result, "client_id": client_id}
 
+                    elif cmd == "get_confirmed_display_state":
+                        channel_headers = []
+                        reply_parts = []
+                        for channel_index in range(number_of_channels):
+                            channel_header = dict(
+                                confirmed_channel_metadata[channel_index]
+                            )
+                            channel_header["channelIdx"] = channel_index
+                            channel_header["shape"] = list(image_shape)
+                            channel_header["dtype"] = str(image_dtype)
+                            channel_header["part_index"] = channel_index + 1
+                            channel_headers.append(channel_header)
+                            reply_parts.append(
+                                memoryview(confirmed_channel_images[channel_index])
+                            )
+
+                        reply = {
+                            "ok": True,
+                            "result": {"channels": channel_headers},
+                            "client_id": client_id,
+                        }
+                        reply_parts.insert(
+                            0,
+                            json.dumps(reply).encode("utf-8"),
+                        )
+
                     elif cmd == "shutdown":
                         running = False
                         reply = {"ok": True, "result": "shutdown_ack", "client_id": client_id}
@@ -305,7 +372,21 @@ class SLMZMQServer:
                         }
 
                         if display_ok:
-                            np.copyto(viewer_arr, image)
+                            viewer_metadata[VIEWER_SEQUENCE_INDEX] += 1
+                            try:
+                                np.copyto(viewer_arr, image)
+                                viewer_metadata[VIEWER_FRAME_ID_INDEX] = last_frame_id
+                                viewer_metadata[VIEWER_CHANNEL_INDEX] = channelIdx
+                            finally:
+                                viewer_metadata[VIEWER_SEQUENCE_INDEX] += 1
+
+                            np.copyto(confirmed_channel_images[channelIdx], image)
+                            confirmed_channel_metadata[channelIdx] = {
+                                "confirmed": True,
+                                "frame_id": int(last_frame_id),
+                                "write_id": int(write_id),
+                                "last_write_time_ns": int(last_write_time_ns),
+                            }
 
                         publish_header = {
                             "type": "slm_display_ack",
@@ -344,6 +425,7 @@ class SLMZMQServer:
                         }
 
                 except Exception as exc:
+                    reply_parts = None
                     reply = {
                         "ok": False,
                         "error": f"{type(exc).__name__}: {exc}",
@@ -351,7 +433,10 @@ class SLMZMQServer:
                         "client_id": msg.get("client_id", "unknown_client"),
                     }
 
-                command_socket.send_json(reply)
+                if reply_parts is not None:
+                    command_socket.send_multipart(reply_parts)
+                else:
+                    command_socket.send_json(reply)
 
         finally:
             print("Closing SLM ZMQ server...")

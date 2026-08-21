@@ -183,6 +183,7 @@ def SLMScreenDisplayThread(queue, terminateThreadEvent,Doorbell,UpdateDisplay, s
     DisplayBuffer_arr_shm = np.ndarray((monitor_height, monitor_width), dtype=np.uint8, buffer=DisplayBuffer.buf)
 
     DisplayBuffer_arr_Full = np.ndarray((monitor_height, monitor_width, 3), dtype=np.uint8)
+    DisplayBuffer_arr_Full.fill(0)
 
     opencvWindowName = "SLMFullScreen"
     # Create a window that we can position manually

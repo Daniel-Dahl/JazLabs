@@ -89,3 +89,46 @@ def test_wait_for_display_notification_accepts_metadata_only_server_ack():
 
     assert notification["write_id"] == 4
     assert notification["frame_id"] == 9
+
+
+def test_get_confirmed_display_state_decodes_channel_images():
+    class SnapshotSocket:
+        def __init__(self):
+            self.request = None
+
+        def send_json(self, request):
+            self.request = request
+
+        def recv_multipart(self):
+            header = {
+                "ok": True,
+                "client_id": "test-client",
+                "result": {
+                    "channels": [
+                        {
+                            "confirmed": True,
+                            "channelIdx": 2,
+                            "frame_id": 5,
+                            "shape": [2, 3],
+                            "dtype": "uint8",
+                            "part_index": 1,
+                        }
+                    ]
+                },
+            }
+            image = np.arange(6, dtype=np.uint8).reshape(2, 3)
+            return [json.dumps(header).encode("utf-8"), image.tobytes()]
+
+    client = make_client(image_shape=(2, 3), number_of_channels=3)
+    client.client_id = "test-client"
+    client.command_socket = SnapshotSocket()
+
+    channel_states = client.GetConfirmedDisplayState()
+
+    assert client.command_socket.request["cmd"] == "get_confirmed_display_state"
+    assert channel_states[0]["channelIdx"] == 2
+    assert channel_states[0]["frame_id"] == 5
+    np.testing.assert_array_equal(
+        channel_states[0]["image"],
+        np.arange(6, dtype=np.uint8).reshape(2, 3),
+    )

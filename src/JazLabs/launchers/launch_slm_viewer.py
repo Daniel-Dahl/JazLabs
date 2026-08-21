@@ -73,6 +73,12 @@ def start_slm_viewer(
         window_name=viewer["window_name"],
         zoom=viewer["zoom"],
         fps=viewer["fps"],
+        metadata_offset=props.get("viewer_metadata_offset"),
+        metadata_length=props.get("viewer_metadata_length", 0),
+        snapshot_host=viewer["host"],
+        snapshot_command_port=viewer["command_port"],
+        snapshot_display_pub_port=viewer["display_pub_port"],
+        snapshot_timeout_ms=viewer["timeout_ms"],
     )
     process.startProcess()
     return [("slm viewer", process)]

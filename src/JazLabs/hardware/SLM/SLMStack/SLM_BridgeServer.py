@@ -9,6 +9,13 @@ import numpy as np
 import zmq
 
 
+VIEWER_METADATA_LENGTH = 4
+VIEWER_SEQUENCE_INDEX = 0
+VIEWER_FRAME_ID_INDEX = 1
+VIEWER_CHANNEL_INDEX = 2
+VIEWER_CHANNEL_COUNT_INDEX = 3
+
+
 class SLMZMQBridgeServer:
     """
     Local bridge for a remote SLMZMQServer.
@@ -44,6 +51,7 @@ class SLMZMQBridgeServer:
         self.Process = None
         self.viewer_shm = None
         self.viewer_arr = None
+        self.viewer_metadata = None
         self.viewer_shape = None
         self.viewer_dtype = None
         self.remote_properties = {}
@@ -126,18 +134,51 @@ class SLMZMQBridgeServer:
             )
         return reply
 
+    def _send_remote_snapshot_command(self, remote_command_socket, msg):
+        remote_command_socket.send_json(dict(msg))
+        reply_parts = remote_command_socket.recv_multipart()
+        if not reply_parts:
+            raise RuntimeError("Remote SLM server returned an empty snapshot reply")
+
+        reply = json.loads(reply_parts[0].decode("utf-8"))
+        if not reply.get("ok", False):
+            raise RuntimeError(
+                reply.get("error", "Unknown remote SLM server error")
+                + "\n"
+                + reply.get("traceback", "")
+            )
+        return reply_parts
+
     def _create_local_viewer_shared_memory(self, properties):
         self.viewer_shape = tuple(properties["input_expected_shape"])
         self.viewer_dtype = np.dtype(np.uint8)
         nbytes = int(np.prod(self.viewer_shape) * self.viewer_dtype.itemsize)
+        metadata_itemsize = np.dtype(np.int64).itemsize
+        metadata_offset = (
+            (nbytes + metadata_itemsize - 1) // metadata_itemsize
+        ) * metadata_itemsize
+        metadata_nbytes = VIEWER_METADATA_LENGTH * metadata_itemsize
 
-        self.viewer_shm = shared_memory.SharedMemory(create=True, size=nbytes)
+        self.viewer_shm = shared_memory.SharedMemory(
+            create=True,
+            size=metadata_offset + metadata_nbytes,
+        )
         self.viewer_arr = np.ndarray(
             self.viewer_shape,
             dtype=self.viewer_dtype,
             buffer=self.viewer_shm.buf,
         )
         self.viewer_arr.fill(0)
+        self.viewer_metadata = np.ndarray(
+            (VIEWER_METADATA_LENGTH,),
+            dtype=np.int64,
+            buffer=self.viewer_shm.buf,
+            offset=metadata_offset,
+        )
+        self.viewer_metadata.fill(0)
+        self.viewer_metadata[VIEWER_CHANNEL_COUNT_INDEX] = int(
+            properties["number_of_channels"]
+        )
 
     def _get_local_properties(self):
         properties = dict(self.remote_properties)
@@ -147,6 +188,10 @@ class SLMZMQBridgeServer:
         properties["viewer_shared_memory_name"] = self.viewer_shm.name
         properties["viewer_shape"] = list(self.viewer_shape)
         properties["viewer_dtype"] = str(self.viewer_dtype)
+        properties["viewer_metadata_offset"] = int(
+            self.viewer_metadata.ctypes.data - self.viewer_arr.ctypes.data
+        )
+        properties["viewer_metadata_length"] = VIEWER_METADATA_LENGTH
         properties["remote_host"] = self.remote_host
         properties["remote_command_port"] = self.remote_command_port
         properties["remote_display_pub_port"] = self.remote_display_pub_port
@@ -229,13 +274,22 @@ class SLMZMQBridgeServer:
             self.last_display_success = False
             return remote_reply
 
-        np.copyto(self.viewer_arr, pending_image)
         self.last_frame_id = int(result["frame_id"])
         self.last_write_time_ns = int(
             result.get("last_write_time_ns", time.time_ns())
         )
         self.last_display_success = True
         self.last_timing = dict(result.get("timing", {}))
+
+        self.viewer_metadata[VIEWER_SEQUENCE_INDEX] += 1
+        try:
+            np.copyto(self.viewer_arr, pending_image)
+            self.viewer_metadata[VIEWER_FRAME_ID_INDEX] = self.last_frame_id
+            self.viewer_metadata[VIEWER_CHANNEL_INDEX] = int(
+                remote_header.get("channelIdx", 0)
+            )
+        finally:
+            self.viewer_metadata[VIEWER_SEQUENCE_INDEX] += 1
 
         confirmed_header = {
             "client_id": expected_client_id,
@@ -290,6 +344,7 @@ class SLMZMQBridgeServer:
 
                 if local_command_socket in events:
                     msg = {}
+                    reply_parts = None
                     try:
                         parts = local_command_socket.recv_multipart()
                         if len(parts) == 1:
@@ -323,6 +378,12 @@ class SLMZMQBridgeServer:
                         elif cmd == "shutdown_bridge":
                             running = False
                             reply = {"ok": True, "result": None, "client_id": client_id}
+
+                        elif cmd == "get_confirmed_display_state":
+                            reply_parts = self._send_remote_snapshot_command(
+                                remote_command_socket,
+                                msg,
+                            )
 
                         elif len(parts) == 2 and cmd == "write_to_display":
                             remote_reply = self._submit_display_write(
@@ -363,6 +424,7 @@ class SLMZMQBridgeServer:
                             }
 
                     except Exception as exc:
+                        reply_parts = None
                         try:
                             remote_command_socket = self._reset_remote_command_socket(
                                 context,
@@ -377,7 +439,10 @@ class SLMZMQBridgeServer:
                             "client_id": msg.get("client_id", "unknown_client"),
                         }
 
-                    local_command_socket.send_json(reply)
+                    if reply_parts is not None:
+                        local_command_socket.send_multipart(reply_parts)
+                    else:
+                        local_command_socket.send_json(reply)
 
                 if self.PollSleep > 0:
                     time.sleep(self.PollSleep)

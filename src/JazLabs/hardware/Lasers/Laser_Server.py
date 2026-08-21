@@ -12,6 +12,7 @@ LASER_DRIVERS = {
     "JDS Tunable": "JazLabs.hardware.Lasers.JDS.JDSUniphaseTunableLaser",
     "Santec Swept": "JazLabs.hardware.Lasers.Santec.SantecSweeptLaser",
     "FYLA Horizon": "JazLabs.hardware.Lasers.FYLA.FYLAHorizonLaser",
+    "NKT BasiK": "JazLabs.hardware.Lasers.NKTPhotonics.NKT_BasiK_K1x2",
 }
 
 

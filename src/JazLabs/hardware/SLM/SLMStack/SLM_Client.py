@@ -1,7 +1,7 @@
 import inspect
 import json
 import uuid
-from multiprocessing import shared_memory
+from multiprocessing import resource_tracker, shared_memory
 
 import numpy as np
 import zmq
@@ -16,7 +16,9 @@ def _attach_shared_memory(name):
     if _SHARED_MEMORY_SUPPORTS_TRACK:
         return shared_memory.SharedMemory(name=name, track=False)
 
-    return shared_memory.SharedMemory(name=name)
+    attached_shared_memory = shared_memory.SharedMemory(name=name)
+    resource_tracker.unregister(attached_shared_memory._name, "shared_memory")
+    return attached_shared_memory
 
 
 class SLMClient:
@@ -192,6 +194,51 @@ class SLMClient:
         if self.viewer_arr is None:
             raise RuntimeError("Client is not attached to a local viewer shared memory")
         return self.viewer_arr.copy()
+
+    def GetConfirmedDisplayState(self):
+        request = {
+            "cmd": "get_confirmed_display_state",
+            "client_id": self.client_id,
+        }
+
+        try:
+            self.command_socket.send_json(request)
+            reply_parts = self.command_socket.recv_multipart()
+        except Exception:
+            self.ResetCommandSocket()
+            raise
+
+        if not reply_parts:
+            raise RuntimeError("SLM server returned an empty display-state reply")
+
+        reply = json.loads(reply_parts[0].decode("utf-8"))
+        if not reply.get("ok", False):
+            raise RuntimeError(
+                reply.get("error", "Unknown SLM server error")
+                + "\n"
+                + reply.get("traceback", "")
+            )
+
+        confirmed_channels = []
+        for channel_header in reply.get("result", {}).get("channels", []):
+            part_index = int(channel_header["part_index"])
+            if part_index <= 0 or part_index >= len(reply_parts):
+                raise RuntimeError(
+                    f"Display-state part index {part_index} is missing"
+                )
+
+            shape = tuple(channel_header["shape"])
+            dtype = np.dtype(channel_header["dtype"])
+            image = np.frombuffer(
+                reply_parts[part_index],
+                dtype=dtype,
+            ).reshape(shape).copy()
+
+            channel_state = dict(channel_header)
+            channel_state["image"] = image
+            confirmed_channels.append(channel_state)
+
+        return confirmed_channels
 
     def WaitForDisplayNotification(self, LastFrameID=None):
         while True:
