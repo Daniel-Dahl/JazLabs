@@ -179,6 +179,13 @@ class XenethLibrary:
             ctypes.c_char_p,
             ctypes.POINTER(ctypes.c_long),
         )
+        self.lib.XC_GetPropertyRangeL.restype = ctypes.c_ulong
+        self.lib.XC_GetPropertyRangeL.argtypes = (
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_long),
+            ctypes.POINTER(ctypes.c_long),
+        )
 
         self.lib.XC_SetPropertyValueF.restype = ctypes.c_ulong
         self.lib.XC_SetPropertyValueF.argtypes = (
@@ -370,6 +377,18 @@ class XenethLibrary:
         )
         self.check_error(error, f"XC_SetPropertyValueL({property_name})")
         return int(value)
+
+    def get_property_range_long(self, handle, property_name):
+        minimum = ctypes.c_long()
+        maximum = ctypes.c_long()
+        error = self.lib.XC_GetPropertyRangeL(
+            handle,
+            property_name.encode("utf-8"),
+            ctypes.byref(minimum),
+            ctypes.byref(maximum),
+        )
+        self.check_error(error, f"XC_GetPropertyRangeL({property_name})")
+        return int(minimum.value), int(maximum.value)
 
     def get_property_float(self, handle, property_name):
         value = ctypes.c_double()

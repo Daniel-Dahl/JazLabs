@@ -188,6 +188,23 @@ class CameraObject:
             self.offset_y = 0
             self.width = self.xeneth.get_width(self.handle)
             self.height = self.xeneth.get_height(self.handle)
+            self.sensor_width = self.width
+            self.sensor_height = self.height
+            try:
+                minimum_x, maximum_x = self.xeneth.get_property_range_long(
+                    self.handle,
+                    "WoiEX(0)",
+                )
+                minimum_y, maximum_y = self.xeneth.get_property_range_long(
+                    self.handle,
+                    "WoiEY(0)",
+                )
+                self.sensor_width = maximum_x - minimum_x + 1
+                self.sensor_height = maximum_y - minimum_y + 1
+            except (AttributeError, XenethError):
+                # Older Xeneth runtimes may not report WOI ranges. At startup,
+                # XC_GetWidth/Height still provide the best available limits.
+                pass
             self.Nx = self.width
             self.Ny = self.height
 
@@ -490,8 +507,11 @@ class CameraObject:
         enable=True,
         mode="nearest",
     ):
-        sensor_width = self.xeneth.get_width(self.handle)
-        sensor_height = self.xeneth.get_height(self.handle)
+        # XC_GetWidth and XC_GetHeight report the current WOI, not the physical
+        # detector size. Keep using the limits recorded when the camera opened
+        # so a reduced WOI can subsequently be enlarged again.
+        sensor_width = self.sensor_width
+        sensor_height = self.sensor_height
 
         if not enable:
             offset_x = 0

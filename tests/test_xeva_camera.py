@@ -82,10 +82,18 @@ class FakeXenethLibrary:
         self.capture_events.append("stop")
 
     def get_width(self, handle):
-        return 4
+        return (
+            self.long_properties["WoiEX(0)"]
+            - self.long_properties["WoiSX(0)"]
+            + 1
+        )
 
     def get_height(self, handle):
-        return 3
+        return (
+            self.long_properties["WoiEY(0)"]
+            - self.long_properties["WoiSY(0)"]
+            + 1
+        )
 
     def get_frame_size(self, handle):
         return 4 * 3 * np.dtype(np.uint16).itemsize
@@ -125,6 +133,13 @@ class FakeXenethLibrary:
     def set_property_long(self, handle, property_name, value, unit=""):
         self.long_properties[property_name] = int(value)
         return self.long_properties[property_name]
+
+    def get_property_range_long(self, handle, property_name):
+        ranges = {
+            "WoiEX(0)": (0, 3),
+            "WoiEY(0)": (0, 2),
+        }
+        return ranges[property_name]
 
     def get_property_float(self, handle, property_name):
         return self.float_properties[property_name]
@@ -194,6 +209,27 @@ def test_camera_controls_use_the_xeva_property_names(monkeypatch):
     assert library.long_properties["WoiSX(0)"] == 1
     assert library.long_properties["WoiEX(0)"] == 2
     assert library.long_properties["WoiSY(0)"] == 1
+    assert library.long_properties["WoiEY(0)"] == 2
+
+    camera.shutdown()
+
+
+def test_camera_can_restore_full_frame_after_reducing_roi(monkeypatch):
+    camera, library = make_camera(monkeypatch, CameraSerialNumber=5920)
+
+    assert camera.SetROI(offset_x=1, offset_y=1, width=2, height=2) == (
+        1,
+        1,
+        2,
+        2,
+    )
+    assert library.get_width(camera.handle) == 2
+    assert library.get_height(camera.handle) == 2
+
+    assert camera.SetROI(enable=False) == (0, 0, 4, 3)
+    assert library.long_properties["WoiSX(0)"] == 0
+    assert library.long_properties["WoiEX(0)"] == 3
+    assert library.long_properties["WoiSY(0)"] == 0
     assert library.long_properties["WoiEY(0)"] == 2
 
     camera.shutdown()
