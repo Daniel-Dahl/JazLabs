@@ -251,6 +251,39 @@ class CameraObject:
         else:
             self.xeneth.load_calibration(self.handle, calibration_path)
 
+    def LoadCalibrationFile(self, calibration_file):
+        """Load a Xeneth .xca pack and enable software correction."""
+        calibration_path = os.path.abspath(os.fspath(calibration_file))
+        if not os.path.isfile(calibration_path):
+            raise FileNotFoundError(
+                f"XEVA calibration file does not exist: {calibration_path}"
+            )
+        if os.path.splitext(calibration_path)[1].casefold() != ".xca":
+            raise ValueError(
+                "XEVA calibration files must use the .xca extension; .xcf "
+                "files contain camera settings rather than calibration data"
+            )
+
+        was_capturing = self._capturing
+        if was_capturing:
+            self.StopAcquisition()
+        try:
+            self.xeneth.load_calibration(self.handle, calibration_path)
+            self.CalibrationFile = calibration_path
+            self.ResetBuffer()
+        finally:
+            if was_capturing:
+                self.StartAcquisition()
+
+        if was_capturing and self.trigger_source != "Hardware":
+            calibration_restart_timeout_ms = self.grab_timeout_ms or 5000
+            self._wait_for_first_frame_after_restart(
+                timeout_ms=calibration_restart_timeout_ms,
+                restart_reason="loading the calibration file",
+            )
+
+        return self.CalibrationFile
+
     def shutdown(self):
         if getattr(self, "_closed", True):
             return
@@ -370,7 +403,11 @@ class CameraObject:
             self.width,
         ).copy()
 
-    def _wait_for_first_frame_after_roi_change(self, timeout_ms=5000):
+    def _wait_for_first_frame_after_restart(
+        self,
+        timeout_ms=5000,
+        restart_reason="reconfiguring the camera",
+    ):
         frame_byte_count = self.xeneth.get_frame_size(self.handle)
         frame_buffer = np.empty(frame_byte_count, dtype=np.uint8)
         deadline = time.monotonic() + max(int(timeout_ms), 1) / 1000.0
@@ -383,7 +420,7 @@ class CameraObject:
         raise TimeoutError(
             "XEVA did not produce a frame within "
             f"{int(timeout_ms)} ms after restarting acquisition following "
-            "an ROI change"
+            f"{restart_reason}"
         )
 
     def GetExposureTime(self):
@@ -607,8 +644,9 @@ class CameraObject:
         # new WOI; otherwise an immediate GetFrame can report E_NO_FRAME (10008).
         if was_capturing and self.trigger_source != "Hardware":
             roi_restart_timeout_ms = self.grab_timeout_ms or 5000
-            self._wait_for_first_frame_after_roi_change(
-                timeout_ms=roi_restart_timeout_ms
+            self._wait_for_first_frame_after_restart(
+                timeout_ms=roi_restart_timeout_ms,
+                restart_reason="an ROI change",
             )
         return applied_roi
 

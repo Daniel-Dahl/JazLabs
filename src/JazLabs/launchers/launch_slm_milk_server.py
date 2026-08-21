@@ -15,6 +15,8 @@ def build_parser():
     parser.add_argument("--image-topic", default=None)
     parser.add_argument("--ack-topic", default=None)
     parser.add_argument("--slm-type", default=None)
+    parser.add_argument("--board-number", type=int, default=None)
+    parser.add_argument("--monitor-index", type=int, default=None)
     parser.add_argument("--refresh-rate", type=float, default=None)
     parser.add_argument("--lut-file", default=None)
     return parser
@@ -41,6 +43,8 @@ def main(argv=None):
             "image_topic": args.image_topic,
             "ack_topic": args.ack_topic,
             "slm_type": args.slm_type,
+            "board_number": args.board_number,
+            "monitor_index": args.monitor_index,
             "refresh_rate": args.refresh_rate,
             "lut_file": args.lut_file,
         },
@@ -58,6 +62,8 @@ def main(argv=None):
         image_topic=slm["image_topic"],
         ack_topic=slm["ack_topic"],
         SLMType=slm["slm_type"],
+        BoardNumber=slm.get("board_number", 1),
+        MonitorIndex=slm.get("monitor_index", 1),
         RefreshRate=slm["refresh_rate"],
         LutFile=slm["lut_file"],
     )

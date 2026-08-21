@@ -3,6 +3,8 @@ import argparse
 import multiprocessing as mp
 import time
 
+import zmq
+
 from JazLabs.launchers.config import load_config
 
 
@@ -38,13 +40,44 @@ def start_slm_milk_viewer(
             "No SLM SHM name was provided and config has no SLM_MILK_SHM_NAME."
         )
 
+    bridge = config["SLM_MILK_BRIDGE"]
+    bridge_host = bridge.get("bind_host", "127.0.0.1")
+    bridge_command_port = int(bridge.get("local_command_port", 5565))
+    timeout_ms = int(bridge.get("timeout_ms", 5000))
+
+    context = zmq.Context()
+    command_socket = context.socket(zmq.REQ)
+    command_socket.setsockopt(zmq.LINGER, 0)
+    command_socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    command_socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    command_socket.connect(f"tcp://{bridge_host}:{bridge_command_port}")
+    try:
+        command_socket.send_json(
+            {"cmd": "get_properties", "client_id": "slm_milk_viewer_startup"}
+        )
+        reply = command_socket.recv_json()
+    finally:
+        command_socket.close(0)
+        context.term()
+
+    if not reply.get("ok", False):
+        raise RuntimeError(reply.get("error", "Unable to query SLM Milk bridge"))
+    properties = reply["result"]
+
     from JazLabs.hardware.SLM.SLMStackMilk.SLM_Viewer import SLMViewer
 
     viewer = SLMViewer(
-        stream_name=shm_name,
+        stream_name=properties.get(
+            "confirmed_shm_name",
+            f"{shm_name}_confirmed",
+        ),
         window_name=window_name,
         zoom=zoom,
         fps=fps,
+        number_of_channels=properties["number_of_channels"],
+        bridge_host=bridge_host,
+        bridge_command_port=bridge_command_port,
+        timeout_ms=timeout_ms,
     )
     viewer.startProcess()
     return [("slm viewer", viewer)]

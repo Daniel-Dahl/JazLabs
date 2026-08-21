@@ -116,7 +116,7 @@ requested counting time.
 
 Existing helpers in `TimeTaggerFunction.py` accept a `TimeTaggerClient` and
 delegate supported measurements to the server. The runnable wiring example is
-`examples/example_time_tagger_client.py`.
+`examples/legacy/example_time_tagger_client.py`.
 
 ## Stopping the stack
 

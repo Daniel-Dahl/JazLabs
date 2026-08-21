@@ -116,5 +116,5 @@ physical beam boundary.
 - If saved plots are needed on a headless machine, use `--no-show-plots` while
   leaving plot saving enabled.
 
-The lower-level wiring is also demonstrated in
-`examples/example_slm_mask_center_alignment.py`.
+The lower-level wiring is also preserved in
+`examples/legacy/example_slm_mask_center_alignment.py`.

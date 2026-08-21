@@ -1,183 +1,69 @@
 # JazLabs
 
-JazLabs is a Python lab-control playground for bringing different instruments
-together into one controllable experiment stack. It is aimed at optics and
-photonics workflows where cameras, DAQs, SLMs, lasers, stages, power meters,
-and other devices need to be watched and controlled at the same time.
+JazLabs is a Python lab-control playground for bringing cameras, SLMs, lasers,
+motorised mounts, DAQs, switches, and analysis tools together into one optics
+experiment stack.
 
-The project is intended to grow over time. As more people use JazLabs, clean up
-examples, add drivers, and contribute procedures, the number of supported
-instruments and reusable lab workflows should keep expanding. The aim is not to
-be a closed, finished control package, but a shared place where instrument
-interfaces and experiment patterns can accumulate.
+The central idea is simple: a long-running server owns each physical instrument,
+while scripts, notebooks, viewers, and control GUIs connect as clients. This
+keeps the hardware alive and visible while experiment code controls it through
+small Python objects. Bridges extend the same model to instruments attached to
+another computer on the lab network.
 
-The guiding idea is that instruments can run as servers. A server owns the
-physical hardware connection, viewers/widgets can show live feeds, and notebooks
-or scripts can create clients that control the same instruments. In practice,
-that lets you keep the lab alive visually while still driving it from Python:
-open a camera feed, keep an SLM server running, then control everything from a
-notebook or automated procedure as if it were a virtual lab bench.
+For example, once a camera server is running:
 
-Bridge processes extend the same idea across the lab network. If an instrument
-has to stay plugged into a particular hardware computer, another machine on the
-same network should still be able to access its controls and data through a
-client, viewer, notebook, or script. The aim is to avoid needing to SSH or
-remote desktop into the setup just to operate equipment.
+```python
+from JazLabs.hardware.Cameras.Camera_Client import CameraClient
 
-You do not have to use the server/client stack for every task. Most instruments
-also expose a direct object that can be imported and used in a normal Python
-script. Direct use is useful for debugging, driver development, and very small
-experiments. The server/client path adds a little overhead from process
-communication, ZeroMQ messaging, and shared memory, but it gives you persistent
-hardware processes, live viewers, and multi-process control.
+camera = CameraClient()
+frame = camera.GetFrame(WaitForNewFrame=True)
+camera.close()
+```
 
-## Repository Map
+Direct hardware objects are also available for driver development and small
+single-process experiments. The server/client path is the usual choice when an
+instrument should remain available to multiple tools.
 
-- `src/JazLabs/hardware/` contains instrument drivers, servers, clients,
-  viewers, widgets, and bridges.
-- `src/JazLabs/launchers/` contains command-line launchers for common servers
-  and viewers.
-- `src/JazLabs/procedures/` contains higher-level calibrations, alignments, and
-  multi-instrument measurement routines.
-- `src/JazLabs/utils/` contains shared camera, array, plotting, mask, Zernike,
-  and alignment helpers.
-- `src/JazLabs/Simulator/` contains optical simulation and analysis utilities.
-- `examples/` contains runnable scripts. These are useful references, but still
-  need cleanup and standardisation.
-- `notebooks/` contains interactive examples and lab notebooks. These also need
-  cleanup before they should be treated as polished tutorials.
-- `data/` and `calibrations/` contain local experiment/calibration placeholders.
+## Start Here
 
-See `docs/repo_structure.md` for a fuller map and `docs/DesignRequirements.md`
-for the architecture notes. See `docs/core_concepts.md` for explanations of
-important helper objects such as the SLM phase-mask object.
+- [Launch servers, viewers, and control GUIs](docs/guides/launch-servers-viewers-and-guis.md)
+- [Use the small instrument client examples](docs/guides/instrument-client-examples.md)
+- [Understand the main JazLabs concepts](docs/core_concepts.md)
+- [Browse the repository structure](docs/repo_structure.md)
+
+The current runnable scripts are in [`examples/instrument_clients`](examples/instrument_clients),
+with matching notebooks in [`notebooks/instrument_clients`](notebooks/instrument_clients).
+Older examples and notebooks are preserved in the respective `legacy` folders.
 
 ## Installation
 
-JazLabs requires Python 3.10 or newer.
-
-For editable development install:
+JazLabs requires Python 3.10 or newer. For an editable development install:
 
 ```bash
 python -m pip install -e .
 ```
 
-For the common scientific, viewer, and server/client stack, the project
-dependencies in `pyproject.toml` cover the main pip-installable packages used by
-the shared code.
-
-Optional instrument extras are available for device families that use
-pip-installable libraries:
+Install only the optional dependencies needed by the hardware or workflow in
+use, for example:
 
 ```bash
-python -m pip install -e ".[notebooks]"
-python -m pip install -e ".[visa]"
-python -m pip install -e ".[serial]"
-python -m pip install -e ".[ni]"
-python -m pip install -e ".[zaber]"
-python -m pip install -e ".[optimization]"
+python -m pip install -e ".[notebooks,serial,visa]"
 ```
 
-Some instruments also need vendor SDKs, DLLs, drivers, or proprietary Python
-packages that cannot be handled cleanly by pip. Install those only for the
-specific hardware you intend to use.
+Other extras are listed in `pyproject.toml`. Some instruments also require
+vendor SDKs, drivers, DLLs, or proprietary packages that pip cannot install.
 
-## Console Commands
+## Repository Map
 
-The package defines launchers for common lab processes:
+- `src/JazLabs/hardware/`: drivers, clients, servers, bridges, viewers, and GUIs
+- `src/JazLabs/launchers/`: command-line launchers and lab configurations
+- `src/JazLabs/procedures/`: reusable multi-instrument procedures
+- `src/JazLabs/utils/`: shared array, camera, plotting, mask, and alignment tools
+- `src/JazLabs/Simulator/`: optical simulation and analysis
+- `examples/` and `notebooks/`: runnable client examples and preserved older work
+- `docs/`: concepts, architecture, and task-based operating guides
+- `data/` and `calibrations/`: local data and calibration locations
 
-```text
-jazlabs-server-camera
-jazlabs-server-laser
-jazlabs-server-daq
-jazlabs-server-optical-switch
-jazlabs-server-slm
-jazlabs-bridge-slm
-jazlabs-server-slm-milk
-jazlabs-bridge-slm-milk
-jazlabs-bridge-camera
-jazlabs-bridge-daq
-jazlabs-server-time-tagger
-jazlabs-bridge-time-tagger
-jazlabs-view
-jazlabs-view-camera
-jazlabs-view-optical-switch
-jazlabs-view-slm
-jazlabs-view-slm-milk
-jazlabs-view-laser
-jazlabs-tmux
-jazlabs-slm-center-alignment
-jazlabs-camera-dark-frame
-```
-
-These commands are configured in `pyproject.toml` and implemented under
-`src/JazLabs/launchers/` and `src/JazLabs/procedures/`.
-
-The unsuffixed SLM commands and `SLM_SERVER`/`SLM_BRIDGE` settings use the
-standard SLM implementation. The separate pyMilk transport always uses a
-`-milk` command and an `SLM_MILK_*` configuration name.
-
-## Direct Object Example
-
-For a simple script or driver debugging session, load the instrument object
-directly:
-
-```python
-from JazLabs.hardware.Cameras.NiT.NiTCameraObj import NiTCameraObject
-
-camera = NiTCameraObject()
-frame = camera.GetFrame()
-```
-
-The exact class and setup arguments depend on the instrument.
-
-## Server/Client Example
-
-For normal virtual-lab operation, start the appropriate server or viewer, then
-connect from a notebook, script, or procedure using the matching client class.
-That keeps the hardware process alive while allowing multiple pieces of code to
-observe or control it.
-
-For networked operation, run the server or bridge on the machine physically
-connected to the instrument, then connect from a client on another machine on
-the same network.
-
-The exact client constructor depends on the instrument stack, so use the current
-examples and launcher configs as the reference until the examples are cleaned
-up.
-
-For the networked Time Tagger workflow, see the
-[`Time Tagger server, bridge server, and client`](docs/guides/time-tagger-server-bridge-client.md)
-guide.
-
-### Laser server and remote control
-
-Configure a laser entry in `src/JazLabs/launchers/configs/HDStokes.py`. Run the
-server on the computer connected to the laser (use `host="0.0.0.0"` when a
-remote client must connect):
-
-```bash
-jazlabs-server-laser --name tunable_laser
-```
-
-On the control computer, open the GUI by pointing it at that machine's address:
-
-```bash
-jazlabs-view-laser --name tunable_laser --host 192.168.1.25
-```
-
-The same controls are available from Python through `LaserClient`:
-
-```python
-from JazLabs.hardware.Lasers.Laser_Client import LaserClient
-
-with LaserClient(host="192.168.1.25", command_port=50931) as laser:
-    laser.set_wavelength_nm(1550.0)
-    laser.set_power_dbm(-10.0)
-    laser.laser_on()
-```
-
-The server supports the Anritsu MG963x, JDS tunable, Santec swept, and FYLA
-Horizon drivers. Drivers that do not implement wavelength or power control
-report those controls as unavailable in the GUI; the physical laser's
-interlock and operating procedures remain authoritative.
+JazLabs is deliberately an evolving shared workspace: instrument interfaces and
+repeatable experiment patterns can accumulate without forcing every lab task
+into one closed application.

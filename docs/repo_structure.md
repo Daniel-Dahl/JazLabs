@@ -9,7 +9,7 @@ as cameras, DAQs, SLMs, lasers, stages, and related tools.
 ```text
 JazLabs/
 |-- pyproject.toml          # Package metadata and console-script entry points
-|-- README.md               # Project overview, currently minimal
+|-- README.md               # Concise project overview and documentation links
 |-- LICENSE
 |-- docs/                   # Architecture, concepts, and task-based guides
 |-- examples/               # Runnable example scripts for hardware/procedures
@@ -26,11 +26,13 @@ task-based operating guides:
 
 ```text
 docs/
+|-- README.md
 |-- DesignRequirements.md
 |-- core_concepts.md
 |-- repo_structure.md
 `-- guides/
     |-- camera-dark-frames.md
+    |-- instrument-client-examples.md
     |-- time-tagger-server-bridge-client.md
     |-- launch-servers-viewers-and-guis.md
     `-- intensity-based-slm-centre-alignment.md
@@ -211,15 +213,17 @@ utils/
 
 ## Examples And Notebooks
 
-`examples/` contains small scripts for common workflows:
+`examples/instrument_clients/` contains the current minimal scripts for the SLM,
+camera, motorised mounts, lasers, optical switches, DACs, and digital
+holography. `notebooks/instrument_clients/` contains the same examples as
+Jupyter notebooks. See the
+[`Instrument Client Examples`](guides/instrument-client-examples.md) guide for
+the operation covered by each pair.
 
-- camera dark frames, continuous acquisition, and software triggering
-- camera/DAQ/SLM/tip-tilt calibration experiments
-- VOA calibration analysis
-- DAQ voltage control
-
-`notebooks/` contains interactive notebooks for camera, laser, SLM, server
-client/viewer, jitter, speed, and photoluminescence characterisation workflows.
+Earlier scripts, notebooks, and supporting files are preserved under
+`examples/legacy/` and `notebooks/legacy/`. They remain useful references for
+longer calibration and experiment workflows, but are separated from the small
+starting examples.
 
 ## Documentation
 

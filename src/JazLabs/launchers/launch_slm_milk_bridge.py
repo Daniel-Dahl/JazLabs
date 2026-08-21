@@ -10,6 +10,7 @@ def build_parser():
     parser.add_argument("--config", default="default_lab")
     parser.add_argument("--client-id", default=None)
     parser.add_argument("--shm-name", default=None)
+    parser.add_argument("--confirmed-shm-name", default=None)
     parser.add_argument("--bind-host", default=None)
     parser.add_argument("--local-command-port", type=int, default=None)
     parser.add_argument("--server-host", default=None)
@@ -38,6 +39,7 @@ def main(argv=None):
         {
             "client_id": args.client_id,
             "shm_name": args.shm_name,
+            "confirmed_shm_name": args.confirmed_shm_name,
             "bind_host": args.bind_host,
             "local_command_port": args.local_command_port,
             "server_host": args.server_host,
@@ -60,6 +62,7 @@ def main(argv=None):
     server = SLMZMQBridgeServer(
         client_id=slm["client_id"],
         shm_name=slm["shm_name"],
+        confirmed_shm_name=slm.get("confirmed_shm_name"),
         bind_host=slm["bind_host"],
         local_command_port=slm["local_command_port"],
         server_host=slm["server_host"],

@@ -279,6 +279,25 @@ def test_roi_change_waits_through_transient_no_frame_responses(monkeypatch):
     camera.shutdown()
 
 
+def test_runtime_calibration_load_stops_and_restarts_capture(
+    monkeypatch,
+    tmp_path,
+):
+    camera, library = make_camera(monkeypatch, CameraSerialNumber=5920)
+    calibration_path = tmp_path / "xeva-test.xca"
+    calibration_path.write_bytes(b"test calibration")
+
+    loaded_path = camera.LoadCalibrationFile(calibration_path)
+
+    assert loaded_path == str(calibration_path)
+    assert camera.CalibrationFile == str(calibration_path)
+    assert library.calibration_path == str(calibration_path)
+    assert library.capture_events[-2:] == ["stop", "start"]
+    assert library.capturing is True
+
+    camera.shutdown()
+
+
 def test_camera_rejects_a_serial_number_that_was_not_discovered(monkeypatch):
     FakeXenethLibrary.instances.clear()
     monkeypatch.setattr(xeva_camera, "XenethLibrary", FakeXenethLibrary)

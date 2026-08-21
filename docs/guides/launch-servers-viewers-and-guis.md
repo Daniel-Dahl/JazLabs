@@ -54,6 +54,9 @@ continuous shared-memory stream. See the dedicated
 [`Time Tagger server, bridge server, and client`](time-tagger-server-bridge-client.md)
 guide for its launch commands and Python client example.
 
+Minimal Python clients for the other instrument stacks are indexed in the
+[`Instrument Client Examples`](instrument-client-examples.md) guide.
+
 ## Example 1: Camera Server and Clients on One Computer
 
 In this arrangement, the camera, server, live viewer, and control GUI are all
@@ -262,6 +265,41 @@ viewer confirms that the local client/bridge path is active; also check the
 bridge and SLM-server terminals for display acknowledgements or errors
 when confirming that the physical SLM updated.
 
+## Example 3: Laser Server, GUI, and Client
+
+Configure a laser entry in `src/JazLabs/launchers/configs/HDStokes.py`. On the
+computer connected to the laser, start the named server:
+
+```bash
+jazlabs-server-laser --config HDStokes --name tunable_laser
+```
+
+For clients on another computer, configure the server to bind to `0.0.0.0` and
+allow the command port through the hardware computer's firewall. Then launch
+the control GUI with the hardware computer's reachable address:
+
+```bash
+jazlabs-view-laser \
+    --config HDStokes \
+    --name tunable_laser \
+    --host 192.168.1.25
+```
+
+Python code uses the same address and configured command port:
+
+```python
+from JazLabs.hardware.Lasers.Laser_Client import LaserClient
+
+laser = LaserClient(host="192.168.1.25", command_port=50931)
+laser.set_wavelength_nm(1550.0)
+print(laser.get_power())
+laser.close()
+```
+
+Only request values that are safe for the connected laser and optical setup.
+The physical interlock and operating procedure remain authoritative. A driver
+that does not implement a control reports that capability as unavailable.
+
 ## Launch Order at a Glance
 
 ### Same-computer camera
@@ -278,6 +316,13 @@ when confirming that the physical SLM updated.
 | 1 | Windows SLM computer | Hardware-facing server | `jazlabs-server-slm-milk --config default_lab` |
 | 2 | Linux computer | SLM bridge | `jazlabs-bridge-slm-milk --config default_lab` |
 | 3 | Linux computer | Shared-memory viewer client | `jazlabs-view-slm-milk --config default_lab` |
+
+### Networked laser
+
+| Order | Computer | Process | Command |
+|---:|---|---|---|
+| 1 | Laser computer | Laser server | `jazlabs-server-laser --config HDStokes --name tunable_laser` |
+| 2 | Control computer | Laser GUI | `jazlabs-view-laser --config HDStokes --name tunable_laser --host <laser-host>` |
 
 ## Stopping the Processes
 

@@ -67,6 +67,7 @@ class CameraControlWindow:
         self.gain_var = tk.StringVar()
         self.fps_var = tk.StringVar()
         self.pixel_format_var = tk.StringVar()
+        self.calibration_file_var = tk.StringVar()
 
         self.roi_x_var = tk.StringVar()
         self.roi_y_var = tk.StringVar()
@@ -152,6 +153,23 @@ class CameraControlWindow:
         ).grid(row=3, column=1, sticky="ew", padx=2, pady=2)
         ttk.Button(settings, text="Get", command=self.get_pixel_format).grid(row=3, column=2, sticky="ew", padx=2, pady=2)
         ttk.Button(settings, text="Set", command=self.set_pixel_format).grid(row=3, column=3, sticky="ew", padx=2, pady=2)
+
+        ttk.Label(settings, text="Calibration").grid(row=4, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(
+            settings,
+            textvariable=self.calibration_file_var,
+            width=12,
+        ).grid(row=4, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(
+            settings,
+            text="Browse",
+            command=self.choose_calibration_file,
+        ).grid(row=4, column=2, sticky="ew", padx=2, pady=2)
+        ttk.Button(
+            settings,
+            text="Load",
+            command=self.load_calibration_file,
+        ).grid(row=4, column=3, sticky="ew", padx=2, pady=2)
 
         roi = ttk.LabelFrame(main, text="ROI", padding=8)
         roi.grid(row=2, column=1, sticky="nsew", padx=(4, 0), pady=4)
@@ -389,6 +407,37 @@ class CameraControlWindow:
             result = self.cam.SetPixelFormat(self.pixel_format_var.get())
             self.pixel_format_var.set(str(result))
             self.set_status(f"Pixel format set: {result}")
+            self.refresh_status()
+        except Exception as exc:
+            self.show_error(exc)
+
+    def choose_calibration_file(self):
+        from tkinter import filedialog
+
+        calibration_file = filedialog.askopenfilename(
+            parent=self.root,
+            title="Choose a Xeneth calibration file",
+            filetypes=(
+                ("Xeneth calibration files", "*.xca"),
+                ("All files", "*.*"),
+            ),
+        )
+        if calibration_file:
+            self.calibration_file_var.set(calibration_file)
+            self.set_status(f"Selected calibration: {calibration_file}")
+
+    def load_calibration_file(self):
+        try:
+            calibration_file = self.calibration_file_var.get().strip()
+            if not calibration_file:
+                self.choose_calibration_file()
+                calibration_file = self.calibration_file_var.get().strip()
+            if not calibration_file:
+                return
+
+            loaded_path = self.cam.LoadCalibrationFile(calibration_file)
+            self.calibration_file_var.set(str(loaded_path))
+            self.set_status(f"Calibration loaded: {loaded_path}")
             self.refresh_status()
         except Exception as exc:
             self.show_error(exc)

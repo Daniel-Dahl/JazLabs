@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import numpy as np
@@ -9,9 +10,9 @@ class SLMClient:
     """
     Meadowlark-style client for SLMZMQBridgeServer.
 
-    WriteImageToSLM writes to the pymilk SHM. The bridge watches that SHM
-    and forwards updates to the SLM server, so other processes can also
-    update the SHM directly and still drive the physical SLM.
+    WriteImageToSLM writes a 2D mask and its channel metadata to the pymilk
+    requested-image SHM. The bridge forwards complete updates to the physical
+    server and writes a separate confirmed SHM only after a successful ACK.
     """
 
     def __init__(
@@ -48,15 +49,15 @@ class SLMClient:
         self.OutputPulseImageFlip = int(props.get("output_pulse_image_flip", 0))
 
         if create_shm_if_missing:
-            self.image_cube = np.zeros(self.image_shape, dtype=np.uint8)
-            self.shm = SHM(self.shm_name, self.image_cube, shared=True, autoSqueeze=False)
+            self.image = np.zeros(self.single_channel_shape, dtype=np.uint8)
+            self.shm = SHM(self.shm_name, self.image, shared=True, autoSqueeze=False)
         else:
             self.shm = SHM(self.shm_name, autoSqueeze=False)
-            self.image_cube = np.asarray(self.shm.get_data(copy=True), dtype=np.uint8)
-            if self.image_cube.shape != self.image_shape:
-                self.image_cube = self._prepare_image_cube_for_shm(
-                    self.image_cube,
-                    channelIdx=0,
+            self.image = np.asarray(self.shm.get_data(copy=True), dtype=np.uint8)
+            if self.image.shape != self.single_channel_shape:
+                raise ValueError(
+                    f"Expected 2D SLM SHM shape {self.single_channel_shape}; "
+                    f"got {self.image.shape}"
                 )
 
         self.last_write_counter = int(self.shm.get_counter())
@@ -93,41 +94,26 @@ class SLMClient:
 
         return reply
 
-    def _prepare_image_cube_for_shm(self, image, channelIdx):
+    def _prepare_image_for_shm(self, image, channelIdx):
         arr = np.asarray(image, dtype=np.uint8)
 
-        if arr.shape == self.single_channel_shape:
-            if self.NumberOfChannels == 1:
-                channelIdx = 0
-            elif channelIdx is None:
-                raise ValueError("channelIdx must be specified for multi-channel SLM")
+        if arr.shape != self.single_channel_shape:
+            raise ValueError(
+                f"Expected 2D image shape {self.single_channel_shape}; got {arr.shape}"
+            )
 
-            channelIdx = int(channelIdx)
-            if channelIdx < 0 or channelIdx >= self.NumberOfChannels:
-                raise ValueError(
-                    f"channelIdx {channelIdx} out of range for {self.NumberOfChannels} channels"
-                )
+        if self.NumberOfChannels == 1:
+            channelIdx = 0
+        elif channelIdx is None:
+            raise ValueError("channelIdx must be specified for multi-channel SLM")
 
-            cube = np.asarray(self.shm.get_data(copy=True), dtype=np.uint8)
-            if cube.shape != self.image_shape:
-                cube = np.zeros(self.image_shape, dtype=np.uint8)
-            cube[:, :, channelIdx] = arr
-            return np.ascontiguousarray(cube, dtype=np.uint8)
+        channelIdx = int(channelIdx)
+        if channelIdx < 0 or channelIdx >= self.NumberOfChannels:
+            raise ValueError(
+                f"channelIdx {channelIdx} out of range for {self.NumberOfChannels} channels"
+            )
 
-        if arr.shape == self.image_shape:
-            return np.ascontiguousarray(arr, dtype=np.uint8)
-
-        if (
-            arr.ndim == 3
-            and arr.shape[0] == self.NumberOfChannels
-            and arr.shape[1:] == self.single_channel_shape
-        ):
-            return np.ascontiguousarray(np.transpose(arr, (1, 2, 0)), dtype=np.uint8)
-
-        raise ValueError(
-            f"Expected image shape {self.single_channel_shape}, "
-            f"{self.image_shape}, or channels-first equivalent; got {arr.shape}"
-        )
+        return np.ascontiguousarray(arr), channelIdx
 
     def _timeout_ms(self, timeout_ms):
         return self.timeout_ms if timeout_ms is None else int(timeout_ms)
@@ -139,9 +125,22 @@ class SLMClient:
         wait=True,
         display_timeout_ms=None,
     ):
-        self.image_cube = self._prepare_image_cube_for_shm(image, channelIdx)
-        self.shm.set_data(self.image_cube)
+        self.image, channelIdx = self._prepare_image_for_shm(image, channelIdx)
+        self.shm.set_keywords(
+            {
+                "WRITING": 1,
+                "CHANIDX": int(channelIdx),
+            }
+        )
+        self.shm.set_data(self.image)
         self.last_write_counter = int(self.shm.get_counter())
+        self.shm.set_keywords(
+            {
+                "WRITING": 0,
+                "CHANIDX": int(channelIdx),
+                "SHMCNT": self.last_write_counter,
+            }
+        )
 
         if wait:
             return int(
@@ -200,6 +199,46 @@ class SLMClient:
     def GetProperties(self):
         reply = self._send_command_to_bridge({"cmd": "get_properties"})
         return reply["result"]
+
+    def GetConfirmedDisplayState(self):
+        request = {
+            "cmd": "get_confirmed_display_state",
+            "client_id": self.client_id,
+        }
+
+        try:
+            self.bridge_command_socket.send_json(request)
+            reply_parts = self.bridge_command_socket.recv_multipart()
+        except Exception:
+            self._reset_bridge_command_socket()
+            raise
+
+        if not reply_parts:
+            raise RuntimeError("SLM bridge returned an empty snapshot reply")
+
+        reply = json.loads(reply_parts[0].decode("utf-8"))
+        if not reply.get("ok", False):
+            raise RuntimeError(reply.get("error", "Unknown SLM bridge error"))
+
+        channel_states = []
+        for channel_header in reply.get("result", {}).get("channels", []):
+            part_index = int(channel_header["part_index"])
+            if part_index <= 0 or part_index >= len(reply_parts):
+                raise RuntimeError(
+                    f"Display-state part index {part_index} is missing"
+                )
+
+            shape = tuple(channel_header["shape"])
+            dtype = np.dtype(channel_header["dtype"])
+            channel_image = np.frombuffer(
+                reply_parts[part_index],
+                dtype=dtype,
+            ).reshape(shape).copy()
+            channel_state = dict(channel_header)
+            channel_state["image"] = channel_image
+            channel_states.append(channel_state)
+
+        return channel_states
 
     def acquire_control(self):
         return self._send_command_to_bridge({"cmd": "acquire_control"})

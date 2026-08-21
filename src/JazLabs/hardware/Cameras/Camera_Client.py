@@ -452,6 +452,12 @@ class CameraClient:
     def GetPixelFormat(self):
         return self.SendCommand({"cmd": "get_pixel_format"})
 
+    def LoadCalibrationFile(self, calibration_file):
+        return self.SendCommand({
+            "cmd": "load_calibration_file",
+            "calibration_file": str(calibration_file),
+        })
+
     def close(self):
         self.CloseFrameSharedMemory()
         self.CloseMetaSharedMemory()

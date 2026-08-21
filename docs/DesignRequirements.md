@@ -116,11 +116,12 @@ Use the direct object when:
 
 ## Examples And Notebooks
 
-The repository contains both example scripts and notebooks. They are useful as
-working references, but they still need cleanup and standardisation. Treat them
-as practical lab examples rather than polished tutorials for now.
+The repository contains matching minimal client scripts and notebooks under
+`examples/instrument_clients/` and `notebooks/instrument_clients/`. Earlier lab
+examples are preserved in the corresponding `legacy/` folders and should be
+treated as working references rather than polished tutorials.
 
-Long term, examples should show both supported usage styles:
+Examples should continue to show both supported usage styles:
 
 - direct object examples for simple hardware access and driver debugging
 - server/client examples for normal virtual-lab operation

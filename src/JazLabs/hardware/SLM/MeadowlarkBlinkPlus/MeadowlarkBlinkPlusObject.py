@@ -80,21 +80,13 @@ class SLMObject:
         if ImageToDisplay is None:
             return 0
 
-        # Accept either (H, W) or (H, W, 1)
-        if ImageToDisplay.ndim == 3:
-            if ImageToDisplay.shape[2] != 1:
-                return 0
-            img = ImageToDisplay[:, :, 0]
-        elif ImageToDisplay.ndim == 2:
-            img = ImageToDisplay
-        else:
-            return 0
-
-        if img.shape != (self.monitor_height, self.monitor_width):
+        expected_shape = (self.monitor_height, self.monitor_width)
+        if ImageToDisplay.shape != expected_shape:
             return 0
 
         # Make sure pointer is safe for C SDK.
         # This only copies if needed.
+        img = ImageToDisplay
         if img.dtype != np.uint8 or not img.flags["C_CONTIGUOUS"]:
             img = np.ascontiguousarray(img, dtype=np.uint8)
 
@@ -123,49 +115,7 @@ class SLMObject:
             time.sleep(self.RefreshRate)
 
         return SLMDisplaySuccess
-        
-    # def WriteImageToSLM(self,ImageToDisplay,channelIdx=0):
-    #     if ImageToDisplay is None:
-    #         print("No image sent")
-    #         return
-    #     # Accept either (H, W) or (H, W, 1)
-    #     if ImageToDisplay.ndim == 3:
-    #         if ImageToDisplay.shape[2] != 1:
-    #             print("New image incorrect dimensions for screen display. Display not updated")
-    #             return
-    #         img = ImageToDisplay[:, :, 0]   # view, no copy
-    #     elif ImageToDisplay.ndim == 2:
-    #         img = ImageToDisplay
-    #     else:
-    #         print("New image incorrect dimensions for screen display. Display not updated")
-    #         return
-    #     if img.shape != (self.monitor_height, self.monitor_width):
-    #         print("New image incorrect dimensions for screen display. Display not updated")
-    #         return
-    #     # ---- Prime first image (whatever is currently in the buffer) ----
-    #     SLMDisplaySuccess = 0
-    #     img = ImageToDisplay  # zero-copy
-    #     rc = slm_lib._slm.Write_image(self.board_number,img.ctypes.data_as(POINTER(c_ubyte)),self.wait_For_Trigger)
-    #     if rc != -1:
-    #         ok = False
-    #         attempts = 0
-    #         while not ok:
-    #             wrc = slm_lib._slm.ImageWriteComplete(self.board_number, self.timeout_ms)
-    #             if wrc != -1:
-    #                 ok = True
-    #                 SLMDisplaySuccess = 1
-    #             else:
-    #                 attempts += 1
-    #                 if attempts > 10:
-    #                     SLMDisplaySuccess = 0
-    #                     break
-    #     else:
-    #         SLMDisplaySuccess = 0
-            
-    #     if self.RefreshRate > 0:
-    #         time.sleep(self.RefreshRate)
-    #     return SLMDisplaySuccess
-    
+
     # return codes
     #  1  = success
     # -1  = path is None
@@ -236,6 +186,5 @@ class SLMObject:
         # Always delete the SDK in the parent before starting worker
         slm_lib._slm.Delete_SDK()
     # ---------- process spawn ----------
-
 
 

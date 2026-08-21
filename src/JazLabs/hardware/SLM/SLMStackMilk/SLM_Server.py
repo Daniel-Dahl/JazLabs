@@ -16,6 +16,8 @@ class SLMZMQServer:
         image_topic="slm.image",
         ack_topic="slm.ack",
         SLMType="Blink Plus",
+        BoardNumber=1,
+        MonitorIndex=1,
         RefreshRate=0,
         LutFile=None,
     ):
@@ -26,6 +28,8 @@ class SLMZMQServer:
         self.image_topic = str(image_topic)
         self.ack_topic = str(ack_topic)
         self.SLMType = SLMType
+        self.BoardNumber = int(BoardNumber)
+        self.MonitorIndex = int(MonitorIndex)
         self.RefreshRate = float(RefreshRate)
         self.LutFile = LutFile
 
@@ -57,21 +61,25 @@ class SLMZMQServer:
 
     def _open_slm(self):
         slmobj = self._load_slm_module()
-        return slmobj.SLMObject(
-            board_number_in=1,
-            RefreshRate=self.RefreshRate,
-            LutFile=self.LutFile,
-        )
+        if self.SLMType == "HDMI SLM":
+            return slmobj.SLMObject(
+                monitor_index=self.MonitorIndex,
+                RefreshRate=self.RefreshRate,
+            )
+
+        slm_kwargs = {
+            "board_number_in": self.BoardNumber,
+            "RefreshRate": self.RefreshRate,
+        }
+        if self.LutFile is not None:
+            slm_kwargs["LutFile"] = self.LutFile
+        return slmobj.SLMObject(**slm_kwargs)
 
     def _set_slm_geometry_fields(self):
         self.monitor_height = int(self.slmOBJ.monitor_height)
         self.monitor_width = int(self.slmOBJ.monitor_width)
         self.number_of_channels = int(self.slmOBJ.NumberOfChannels)
-        self.expected_shape = (
-            self.monitor_height,
-            self.monitor_width,
-            self.number_of_channels,
-        )
+        self.expected_shape = (self.monitor_height, self.monitor_width)
 
     def _get_properties(self):
         return {
@@ -148,6 +156,28 @@ class SLMZMQServer:
 
         return {"ok": False, "error": f"Unknown command: {cmd}"}
 
+    def _build_confirmed_display_state_reply(self, client_id):
+        channel_headers = []
+        image_parts = []
+
+        for channel_index in range(self.number_of_channels):
+            channel_header = dict(self.confirmed_channel_metadata[channel_index])
+            channel_header["channelIdx"] = channel_index
+            channel_header["shape"] = list(self.expected_shape)
+            channel_header["dtype"] = "uint8"
+            channel_header["part_index"] = channel_index + 1
+            channel_headers.append(channel_header)
+            image_parts.append(
+                memoryview(self.confirmed_channel_images[channel_index])
+            )
+
+        reply = {
+            "ok": True,
+            "result": {"channels": channel_headers},
+            "client_id": client_id,
+        }
+        return [json.dumps(reply).encode("utf-8"), *image_parts]
+
     def run_forever(self):
         try:
             import os
@@ -167,6 +197,19 @@ class SLMZMQServer:
         self.last_frame_id = 0
         self.last_timing = {}
         self.running = True
+        self.confirmed_channel_images = [
+            np.zeros(self.expected_shape, dtype=np.uint8)
+            for _ in range(self.number_of_channels)
+        ]
+        self.confirmed_channel_metadata = [
+            {
+                "confirmed": False,
+                "frame_id": 0,
+                "write_id": None,
+                "last_write_time_ns": 0,
+            }
+            for _ in range(self.number_of_channels)
+        ]
 
         context = zmq.Context()
         bridge_command_socket = context.socket(zmq.REP)
@@ -245,7 +288,7 @@ class SLMZMQServer:
                                     f"{self.number_of_channels} channels"
                                 )
 
-                            image_cube = np.frombuffer(image_bytes, dtype=dtype).reshape(shape)
+                            image = np.frombuffer(image_bytes, dtype=dtype).reshape(shape)
                             decode_done_ns = time.perf_counter_ns()
 
                             self.slmOBJ.OutputPulseImageFlip = int(
@@ -253,7 +296,7 @@ class SLMZMQServer:
                             )
                             write_start_ns = time.perf_counter_ns()
                             display_ok = bool(
-                                self.slmOBJ.WriteImageToSLM(image_cube, channelIdx)
+                                self.slmOBJ.WriteImageToSLM(image, channelIdx)
                             )
                             write_done_ns = time.perf_counter_ns()
 
@@ -276,6 +319,18 @@ class SLMZMQServer:
                                 "server_process_ms": (write_done_ns - recv_start_ns) / 1e6,
                                 "image_nbytes": int(len(image_bytes)),
                             }
+
+                            if display_ok:
+                                np.copyto(
+                                    self.confirmed_channel_images[channelIdx],
+                                    image,
+                                )
+                                self.confirmed_channel_metadata[channelIdx] = {
+                                    "confirmed": True,
+                                    "frame_id": int(frame_id),
+                                    "write_id": int(shm_counter),
+                                    "last_write_time_ns": time.time_ns(),
+                                }
 
                             self._send_display_ack_to_bridge(
                                 bridge_ack_socket,
@@ -308,15 +363,25 @@ class SLMZMQServer:
 
                 if bridge_command_socket in events:
                     msg = bridge_command_socket.recv_json()
+                    reply_parts = None
                     try:
-                        reply = self._process_bridge_command(msg)
+                        if msg.get("cmd") == "get_confirmed_display_state":
+                            reply_parts = self._build_confirmed_display_state_reply(
+                                msg.get("client_id", "unknown_client")
+                            )
+                        else:
+                            reply = self._process_bridge_command(msg)
                     except Exception as e:
+                        reply_parts = None
                         reply = {
                             "ok": False,
                             "error": f"{type(e).__name__}: {e}",
                             "traceback": traceback.format_exc(),
                         }
-                    bridge_command_socket.send_json(reply)
+                    if reply_parts is not None:
+                        bridge_command_socket.send_multipart(reply_parts)
+                    else:
+                        bridge_command_socket.send_json(reply)
 
         finally:
             try:

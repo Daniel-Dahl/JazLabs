@@ -468,6 +468,26 @@ class CameraZMQServer:
                                 result = camOBJ.GetPixelFormat()
                                 reply = {"ok": True, "result": result, "client_id": client_id}
 
+                            elif cmd == "load_calibration_file":
+                                calibration_file = msg["calibration_file"]
+                                if not hasattr(camOBJ, "LoadCalibrationFile"):
+                                    raise NotImplementedError(
+                                        f"{self.CameraType} does not support loading "
+                                        "a calibration file at runtime"
+                                    )
+                                result = camOBJ.LoadCalibrationFile(
+                                    calibration_file
+                                )
+                                last_published_frame_marker = (
+                                    self._get_camera_frame_marker(camOBJ)
+                                )
+                                last_continuous_publish_time = 0.0
+                                reply = {
+                                    "ok": True,
+                                    "result": result,
+                                    "client_id": client_id,
+                                }
+
                             else:
                                 reply = {
                                     "ok": False,

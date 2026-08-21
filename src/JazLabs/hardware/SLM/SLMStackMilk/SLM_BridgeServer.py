@@ -13,15 +13,16 @@ class SLMZMQBridgeServer:
     Shared-memory bridge for a remotely hosted SLM server.
 
     This process owns the network connection to SLM_Server.py, watches a
-    pymilk SHM, and publishes every SHM update to the hardware server. Local
-    clients can update the SHM directly or call the small command server exposed
-    here for the Meadowlark-style control methods.
+    2D pymilk requested-image SHM, and publishes every complete SHM update to
+    the hardware server. CHANIDX identifies the colour channel. A separate 2D
+    confirmed SHM is updated only after the matching physical-server ACK.
     """
 
     def __init__(
         self,
         client_id=None,
         shm_name="slm_image",
+        confirmed_shm_name=None,
         bind_host="127.0.0.1",
         local_command_port=5565,
         server_host="10.196.0.67",
@@ -37,6 +38,11 @@ class SLMZMQBridgeServer:
     ):
         self.client_id = client_id if client_id is not None else f"slm_bridge_{uuid.uuid4()}"
         self.shm_name = str(shm_name)
+        self.confirmed_shm_name = (
+            str(confirmed_shm_name)
+            if confirmed_shm_name is not None
+            else f"{self.shm_name}_confirmed"
+        )
         self.bind_host = bind_host
         self.local_command_port = int(local_command_port)
         self.server_host = server_host
@@ -69,6 +75,8 @@ class SLMZMQBridgeServer:
         self.image_shape = None
         self.single_channel_shape = None
         self.shm = None
+        self.confirmed_shm = None
+        self.pending_writes = {}
 
         self.server_command_socket = self.context.socket(zmq.REQ)
         self.server_command_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
@@ -123,49 +131,71 @@ class SLMZMQBridgeServer:
 
         return reply
 
-    def _normalise_shm_image(self, frame):
-        arr = np.asarray(frame)
+    def _send_server_snapshot_request(self, msg):
+        msg = dict(msg)
+        msg["client_id"] = self.client_id
 
-        if arr.dtype != np.uint8:
-            arr = arr.astype(np.uint8, copy=False)
+        try:
+            self.server_command_socket.send_json(msg)
+            reply_parts = self.server_command_socket.recv_multipart()
+        except Exception:
+            self._reset_server_command_socket()
+            raise
 
-        if arr.shape == self.single_channel_shape:
-            image_cube = np.zeros(self.image_shape, dtype=np.uint8)
-            image_cube[:, :, 0] = arr
-            return image_cube, 0
+        if not reply_parts:
+            raise RuntimeError("SLM server returned an empty snapshot reply")
 
-        if arr.shape == self.image_shape:
-            return np.ascontiguousarray(arr), 0
+        reply = json.loads(reply_parts[0].decode("utf-8"))
+        if not reply.get("ok", False):
+            raise RuntimeError(reply.get("error", "Unknown SLM server error"))
+        return reply_parts
 
-        if (
-            arr.ndim == 3
-            and arr.shape[0] == self.NumberOfChannels
-            and arr.shape[1:] == self.single_channel_shape
-        ):
-            return np.ascontiguousarray(np.transpose(arr, (1, 2, 0))), 0
+    def _read_stable_requested_image(self, changed_counter):
+        expected_counter = int(changed_counter)
 
-        raise ValueError(
-            f"Expected SHM image shape {self.single_channel_shape}, "
-            f"{self.image_shape}, or channels-first equivalent; got {arr.shape}"
-        )
+        for _ in range(10):
+            frame = np.asarray(self.shm.get_data(copy=True), dtype=np.uint8)
+            keywords = dict(self.shm.get_keywords())
+            counter_after = int(self.shm.get_counter())
+
+            if counter_after != expected_counter:
+                self.skipped_counter_count += max(
+                    1,
+                    counter_after - expected_counter,
+                )
+                expected_counter = counter_after
+                continue
+
+            writing = int(keywords.get("WRITING", 0))
+            keyword_counter = int(keywords.get("SHMCNT", counter_after))
+            if writing != 0 or keyword_counter != counter_after:
+                return None
+
+            if frame.shape != self.single_channel_shape:
+                raise ValueError(
+                    f"Expected SHM image shape {self.single_channel_shape}, "
+                    f"got {frame.shape}"
+                )
+
+            channel_index = int(keywords.get("CHANIDX", 0))
+            if channel_index < 0 or channel_index >= self.NumberOfChannels:
+                raise ValueError(
+                    f"channelIdx {channel_index} out of range for "
+                    f"{self.NumberOfChannels} channels"
+                )
+
+            return np.ascontiguousarray(frame), channel_index, counter_after
+
+        return None
 
     def _send_latest_shm_image_to_server(self, changed_counter):
-        counter_before = int(changed_counter)
-
-        while True:
-            frame = self.shm.get_data(copy=True)
-            counter_after = int(self.shm.get_counter())
-            if counter_after == counter_before:
-                break
-
-            self.skipped_counter_count += max(1, counter_after - counter_before)
-            counter_before = counter_after
-
-        counter = counter_after
-        if counter == self.last_sent_shm_counter:
+        requested_write = self._read_stable_requested_image(changed_counter)
+        if requested_write is None:
             return False
 
-        image_cube, channelIdx = self._normalise_shm_image(frame)
+        image, channelIdx, counter = requested_write
+        if counter == self.last_sent_shm_counter:
+            return False
 
         send_start_ns = time.perf_counter_ns()
         self.frame_id += 1
@@ -173,7 +203,7 @@ class SLMZMQBridgeServer:
         header = {
             "type": "slm_image",
             "client_id": self.client_id,
-            "shape": list(self.image_shape),
+            "shape": list(self.single_channel_shape),
             "dtype": "uint8",
             "frame_id": frame_id,
             "channelIdx": int(channelIdx),
@@ -187,7 +217,7 @@ class SLMZMQBridgeServer:
                 [
                     self.image_topic.encode("utf-8"),
                     json.dumps(header).encode("utf-8"),
-                    memoryview(image_cube),
+                    memoryview(image),
                 ],
                 flags=zmq.NOBLOCK,
             )
@@ -204,6 +234,11 @@ class SLMZMQBridgeServer:
 
         self.last_sent_shm_counter = counter
         self.last_sent_frame_id = frame_id
+        self.pending_writes[frame_id] = {
+            "image": image,
+            "channelIdx": int(channelIdx),
+            "shm_counter": int(counter),
+        }
         self.last_error = None
         self.last_timing = {
             "frame_id": int(frame_id),
@@ -211,9 +246,41 @@ class SLMZMQBridgeServer:
             "bridge_send_start_perf_ns": int(send_start_ns),
             "bridge_send_done_perf_ns": int(send_done_ns),
             "bridge_send_ms": (send_done_ns - send_start_ns) / 1e6,
-            "image_nbytes": int(image_cube.nbytes),
+            "image_nbytes": int(image.nbytes),
         }
         return True
+
+    def _commit_acknowledged_image(self, ack):
+        acknowledged_frame_id = int(ack.get("frame_id", 0))
+        pending_write = self.pending_writes.get(acknowledged_frame_id)
+
+        if bool(ack.get("ok", False)) and pending_write is not None:
+            channel_index = int(pending_write["channelIdx"])
+            self.confirmed_shm.set_keywords(
+                {
+                    "WRITING": 1,
+                    "CHANIDX": channel_index,
+                    "FRAMEID": acknowledged_frame_id,
+                }
+            )
+            self.confirmed_shm.set_data(pending_write["image"])
+            confirmed_counter = int(self.confirmed_shm.get_counter())
+            self.confirmed_shm.set_keywords(
+                {
+                    "WRITING": 0,
+                    "CHANIDX": channel_index,
+                    "FRAMEID": acknowledged_frame_id,
+                    "SHMCNT": confirmed_counter,
+                }
+            )
+
+        completed_frame_ids = [
+            frame_id
+            for frame_id in self.pending_writes
+            if frame_id <= acknowledged_frame_id
+        ]
+        for frame_id in completed_frame_ids:
+            del self.pending_writes[frame_id]
 
     def _drain_server_ack_socket(self):
         received_ack = False
@@ -244,6 +311,7 @@ class SLMZMQBridgeServer:
                 self.last_ack_ok = bool(ack.get("ok", False))
                 self.last_display_success = self.last_ack_ok
                 self.last_error = ack.get("error")
+                self._commit_acknowledged_image(ack)
                 if "timing" in ack:
                     self.last_timing = dict(self.last_timing, server_ack=ack["timing"])
             except Exception as e:
@@ -253,6 +321,13 @@ class SLMZMQBridgeServer:
         result = {
             "client_id": self.client_id,
             "shm_name": self.shm_name,
+            "confirmed_shm_name": self.confirmed_shm_name,
+            "shm_protocol": {
+                "image_shape": list(self.single_channel_shape),
+                "channel_keyword": "CHANIDX",
+                "counter_keyword": "SHMCNT",
+                "writing_keyword": "WRITING",
+            },
             "monitor_width": self.monitor_width,
             "monitor_height": self.monitor_height,
             "number_of_channels": self.NumberOfChannels,
@@ -335,6 +410,9 @@ class SLMZMQBridgeServer:
             )
             return {"ok": True, "result": int(ok)}
 
+        if cmd == "get_confirmed_display_state":
+            return self._send_server_snapshot_request(msg)
+
         if cmd == "shutdown":
             self.running = False
             return {"ok": True, "result": "shutdown_ack"}
@@ -362,16 +440,42 @@ class SLMZMQBridgeServer:
         self.image_shape = (
             self.monitor_height,
             self.monitor_width,
-            self.NumberOfChannels,
         )
         print(f"[SLM bridge] SLM shape = {self.image_shape}", flush=True)
 
         if self.create_shm:
-            initial = np.zeros(self.image_shape, dtype=np.uint8)
+            initial = np.zeros(self.single_channel_shape, dtype=np.uint8)
             self.shm = SHM(self.shm_name, initial, shared=True, autoSqueeze=False)
             self.shm.set_data(initial)
         else:
             self.shm = SHM(self.shm_name, autoSqueeze=False)
+
+        initial_counter = int(self.shm.get_counter())
+        self.shm.set_keywords(
+            {
+                "WRITING": 0,
+                "CHANIDX": 0,
+                "SHMCNT": initial_counter,
+            }
+        )
+
+        confirmed_initial = np.zeros(self.single_channel_shape, dtype=np.uint8)
+        self.confirmed_shm = SHM(
+            self.confirmed_shm_name,
+            confirmed_initial,
+            shared=True,
+            autoSqueeze=False,
+        )
+        self.confirmed_shm.set_data(confirmed_initial)
+        confirmed_counter = int(self.confirmed_shm.get_counter())
+        self.confirmed_shm.set_keywords(
+            {
+                "WRITING": 0,
+                "CHANIDX": 0,
+                "FRAMEID": 0,
+                "SHMCNT": confirmed_counter,
+            }
+        )
         print(f"[SLM bridge] SHM ready: {self.shm_name}", flush=True)
 
         if self.acquire_control_on_start:
@@ -438,7 +542,16 @@ class SLMZMQBridgeServer:
                             "traceback": traceback.format_exc(),
                         }
                     try:
-                        self.client_command_socket.send_json(reply, flags=zmq.NOBLOCK)
+                        if isinstance(reply, list):
+                            self.client_command_socket.send_multipart(
+                                reply,
+                                flags=zmq.NOBLOCK,
+                            )
+                        else:
+                            self.client_command_socket.send_json(
+                                reply,
+                                flags=zmq.NOBLOCK,
+                            )
                         command_handled = True
                         print(
                             f"[SLM bridge] replied to client command: {msg.get('cmd')}",
@@ -475,6 +588,11 @@ class SLMZMQBridgeServer:
         try:
             if self.shm is not None:
                 self.shm.close()
+        except Exception:
+            pass
+        try:
+            if self.confirmed_shm is not None:
+                self.confirmed_shm.close()
         except Exception:
             pass
         try:

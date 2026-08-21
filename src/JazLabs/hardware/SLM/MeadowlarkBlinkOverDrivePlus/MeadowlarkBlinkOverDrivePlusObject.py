@@ -102,21 +102,13 @@ class SLMObject:
         if ImageToDisplay is None:
             return 0
 
-        # Accept either (H, W) or (H, W, 1)
-        if ImageToDisplay.ndim == 3:
-            if ImageToDisplay.shape[2] != 1:
-                return 0
-            img = ImageToDisplay[:, :, 0]
-        elif ImageToDisplay.ndim == 2:
-            img = ImageToDisplay
-        else:
-            return 0
-
-        if img.shape != (self.monitor_height, self.monitor_width):
+        expected_shape = (self.monitor_height, self.monitor_width)
+        if ImageToDisplay.shape != expected_shape:
             return 0
 
         # Make sure pointer is safe for C SDK.
         # This only copies if needed.
+        img = ImageToDisplay
         if img.dtype != np.uint8 or not img.flags["C_CONTIGUOUS"]:
             img = np.ascontiguousarray(img, dtype=np.uint8)
 
@@ -257,7 +249,6 @@ class SLMObject:
         # Always delete the SDK in the parent before starting worker
         slm_lib._slm.Delete_SDK()
     # ---------- process spawn ----------
-
 
 
 
