@@ -190,32 +190,22 @@ class CameraObject:
             self.height = self.xeneth.get_height(self.handle)
             self.sensor_origin_x = 0
             self.sensor_origin_y = 0
-            self.sensor_width = self.width
-            self.sensor_height = self.height
+            self.sensor_width = self.xeneth.get_max_width(self.handle)
+            self.sensor_height = self.xeneth.get_max_height(self.handle)
             try:
                 minimum_start_x, _ = self.xeneth.get_property_range_long(
                     self.handle,
                     "WoiSX(0)",
                 )
-                _, maximum_end_x = self.xeneth.get_property_range_long(
-                    self.handle,
-                    "WoiEX(0)",
-                )
                 minimum_start_y, _ = self.xeneth.get_property_range_long(
                     self.handle,
                     "WoiSY(0)",
                 )
-                _, maximum_end_y = self.xeneth.get_property_range_long(
-                    self.handle,
-                    "WoiEY(0)",
-                )
                 self.sensor_origin_x = minimum_start_x
                 self.sensor_origin_y = minimum_start_y
-                self.sensor_width = maximum_end_x - minimum_start_x + 1
-                self.sensor_height = maximum_end_y - minimum_start_y + 1
             except (AttributeError, XenethError):
-                # Older Xeneth runtimes may not report WOI ranges. At startup,
-                # XC_GetWidth/Height still provide the best available limits.
+                # XEVA coordinates normally begin at zero. Keep that origin if
+                # an older runtime cannot report the WOI start ranges.
                 pass
             self.Nx = self.width
             self.Ny = self.height
@@ -379,6 +369,22 @@ class CameraObject:
             self.height,
             self.width,
         ).copy()
+
+    def _wait_for_first_frame_after_roi_change(self, timeout_ms=5000):
+        frame_byte_count = self.xeneth.get_frame_size(self.handle)
+        frame_buffer = np.empty(frame_byte_count, dtype=np.uint8)
+        deadline = time.monotonic() + max(int(timeout_ms), 1) / 1000.0
+
+        while time.monotonic() < deadline:
+            if self.xeneth.try_get_frame(self.handle, frame_buffer):
+                return
+            time.sleep(0.001)
+
+        raise TimeoutError(
+            "XEVA did not produce a frame within "
+            f"{int(timeout_ms)} ms after restarting acquisition following "
+            "an ROI change"
+        )
 
     def GetExposureTime(self):
         self.ExposureTime = self.xeneth.get_property_float(
@@ -550,6 +556,9 @@ class CameraObject:
         was_capturing = self._capturing
         if was_capturing:
             self.StopAcquisition()
+            # Stop first, then empty frames produced with the previous WOI
+            # while its old frame size is still active.
+            self.xeneth.drain_frames(self.handle, max_frames=4096)
         try:
             # First expand both axes to their complete ranges. This keeps every
             # intermediate pair of start/end coordinates valid when moving or
@@ -591,6 +600,15 @@ class CameraObject:
                 "Xeneth did not restore the full XEVA frame. Requested "
                 f"(0, 0, {sensor_width}, {sensor_height}), but the camera "
                 f"reported {applied_roi}"
+            )
+
+        # USB XEVA and the host-side pseudo-trigger mode are physically free
+        # running. Do not return until Xeneth has delivered one frame using the
+        # new WOI; otherwise an immediate GetFrame can report E_NO_FRAME (10008).
+        if was_capturing and self.trigger_source != "Hardware":
+            roi_restart_timeout_ms = self.grab_timeout_ms or 5000
+            self._wait_for_first_frame_after_roi_change(
+                timeout_ms=roi_restart_timeout_ms
             )
         return applied_roi
 

@@ -16,6 +16,7 @@ class FakeXenethLibrary:
         self.capturing = False
         self.capture_events = []
         self.frame_number = 0
+        self.no_frame_attempts_remaining = 0
         self.float_properties = {
             "IntegrationTime": 1250.0,
             "Framerate": 50.0,
@@ -95,8 +96,18 @@ class FakeXenethLibrary:
             + 1
         )
 
+    def get_max_width(self, handle):
+        return 4
+
+    def get_max_height(self, handle):
+        return 3
+
     def get_frame_size(self, handle):
-        return 4 * 3 * np.dtype(np.uint16).itemsize
+        return (
+            self.get_width(handle)
+            * self.get_height(handle)
+            * np.dtype(np.uint16).itemsize
+        )
 
     def get_frame_type(self, handle):
         return xeva_camera.FT_16_BPP_GRAY
@@ -105,9 +116,20 @@ class FakeXenethLibrary:
         return 12
 
     def get_frame(self, handle, frame_buffer):
-        frame = np.arange(12, dtype=np.uint16) + 100 * self.frame_number
+        pixel_count = self.get_width(handle) * self.get_height(handle)
+        frame = (
+            np.arange(pixel_count, dtype=np.uint16)
+            + 100 * self.frame_number
+        )
         frame_buffer[:] = frame.view(np.uint8)
         self.frame_number += 1
+
+    def try_get_frame(self, handle, frame_buffer):
+        if self.no_frame_attempts_remaining:
+            self.no_frame_attempts_remaining -= 1
+            return False
+        self.get_frame(handle, frame_buffer)
+        return True
 
     def get_frame_count(self, handle):
         return 42
@@ -115,6 +137,7 @@ class FakeXenethLibrary:
     def drain_frames(self, handle, max_frames=64):
         self.drained_frames = True
         self.last_drain_max_frames = max_frames
+        self.capture_events.append("drain")
         return 0
 
     def get_frame_rate(self, handle):
@@ -236,6 +259,22 @@ def test_camera_can_restore_full_frame_after_reducing_roi(monkeypatch):
     assert library.long_properties["WoiEX(0)"] == 3
     assert library.long_properties["WoiSY(0)"] == 0
     assert library.long_properties["WoiEY(0)"] == 2
+    assert library.capture_events[-3:] == ["stop", "drain", "start"]
+
+    camera.shutdown()
+
+
+def test_roi_change_waits_through_transient_no_frame_responses(monkeypatch):
+    camera, library = make_camera(monkeypatch, CameraSerialNumber=5920)
+    library.no_frame_attempts_remaining = 3
+
+    assert camera.SetROI(offset_x=1, offset_y=1, width=2, height=2) == (
+        1,
+        1,
+        2,
+        2,
+    )
+    assert library.no_frame_attempts_remaining == 0
 
     camera.shutdown()
 

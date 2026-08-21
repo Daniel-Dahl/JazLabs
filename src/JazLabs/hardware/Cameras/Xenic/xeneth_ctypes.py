@@ -122,6 +122,10 @@ class XenethLibrary:
         self.lib.XC_GetWidth.argtypes = (ctypes.c_int32,)
         self.lib.XC_GetHeight.restype = ctypes.c_ulong
         self.lib.XC_GetHeight.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetMaxWidth.restype = ctypes.c_ulong
+        self.lib.XC_GetMaxWidth.argtypes = (ctypes.c_int32,)
+        self.lib.XC_GetMaxHeight.restype = ctypes.c_ulong
+        self.lib.XC_GetMaxHeight.argtypes = (ctypes.c_int32,)
         self.lib.XC_GetFrameSize.restype = ctypes.c_ulong
         self.lib.XC_GetFrameSize.argtypes = (ctypes.c_int32,)
         self.lib.XC_GetFrameType.restype = ctypes.c_int
@@ -292,6 +296,12 @@ class XenethLibrary:
     def get_height(self, handle):
         return int(self.lib.XC_GetHeight(handle))
 
+    def get_max_width(self, handle):
+        return int(self.lib.XC_GetMaxWidth(handle))
+
+    def get_max_height(self, handle):
+        return int(self.lib.XC_GetMaxHeight(handle))
+
     def get_frame_size(self, handle):
         return int(self.lib.XC_GetFrameSize(handle))
 
@@ -310,6 +320,19 @@ class XenethLibrary:
             ctypes.c_uint(frame_buffer.nbytes),
         )
         self.check_error(error, "XC_GetFrame")
+
+    def try_get_frame(self, handle, frame_buffer):
+        error = self.lib.XC_GetFrame(
+            handle,
+            FT_NATIVE,
+            XGF_NO_CONVERSION,
+            frame_buffer.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_uint(frame_buffer.nbytes),
+        )
+        if int(error) == E_NO_FRAME:
+            return False
+        self.check_error(error, "XC_GetFrame(nonblocking)")
+        return True
 
     def drain_frames(self, handle, max_frames=64):
         frame_size = self.get_frame_size(handle)
