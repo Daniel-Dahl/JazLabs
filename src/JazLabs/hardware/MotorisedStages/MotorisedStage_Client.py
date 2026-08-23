@@ -31,11 +31,33 @@ class MotorisedStageClient:
     def GetPositions(self):
         return self.SendCommand({"cmd": "get_positions"})
 
+    def GetPositionsSteps(self):
+        return self.GetPositions()
+
+    def GetPositionsMM(self):
+        return self.SendCommand({"cmd": "get_positions_mm"})
+
     def MoveAbs(self, axis, value):
         return self.SendCommand({"cmd": "move_abs", "axis": str(axis), "value": float(value)})
 
     def MoveRel(self, axis, value):
         return self.SendCommand({"cmd": "move_rel", "axis": str(axis), "value": float(value)})
+
+    def MoveAbsSteps(self, axis, value):
+        return self.MoveAbs(axis, value)
+
+    def MoveRelSteps(self, axis, value):
+        return self.MoveRel(axis, value)
+
+    def MoveAbsMM(self, axis, value_mm):
+        return self.SendCommand(
+            {"cmd": "move_abs_mm", "axis": str(axis), "value_mm": float(value_mm)}
+        )
+
+    def MoveRelMM(self, axis, value_mm):
+        return self.SendCommand(
+            {"cmd": "move_rel_mm", "axis": str(axis), "value_mm": float(value_mm)}
+        )
 
     def HomeAll(self):
         return self.SendCommand({"cmd": "home_all"})

@@ -4,8 +4,54 @@ import traceback
 import zmq
 
 
+SUPPORTED_STAGE_TYPES = (
+    "NewportM100D",
+    "BSC203Serial",
+    "KDC101Serial",
+    "KST201Serial",
+)
+
+
+def create_motorised_stage(stage_type, stage_kwargs=None):
+    """Construct the configured hardware driver without opening unused drivers."""
+    stage_kwargs = {} if stage_kwargs is None else dict(stage_kwargs)
+
+    if stage_type == "NewportM100D":
+        from JazLabs.hardware.MotorisedStages.Newport.newport_m100d_visa import (
+            NewportM100D_VISA,
+        )
+
+        return NewportM100D_VISA(**stage_kwargs)
+
+    if stage_type == "BSC203Serial":
+        from JazLabs.hardware.MotorisedStages.Thorlabs.BSC203SerialStage import (
+            BSC203SerialStage,
+        )
+
+        return BSC203SerialStage(**stage_kwargs)
+
+    if stage_type == "KDC101Serial":
+        from JazLabs.hardware.MotorisedStages.Thorlabs.KDC101SerialStage import (
+            KDC101SerialStage,
+        )
+
+        return KDC101SerialStage(**stage_kwargs)
+
+    if stage_type == "KST201Serial":
+        from JazLabs.hardware.MotorisedStages.Thorlabs.KST201SerialStage import (
+            KST201SerialStage,
+        )
+
+        return KST201SerialStage(**stage_kwargs)
+
+    supported_types = ", ".join(SUPPORTED_STAGE_TYPES)
+    raise ValueError(
+        f"Unknown stage_type: {stage_type}. Supported stage types: {supported_types}"
+    )
+
+
 class MotorisedStageZMQServer:
-    def __init__(self, host="127.0.0.1", command_port=50931, stage_type="Luminos", stage_kwargs=None):
+    def __init__(self, host="127.0.0.1", command_port=50931, stage_type="NewportM100D", stage_kwargs=None):
         self.host = host
         self.command_port = int(command_port)
         self.stage_type = stage_type
@@ -42,26 +88,7 @@ class MotorisedStageZMQServer:
             self.Process = None
 
     def run_forever(self):
-        axis_map = None
-
-        if self.stage_type == "Luminos":
-            from JazLabs.hardware.MotorisedStages.Luminos.LuminosStage import LuminosStage, Axes
-
-            stage_obj = LuminosStage(**self.stage_kwargs)
-            axis_map = {
-                "Z": Axes.Z,
-                "X": Axes.X,
-                "Y": Axes.Y,
-                "ROLL": Axes.ROLL,
-                "YAW": Axes.YAW,
-                "PITCH": Axes.PITCH,
-            }
-        elif self.stage_type == "NewportM100D":
-            from JazLabs.hardware.MotorisedStages.Newport.NewportMounts import NewportM100D_VISA
-
-            stage_obj = NewportM100D_VISA(**self.stage_kwargs)
-        else:
-            raise ValueError(f"Unknown stage_type: {self.stage_type}")
+        stage_obj = create_motorised_stage(self.stage_type, self.stage_kwargs)
 
         context = None
         command_socket = None
@@ -87,13 +114,27 @@ class MotorisedStageZMQServer:
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "get_properties":
-                        reply = {
-                            "ok": True,
-                            "result": {
+                        stage_properties = {}
+                        if hasattr(stage_obj, "GetProperties"):
+                            stage_properties = dict(stage_obj.GetProperties())
+                        stage_properties.update(
+                            {
                                 "stage_type": self.stage_type,
                                 "command_port": self.command_port,
                                 "host": self.host,
-                            },
+                                "supports_mm": all(
+                                    hasattr(stage_obj, method_name)
+                                    for method_name in (
+                                        "GetPositionsMM",
+                                        "MoveAbsMM",
+                                        "MoveRelMM",
+                                    )
+                                ),
+                            }
+                        )
+                        reply = {
+                            "ok": True,
+                            "result": stage_properties,
                             "client_id": client_id,
                         }
 
@@ -101,22 +142,44 @@ class MotorisedStageZMQServer:
                         result = stage_obj.GetPositions()
                         reply = {"ok": True, "result": result, "client_id": client_id}
 
+                    elif cmd == "get_positions_mm":
+                        if not hasattr(stage_obj, "GetPositionsMM"):
+                            raise NotImplementedError(
+                                f"{self.stage_type} does not provide calibrated mm positions."
+                            )
+                        result = stage_obj.GetPositionsMM()
+                        reply = {"ok": True, "result": result, "client_id": client_id}
+
                     elif cmd == "move_abs":
                         axis = str(msg["axis"])
                         value = float(msg["value"])
-                        if self.stage_type == "Luminos" and axis.upper() in axis_map:
-                            stage_obj.MoveAbs(axis.upper(), value)
-                        else:
-                            stage_obj.MoveAbs(axis.upper(), value)
+                        stage_obj.MoveAbs(axis.upper(), value)
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "move_rel":
                         axis = str(msg["axis"])
                         value = float(msg["value"])
-                        if self.stage_type == "Luminos" and axis.upper() in axis_map:
-                            stage_obj.MoveRel(axis.upper(), value)
-                        else:
-                            stage_obj.MoveRel(axis.upper(), value)
+                        stage_obj.MoveRel(axis.upper(), value)
+                        reply = {"ok": True, "result": None, "client_id": client_id}
+
+                    elif cmd == "move_abs_mm":
+                        if not hasattr(stage_obj, "MoveAbsMM"):
+                            raise NotImplementedError(
+                                f"{self.stage_type} does not provide calibrated mm moves."
+                            )
+                        axis = str(msg["axis"])
+                        value_mm = float(msg["value_mm"])
+                        stage_obj.MoveAbsMM(axis.upper(), value_mm)
+                        reply = {"ok": True, "result": None, "client_id": client_id}
+
+                    elif cmd == "move_rel_mm":
+                        if not hasattr(stage_obj, "MoveRelMM"):
+                            raise NotImplementedError(
+                                f"{self.stage_type} does not provide calibrated mm moves."
+                            )
+                        axis = str(msg["axis"])
+                        value_mm = float(msg["value_mm"])
+                        stage_obj.MoveRelMM(axis.upper(), value_mm)
                         reply = {"ok": True, "result": None, "client_id": client_id}
 
                     elif cmd == "home_all":
@@ -146,7 +209,9 @@ class MotorisedStageZMQServer:
 
         finally:
             try:
-                if hasattr(stage_obj, "close"):
+                if hasattr(stage_obj, "CloseStage"):
+                    stage_obj.CloseStage()
+                elif hasattr(stage_obj, "close"):
                     stage_obj.close()
             except Exception:
                 pass
