@@ -28,6 +28,8 @@ class MotorisedStageControlWindow:
         self.held_started = 0
         self.capabilities = {}
         self.axis_widgets = {}
+        self.axis_units = {}
+        self.axis_steps = {}
         self.state = {"connected": False, "axes": {}, "stopped": False, "stop_pending": False}
         self.layout = tk.StringVar(value=layout)
         self.keyboard = tk.BooleanVar(value=False)
@@ -134,6 +136,7 @@ class MotorisedStageControlWindow:
     def _axis_readout(self, parent, axis):
         ttk = self.ttk
         spec = self.capabilities[axis]
+        self.axis_units.setdefault(axis, self.tk.StringVar(value=spec["units"]))
         panel = self._panel(parent)
         ttk.Label(panel, text=spec["label"], style="Heading.TLabel").pack(anchor="w")
         value = self.tk.StringVar(value="—")
@@ -155,7 +158,29 @@ class MotorisedStageControlWindow:
         ttk = self.ttk
         spec = self.capabilities[axis]
         widgets = self.axis_widgets[axis]
-        ttk.Label(parent, text=f"Absolute target ({spec['units']})", style="Panel.TLabel").pack(anchor="w")
+        unit = self.axis_units[axis].get()
+        scales = spec.get("unit_scales", {spec["units"]: 1.0})
+        if len(scales) > 1:
+            unit_row = ttk.Frame(parent, style="Panel.TFrame")
+            unit_row.pack(fill="x", pady=(0, 8))
+            ttk.Label(unit_row, text="Position units", style="Panel.TLabel").pack(side="left")
+            selector = ttk.Combobox(unit_row, textvariable=self.axis_units[axis],
+                values=list(scales), state="readonly", width=10)
+            selector.pack(side="left", padx=8)
+            selector.bind("<<ComboboxSelected>>", lambda event: self.units_changed(axis))
+        if spec.get("independent_mount") or len(scales) > 1:
+            self.axis_steps.setdefault(axis, self.tk.StringVar(value=str(self.display_value(axis, spec["step"]))))
+            step_row = ttk.Frame(parent, style="Panel.TFrame")
+            step_row.pack(fill="x", pady=(0, 8))
+            ttk.Label(step_row, text=f"Relative step ({unit})", style="Panel.TLabel").pack(side="left")
+            ttk.Entry(step_row, textvariable=self.axis_steps[axis], width=12).pack(side="left", padx=8)
+        if spec.get("independent_mount"):
+            stage = spec.get("stage") or {}
+            description = stage.get("part_number") or "Stage not identified"
+            ttk.Label(parent, text=description, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(parent, text=spec.get("calibration_note") or "", wraplength=420,
+                      style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(parent, text=f"Absolute target ({unit})", style="Panel.TLabel").pack(anchor="w")
         row = ttk.Frame(parent, style="Panel.TFrame")
         row.pack(fill="x", pady=(6, 12))
         target = self.tk.StringVar(value="")
@@ -175,8 +200,8 @@ class MotorisedStageControlWindow:
         if spec["minimum"] is not None and spec["maximum"] is not None:
             preview = self.tk.StringVar(value="Slider target")
             ttk.Label(parent, textvariable=preview, style="Panel.TLabel").pack(anchor="w")
-            slider = ttk.Scale(parent, from_=spec["minimum"], to=spec["maximum"],
-                               command=lambda value: preview.set(f"Slider target · {self.number(axis, float(value))} {spec['units']}"))
+            slider = ttk.Scale(parent, from_=self.display_value(axis, spec["minimum"]), to=self.display_value(axis, spec["maximum"]),
+                               command=lambda value: preview.set(f"Slider target · {self.number(axis, float(value))} {unit}"))
             slider.pack(fill="x", pady=8)
             slider.bind("<ButtonPress-1>", lambda event: widgets.update(dragging=True))
             slider.bind("<ButtonRelease-1>", lambda event: self.slider_released(axis))
@@ -217,12 +242,13 @@ class MotorisedStageControlWindow:
         tools.pack(side="bottom", fill="x", pady=(12, 0))
         self.keyboard_checkbox = ttk.Checkbutton(tools, text="Keyboard control", variable=self.keyboard, command=self.keyboard_changed)
         self.keyboard_checkbox.pack(side="left")
-        ttk.Label(tools, text="Relative step", style="Panel.TLabel").pack(side="left", padx=(22, 8))
-        ttk.Entry(tools, textvariable=self.step, width=10).pack(side="left")
-        units = {spec["units"] for spec in self.capabilities.values()}
-        ttk.Label(tools, text=next(iter(units)) if len(units) == 1 else "selected axis units", style="Panel.TLabel").pack(side="left", padx=6)
+        if not any(spec.get("independent_mount") or len(spec.get("unit_scales", {})) > 1 for spec in self.capabilities.values()):
+            ttk.Label(tools, text="Relative step", style="Panel.TLabel").pack(side="left", padx=(22, 8))
+            ttk.Entry(tools, textvariable=self.step, width=10).pack(side="left")
+            units = {spec["units"] for spec in self.capabilities.values()}
+            ttk.Label(tools, text=next(iter(units)) if len(units) == 1 else "selected axis units", style="Panel.TLabel").pack(side="left", padx=6)
         ttk.Label(tools, text="Tap = one step · hold to repeat", style="Muted.TLabel").pack(side="right")
-        if self.layout.get() == "console":
+        if self.layout.get() == "console" or any(spec.get("independent_mount") for spec in self.capabilities.values()):
             for index, axis in enumerate(axes):
                 row = ttk.Frame(self.content)
                 row.pack(fill="both", expand=True, pady=(0, 10))
@@ -273,8 +299,28 @@ class MotorisedStageControlWindow:
             self._position_controls(right, self.selected_axis.get())
         self.draw_state()
 
+    def display_value(self, axis, value):
+        spec = self.capabilities[axis]
+        scales = spec.get("unit_scales", {spec["units"]: 1.0})
+        return value * scales[spec["units"]] / scales[self.axis_units[axis].get()]
+
+    def controller_value(self, axis, value):
+        spec = self.capabilities[axis]
+        scales = spec.get("unit_scales", {spec["units"]: 1.0})
+        if self.axis_units[axis].get() == "counts" and value != int(value):
+            raise ValueError("Counts must be integers")
+        return value * scales[self.axis_units[axis].get()] / scales[spec["units"]]
+
+    def units_changed(self, axis):
+        self.release_jog(disarm=True)
+        if axis in self.axis_steps:
+            self.axis_steps[axis].set(str(self.display_value(axis, self.capabilities[axis]["step"])))
+        elif len(self.capabilities) == 1:
+            self.step.set(str(self.display_value(axis, self.capabilities[axis]["step"])))
+        self.rebuild_layout()
+
     def number(self, axis, value):
-        resolution = self.capabilities[axis]["resolution"]
+        resolution = self.display_value(axis, self.capabilities[axis]["resolution"])
         decimals = 0 if resolution >= 1 else min(6, max(3, math.ceil(-math.log10(resolution))))
         return f"{value:.{decimals}f}"
 
@@ -294,17 +340,17 @@ class MotorisedStageControlWindow:
             target = float(self.axis_widgets[axis]["target"].get())
             if not math.isfinite(target):
                 raise ValueError("Enter a finite absolute target")
-            self.send("absolute", axis, target)
+            self.send("absolute", axis, self.controller_value(axis, target))
         except ValueError:
             self.local_error = "Enter a finite absolute target"
             self.message.set(self.local_error)
 
     def jog_once(self, axis, sign):
         try:
-            distance = float(self.step.get())
+            distance = float(self.axis_steps.get(axis, self.step).get())
             if not math.isfinite(distance) or distance <= 0:
                 raise ValueError("Relative step must be positive and finite")
-            return self.send("relative", axis, sign * distance)
+            return self.send("relative", axis, self.controller_value(axis, sign * distance))
         except ValueError:
             self.local_error = "Relative step must be positive and finite"
             self.message.set(self.local_error)
@@ -315,7 +361,7 @@ class MotorisedStageControlWindow:
         widgets["dragging"] = False
         if "disabled" not in widgets["slider"].state():
             self.release_jog(disarm=True)
-            widgets["target"].set(self.number(axis, widgets["slider"].get()))
+            widgets["target"].set(self.number(axis, round(widgets["slider"].get()) if self.axis_units[axis].get() == "counts" else widgets["slider"].get()))
             self.absolute_move(axis)
 
     def speed_changed(self, axis):
@@ -380,7 +426,7 @@ class MotorisedStageControlWindow:
             return "break"
         if self.jog_once(axis, sign):
             self.held_key, self.held_axis = key, axis
-            self.held_distance = sign * float(self.step.get())
+            self.held_distance = self.controller_value(axis, sign * float(self.axis_steps.get(axis, self.step).get()))
             self.held_started = time.monotonic()
         return "break"
 
@@ -457,7 +503,7 @@ class MotorisedStageControlWindow:
             current = state["axes"].get(axis)
             if not current:
                 continue
-            widgets["position"].set(f"{self.number(axis, current['position'])} {spec['units']}")
+            widgets["position"].set(f"{self.number(axis, self.display_value(axis, current['position']))} {self.axis_units[axis].get()}")
             if stale:
                 text = "Feedback stale · motion disabled"
             elif current.get("fault"):
@@ -486,10 +532,10 @@ class MotorisedStageControlWindow:
             else:
                 widgets["enable"].pack_forget()
             if "target" in widgets and not widgets["target_initialized"]:
-                widgets["target"].set(self.number(axis, current["position"]))
+                widgets["target"].set(self.number(axis, self.display_value(axis, current["position"])))
                 widgets["target_initialized"] = True
             if "slider" in widgets and not widgets["slider_initialized"]:
-                widgets["slider"].set(current["position"])
+                widgets["slider"].set(self.display_value(axis, current["position"]))
                 widgets["slider_initialized"] = True
             if "speed" in widgets:
                 if not widgets["speed_initialized"] and current["speed"] is not None:

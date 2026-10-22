@@ -293,6 +293,12 @@ class StageServerWorker:
                         (spec["maximum"] is not None and upper > spec["maximum"])):
                     raise ValueError("Limits cannot widen the driver's allowed travel")
                 spec.update(minimum=lower, maximum=upper)
+                if "unit_scales" in spec:
+                    scales = spec["unit_scales"]
+                    spec["limits_by_unit"] = {
+                        unit: [lower * scales[spec["units"]] / unit_scale,
+                               upper * scales[spec["units"]] / unit_scale]
+                        for unit, unit_scale in scales.items()}
             with self.lock:
                 self.snapshot.update(
                     name=getattr(driver, "name", driver.GetProperties().get("stage_type", type(driver).__name__)),

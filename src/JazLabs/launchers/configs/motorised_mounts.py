@@ -51,11 +51,20 @@ MOTOR_SERVERS = [
         "stage_kwargs": {
             "port": None, "baudrate": 115200, "timeout": 0.25,
             "move_timeout": 60.0, "destinations": (0x21, 0x22),
+            "detect_stages": True,
+            "mounts": {
+                # Declare mm only for linear stages/actuators. Stage replies
+                # supply counts-per-unit but do not distinguish mm/degrees.
+                "X": {"label": "Mount 1", "physical_units": "mm", "units": "auto"},
+                "Y": {"label": "Mount 2", "physical_units": "mm", "units": "auto"},
+                # If detection is unavailable, add counts_per_mm and limits_mm
+                # to each mount using that actuator's verified calibration.
+            },
         },
-        "limits": {},  # Native counts; set endpoints for the fitted stages.
+        "limits": {},  # Optional narrower limits, in each mount's advertised units.
         "default_axis": "X",  # X/Y map to the first/second controller bays.
         "relative_step": 100,
-        "expected_units": "counts",
+        "expected_units": "auto",
     },
     {
         "name": "simulation",

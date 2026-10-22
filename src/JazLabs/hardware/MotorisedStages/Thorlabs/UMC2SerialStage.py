@@ -1,8 +1,9 @@
 """Two-bay UMC2 control using APT (DOC-103274, issue 48).
 
-Positions and moves use native controller counts. The fitted stage determines
-physical scaling; this driver does not assume a particular actuator or home it
-on connection. Axes X/Y (or integer 0/1) address bays 0/1, each with channel 1.
+Each bay is an independent mount on a shared serial connection. Startup reads
+stage-axis parameters without homing, moving, or writing controller settings.
+Counts are always available. Millimetres require a positive calibration and an
+explicit physical_units="mm" declaration for the fitted linear mechanism.
 """
 import math
 import struct
@@ -16,7 +17,8 @@ from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSeria
 
 class UMC2SerialStage(APTSerialMotion):
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.25,
-                 move_timeout: float = 60.0, destinations=(0x21, 0x22)):
+                 move_timeout: float = 60.0, destinations=(0x21, 0x22),
+                 detect_stages=True, mounts=None):
         if timeout <= 0 or move_timeout <= 0:
             raise ValueError("timeout and move_timeout must be positive")
         if len(destinations) != 2 or len(set(destinations)) != 2:
@@ -42,7 +44,92 @@ class UMC2SerialStage(APTSerialMotion):
             self.CloseStage()
             raise
 
-        self._configure_motion(dict(zip(("X", "Y"), self.destinations)), umc_status=True)
+        routes = dict(zip(("X", "Y"), self.destinations))
+        if set(mounts or {}) - set(routes):
+            self.CloseStage()
+            raise ValueError("Mount keys must be X and/or Y")
+        profiles = {}
+        try:
+            for index, (axis, destination) in enumerate(routes.items(), start=1):
+                options = dict((mounts or {}).get(axis, {}))
+                stage = None
+                note = "Stage detection disabled"
+                if detect_stages:
+                    try:
+                        stage = self.ReadStageParameters(axis)
+                        note = "Controller-reported stage parameters"
+                    except (TimeoutError, RuntimeError, ValueError) as exc:
+                        note = f"Stage detection unavailable: {exc}"
+                mm_scale = options.get("counts_per_mm")
+                physical_units = options.get("physical_units")
+                if physical_units not in (None, "mm"):
+                    raise ValueError("UMC2 linear mounts use physical_units='mm'; otherwise leave it unset")
+                if mm_scale is None and physical_units == "mm" and stage is not None:
+                    mm_scale = stage["counts_per_unit"] or None
+                if options.get("counts_per_mm") is not None:
+                    note += "; using configured counts_per_mm"
+                if mm_scale is not None:
+                    mm_scale = float(mm_scale)
+                    if not math.isfinite(mm_scale) or mm_scale <= 0:
+                        raise ValueError(f"{axis}: counts_per_mm must be positive and finite")
+                units = options.get("units", "auto")
+                if units == "auto":
+                    units = "mm" if mm_scale is not None else "counts"
+                if units not in ("mm", "counts") or (units == "mm" and mm_scale is None):
+                    raise ValueError(f"{axis}: mm requires detected or configured counts_per_mm")
+                scale = mm_scale if units == "mm" else 1.0
+                lower, upper = (stage["minimum_counts"], stage["maximum_counts"]) if stage else (None, None)
+                if lower is not None and lower >= upper:
+                    lower, upper = None, None
+                if "limits_mm" in options:
+                    if mm_scale is None:
+                        raise ValueError(f"{axis}: limits_mm requires counts_per_mm")
+                    requested_lower, requested_upper = (float(v) * mm_scale for v in options["limits_mm"])
+                    if not all(math.isfinite(v) for v in (requested_lower, requested_upper)) or requested_lower >= requested_upper:
+                        raise ValueError(f"{axis}: invalid limits_mm")
+                    if (lower is not None and requested_lower < lower) or (upper is not None and requested_upper > upper):
+                        raise ValueError(f"{axis}: limits_mm cannot widen controller travel")
+                    lower, upper = requested_lower, requested_upper
+                if mm_scale is None:
+                    note += "; mm unavailable: specify physical_units='mm' with usable stage data, or counts_per_mm"
+                # A jog increment is an application choice, not a stage property.
+                # Default to 10 um or 100 counts, reduced for very short travel.
+                step = max(1 / scale, .01 if units == "mm" else 100.0)
+                if lower is not None and upper is not None:
+                    step = min(step, max(1 / scale, (upper - lower) / scale / 100))
+                step = float(options.get("step", step))
+                if not math.isfinite(step) or step < 1 / scale:
+                    raise ValueError(f"{axis}: step must be finite and at least one count")
+                profiles[axis] = {"label": options.get("label", f"Mount {index}"),
+                    "units": units, "counts_per_unit": scale, "counts_per_mm": mm_scale,
+                    "limits": (None if lower is None else lower / scale, None if upper is None else upper / scale),
+                    "independent_mount": True, "step": step, "stage": stage, "calibration_note": note}
+            self._configure_motion(routes, umc_status=True, axis_profiles=profiles)
+            # Raw-count methods and the public motion API share one wire parser.
+            self._motion_received = self._received
+            self._motion_lock = self._lock
+        except Exception:
+            self.CloseStage()
+            raise
+
+    def ReadStageParameters(self, axis):
+        """Read 0x04F2; the wire format does not identify mm versus degrees."""
+        with self._lock:
+            destination = self._destination(axis)
+            self._send_short(0x04F1, destination, 1)
+            payload = self._wait_response(0x04F2, destination, self.timeout)
+            if len(payload) != 74:
+                raise RuntimeError(f"Invalid stage-axis packet length: {len(payload)}")
+            stage_id, axis_id = struct.unpack_from("<HH", payload, 2)
+            part_number = payload[6:22].split(b"\0", 1)[0].decode("ascii").strip()
+            serial_number, counts_per_unit = struct.unpack_from("<II", payload, 22)
+            minimum, maximum, acceleration, deceleration, velocity = struct.unpack_from("<iiiii", payload, 30)
+            return {"stage_id": stage_id, "axis_id": axis_id, "part_number": part_number,
+                    "serial_number": serial_number, "counts_per_unit": counts_per_unit,
+                    "minimum_counts": minimum, "maximum_counts": maximum,
+                    "maximum_acceleration_counts_per_cycle_squared": acceleration,
+                    "maximum_deceleration_counts_per_cycle_squared": deceleration,
+                    "maximum_velocity_counts_per_cycle": velocity}
 
     def _destination(self, axis):
         if axis in (0, "X", "x"):
@@ -158,7 +245,8 @@ class UMC2SerialStage(APTSerialMotion):
         return {"stage_type": "UMC2Serial", "port": self.port,
                 "baudrate": self.baudrate, "timeout": self.timeout,
                 "move_timeout": self.move_timeout, "axes": ["X", "Y"],
-                "destinations": self.destinations, "units": "controller_counts"}
+                "destinations": self.destinations,
+                "mounts": self.GetMotionCapabilities()}
 
     def CloseStage(self):
         with self._lock:

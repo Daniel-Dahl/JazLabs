@@ -3,7 +3,7 @@ import os
 import time
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Server import MotorisedStageZMQServer
@@ -49,7 +49,8 @@ class KeyboardModifierTests(unittest.TestCase):
                 window = types.SimpleNamespace(
                     root=Mock(), keyboard=Mock(), held_key=None,
                     capabilities={'X': {}}, can_move=Mock(return_value=True),
-                    jog_once=Mock(return_value=True), step=Mock())
+                    jog_once=Mock(return_value=True), step=Mock(), axis_steps={},
+                    controller_value=lambda axis, value: value)
                 window.keyboard.get.return_value = True
                 window.step.get.return_value = '0.1'
                 window.root.tk.call.return_value = window_system
@@ -140,6 +141,36 @@ class NativeGuiTests(unittest.TestCase):
         gui.slider_released('X')
         self.pump(.6)
         self.assertAlmostEqual(self.client.get_state()['axes']['X']['position'], 5.2)
+
+    def test_independent_mount_panels_have_separate_steps_and_unit_selection(self):
+        gui = self.window
+        original = self.client.get_state
+
+        def calibrated_mount_state():
+            state = original()
+            for index, spec in enumerate(state['capabilities'], start=1):
+                spec.update(independent_mount=True, label=f'Mount {index}',
+                            unit_scales={'counts': 1, 'mm': index * 1000})
+            return state
+
+        with patch.object(self.client, 'get_state', side_effect=calibrated_mount_state):
+            self.pump(.2)
+            self.assertEqual(set(gui.axis_steps), {'X', 'Y', 'Z'})
+            gui.axis_units['X'].set('counts')
+            gui.units_changed('X')
+            self.assertEqual(gui.axis_units['Y'].get(), 'mm')
+            self.assertEqual(float(gui.axis_steps['X'].get()), 10)
+            self.assertEqual(float(gui.axis_steps['Y'].get()), .01)
+            gui.axis_widgets['X']['target'].set('5100')
+            gui.absolute_move('X')
+            self.pump(.6)
+            self.assertAlmostEqual(original()['axes']['X']['position'], 5.1)
+            self.assertAlmostEqual(original()['axes']['Y']['position'], 6)
+            gui.axis_steps['X'].set('20')
+            gui.jog_once('X', 1)
+            self.pump(.5)
+            self.assertAlmostEqual(original()['axes']['X']['position'], 5.12)
+            self.assertAlmostEqual(float(gui.axis_widgets['X']['slider'].get()), 5000)
 
     def test_typing_disarms_and_focus_loss_releases(self):
         gui = self.window

@@ -63,7 +63,7 @@ class MotorisedStageClient:
     def GetProperties(self):
         return self.request("state").get("properties", {})
 
-    def GetPosition(self, axis):
+    def GetPosition(self, axis, units=None):
         """Return one position in the units advertised for this axis."""
         snapshot = self.request("state")
         status = snapshot["axes"].get(axis)
@@ -71,16 +71,28 @@ class MotorisedStageClient:
             raise ValueError(f"Unknown or unavailable axis {axis}")
         if not snapshot["connected"] or status.get("age", 999) >= 1:
             raise RuntimeError("Motor position feedback is unavailable or stale")
-        return status["position"]
+        if units is None:
+            return status["position"]
+        positions = status.get("positions", {})
+        if units not in positions:
+            raise ValueError(f"{axis}: units {units!r} unavailable")
+        return positions[units]
 
-    def GetPositions(self):
+    def GetPositions(self, units=None):
         """Return all current positions in advertised units from one snapshot."""
         snapshot = self.request("state")
         if not snapshot["connected"] or any(status.get("age", 999) >= 1 for status in snapshot["axes"].values()):
             raise RuntimeError("Motor position feedback is unavailable or stale")
-        return {axis: status["position"] for axis, status in snapshot["axes"].items()}
+        if units is None:
+            return {axis: status["position"] for axis, status in snapshot["axes"].items()}
+        positions = {}
+        for axis, status in snapshot["axes"].items():
+            if units not in status.get("positions", {}):
+                raise ValueError(f"{axis}: units {units!r} unavailable")
+            positions[axis] = status["positions"][units]
+        return positions
 
-    def MoveTo(self, axis, target, wait=True, timeout=None):
+    def MoveTo(self, axis, target, wait=True, timeout=None, units=None):
         """Move to an absolute target; by default wait for this operation to finish.
 
         Waiting polls the server rather than blocking its command loop. StopAll
@@ -91,6 +103,17 @@ class MotorisedStageClient:
         target = float(target)
         if not math.isfinite(target):
             raise ValueError("Target must be finite")
+        if units is not None:
+            capabilities = {spec["id"]: spec for spec in self.GetMotionCapabilities()}
+            if axis not in capabilities:
+                raise ValueError(f"Unknown axis {axis}")
+            spec = capabilities[axis]
+            scales = spec.get("unit_scales", {spec["units"]: 1.0})
+            if units not in scales:
+                raise ValueError(f"{axis}: units {units!r} unavailable")
+            if units == "counts" and target != int(target):
+                raise ValueError("Counts must be integers")
+            target = target * scales[units] / scales[spec["units"]]
         if timeout is None:
             timeout = self.GetProperties().get("move_timeout", 60.0)
         timeout = float(timeout)
@@ -228,15 +251,22 @@ class MotorisedStageClient:
                         break
                 except Exception as exc:
                     with self.lock:
-                        if not self.stop_requested.is_set():
+                        waiting_for_initial_connection = (
+                            isinstance(exc, TimeoutError)
+                            and self.received_at is None and command == "state")
+                        if not waiting_for_initial_connection and not self.stop_requested.is_set():
                             self.communication_stop_reason = f"Client {command} request failed: {exc}"
                             logger.warning("Motor stop requested: %s", self.communication_stop_reason)
-                        self.snapshot.update(connected=False, error=str(exc), message="Motion service unavailable")
+                        self.snapshot.update(connected=False, error=str(exc),
+                            message="Waiting for motor server" if waiting_for_initial_connection else "Motion service unavailable")
                         self.held_jog = None
                         while not self.commands.empty():
                             self.commands.get_nowait()
-                        # Request a stop before accepting work after reconnection.
-                        self.stop_requested.set()
+                        # Initial state polls cannot have started a move. Once
+                        # connected, or after any command attempt, request a stop
+                        # before accepting work after a lost response.
+                        if not waiting_for_initial_connection:
+                            self.stop_requested.set()
                     if self.closing.is_set():
                         break
                 self.wake.wait(0.1)

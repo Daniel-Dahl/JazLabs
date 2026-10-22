@@ -34,6 +34,7 @@ class BSC203SerialStage(APTSerialMotion):
         baudrate: int = 115200,
         timeout: float = 0.25,
         move_timeout: float = 30.0,
+        units="counts", counts_per_mm=None, limits=None,
     ) -> None:
         self.port = port
         self.slots = [int(slot) for slot in slots]
@@ -92,9 +93,16 @@ class BSC203SerialStage(APTSerialMotion):
             self.CloseStage()
             raise
 
-        self._configure_motion(dict(zip(
-            ("Z", "X", "Y"), (self._slot_destination(slot) for slot in self.slots)
-        )))
+        routes = dict(zip(("Z", "X", "Y"), (self._slot_destination(slot) for slot in self.slots)))
+        profiles = {}
+        for axis in routes:
+            scale = counts_per_mm.get(axis) if isinstance(counts_per_mm, dict) else counts_per_mm
+            if units not in ("counts", "mm") or (units == "mm" and scale is None):
+                self.CloseStage()
+                raise ValueError(f"{axis}: mm requires a configured counts_per_mm calibration")
+            profiles[axis] = {"units": units, "counts_per_unit": scale if units == "mm" else 1.0,
+                              "counts_per_mm": scale}
+        self._configure_motion(routes, limits=limits, axis_profiles=profiles)
 
     def __del__(self):
         try:

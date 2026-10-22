@@ -174,6 +174,53 @@ class NetworkTests(unittest.TestCase):
                 endpoint.close()
                 endpoint.thread.join(2)
 
+    def test_gui_initial_connection_timeout_does_not_latch_stop(self):
+        endpoint = MotorisedStageClient(command_port=self.port)
+        original_request = endpoint.request
+        commands = []
+
+        def timeout_first_state_poll(command, *args, **kwargs):
+            commands.append(command)
+            if len(commands) == 1:
+                self.assertEqual(command, 'state')
+                raise TimeoutError('server is still starting')
+            return original_request(command, *args, **kwargs)
+
+        with patch.object(endpoint, 'request', side_effect=timeout_first_state_poll):
+            endpoint.start()
+            try:
+                self.wait(lambda: endpoint.get_state()['connected'])
+                self.assertNotIn('stop', commands)
+                self.assertFalse(endpoint.get_state()['stopped'])
+                endpoint.submit('relative', 'X', .02)
+                self.wait(lambda: endpoint.get_state()['axes']['X']['position'] >= 5.019)
+                self.assertFalse(endpoint.get_state()['stopped'])
+            finally:
+                endpoint.close()
+                endpoint.thread.join(2)
+
+    def test_gui_state_timeout_after_connecting_still_latches_stop(self):
+        endpoint = MotorisedStageClient(command_port=self.port)
+        original_request = endpoint.request
+        state_polls = 0
+
+        def lose_second_state_reply(command, *args, **kwargs):
+            nonlocal state_polls
+            if command == 'state':
+                state_polls += 1
+                if state_polls == 2:
+                    raise TimeoutError('lost feedback after connecting')
+            return original_request(command, *args, **kwargs)
+
+        with patch.object(endpoint, 'request', side_effect=lose_second_state_reply):
+            endpoint.start()
+            try:
+                self.wait(lambda: endpoint.get_state()['stopped'])
+                self.assertIn('lost feedback after connecting', endpoint.get_state()['stop_reason'])
+            finally:
+                endpoint.close()
+                endpoint.thread.join(2)
+
     def test_remote_short_tap_survives_release_before_network_send(self):
         endpoint = MotorisedStageClient(command_port=self.port)
         # Both events happen before the network loop gets a turn.

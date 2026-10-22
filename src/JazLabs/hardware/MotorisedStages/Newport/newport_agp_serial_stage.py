@@ -139,7 +139,29 @@ class NewportAGPSerialStage:
         self.MoveAbs(0, 0, wait=wait)
 
     def Stop(self):
-        self.write("ST")
+        with self._lock:
+            # Send the stop immediately, without delaying it for a status query.
+            self.write("ST")
+            response = self.query("TE")
+            error = response[len(f"{self.address}TE"):]
+            if error == "@":
+                return
+            # ST is valid only during motion. Consume its error so an idle
+            # stop cannot leave a rejection for the next move to read.
+            if error in ("H", "I", "J", "K"):
+                status = self.GetStatus()
+                state = status["state"]
+                already_idle = (
+                    (error == "H" and 0x0A <= state <= 0x10)
+                    or (error == "I" and state == 0x14)
+                    or (error == "J" and state in (0x3C, 0x3D))
+                    or (error == "K" and state in (0x32, 0x33, 0x34)))
+                if status["error"]:
+                    raise RuntimeError(f"CONEX stop reported positioner error 0x{status['error']:04X}")
+                if already_idle:
+                    return
+                raise RuntimeError(f"CONEX rejected ST: error {error!r}, controller state 0x{state:02X}")
+            raise RuntimeError(f"CONEX rejected ST: error {error!r}")
 
     def Enable(self, enabled=True):
         self.write(f"MM{int(bool(enabled))}")

@@ -10,7 +10,7 @@ from JazLabs.launchers.launch_motorised_stage_server import main
 @pytest.mark.parametrize('name,stage,port,axis,units', [
     ('newport_tip_tilt', 'CONEXAGAPSerial', 50941, 'U', 'deg'),
     ('newport_translation', 'CONEXAGPSerial', 50942, 'X', 'mm'),
-    ('thorlabs_umc2', 'UMC2Serial', 50943, 'X', 'counts'),
+    ('thorlabs_umc2', 'UMC2Serial', 50943, 'X', 'auto'),
 ])
 def test_named_motor_server_options(name, stage, port, axis, units):
     config = load_config('motorised_mounts')

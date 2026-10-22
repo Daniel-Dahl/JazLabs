@@ -24,7 +24,8 @@ class KDC101SerialStage(APTSerialMotion):
     - Axis is single-channel. Accepted axis values: 0, 1, "1", "X", "U".
     """
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.25) -> None:
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.25,
+                 units="counts", counts_per_mm=None, limits=None) -> None:
         self.port = port
         self.baudrate = int(baudrate)
         self.timeout = float(timeout)
@@ -69,7 +70,12 @@ class KDC101SerialStage(APTSerialMotion):
         # Prime comms
         self.GetPositions()
 
-        self._configure_motion({"X": self.destination})
+        if units not in ("counts", "mm") or (units == "mm" and counts_per_mm is None):
+            self.CloseStage()
+            raise ValueError("mm requires a configured counts_per_mm calibration")
+        self._configure_motion({"X": self.destination}, units=units,
+            counts_per_unit=counts_per_mm if units == "mm" else 1.0, limits=limits,
+            axis_profiles={"X": {"counts_per_mm": counts_per_mm}})
 
     def __del__(self):
         try:

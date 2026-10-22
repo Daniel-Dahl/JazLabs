@@ -334,7 +334,7 @@ The presets in `src/JazLabs/launchers/configs/motorised_mounts.py` use
 |---|---|---|---:|---:|
 | `newport_tip_tilt` | CONEX-AGAP / AG-M100D | U = yaw, V = pitch; degrees | 50941 | 51941 |
 | `newport_translation` | CONEX-AGP | X; configured physical units, labelled mm in the preset | 50942 | 51942 |
-| `thorlabs_umc2` | UMC2 | X/Y; native controller counts | 50943 | 51943 |
+| `thorlabs_umc2` | UMC2 | Separate mounts X/Y; counts and calibrated mm | 50943 | 51943 |
 | `simulation` | Simulated translation stage | X/Y; mm | 50944 | 51944 |
 
 For serial hardware, install `pip install -e '.[serial]'`, then replace
@@ -355,11 +355,55 @@ Configure these fields for the selected mount:
 - `remote_host`: the hardware-server address a bridge connects to; it can also
   be supplied using `--remote-host`.
 
-Do not infer UMC2 millimetre scaling from another controller. Its fitted stages
-set the count-to-distance conversion; the current UMC2 readout is trajectory
-position in counts. Verify the AGP stage's configured units: `units="mm"` is a
-label, not firmware configuration or calibration. KST201 drivers use their
-actuator profile for millimetres and preserve the existing travel margin.
+The UMC2 driver queries each bay's stage-axis parameters (`0x04F1/0x04F2`) on
+connection. It exposes the reported part number, stage serial number, scale and
+travel endpoints through `GetMotionCapabilities()`. These are controller-reported
+parameters; they may reflect an assigned stage profile rather than identifying
+an arbitrary attached mechanism. No homing, movement or parameter writes occur
+during detection. Restart the server after changing fitted stages.
+
+Each UMC2 bay is shown as a separate mount panel in the same GUI, with its own
+label, units selector, relative step, target and slider. Both panels share one
+server and COM port. The current scheduler performs one move at a time; keyboard
+A/D controls the first mount and W/S the second. STOP ALL AXES stops both mounts.
+
+In `stage_kwargs.mounts`, declare `physical_units="mm"` for each fitted linear
+stage/actuator. The packet's counts-per-unit value does not distinguish mm from
+degrees. With `units="auto"`, usable millimetre calibration selects mm as the
+server's canonical units; otherwise the mount stays in counts and the GUI explains
+what is missing. Detection is read-only and can be disabled with `detect_stages=False`.
+Use a verified `counts_per_mm` override and optional `limits_mm` if the controller
+cannot report its calibration. Configured limits cannot widen detected travel.
+
+The driver reports `unit_scales`, `limits_by_unit`, `resolution_by_unit` and
+`step_by_unit` for each mount. Resolution is one native count. The suggested jog
+step is an application default (0.01 mm or 100 counts, reduced for short travel),
+not a motor specification; override each mount's `step` in its canonical units.
+A stage's maximum velocity/acceleration fields are retained with their raw
+counts-per-controller-cycle units; they do not enable GUI speed control.
+
+KST201 uses its existing actuator profile for mm and counts. KDC101 and BSC203
+accept explicit `counts_per_mm`, `units` and `limits` driver options; BSC203 accepts
+a per-axis calibration dictionary. Their limits use the selected canonical units.
+Do not copy calibration between different stages or controller types. For an
+actuator driving an angular mount, mm refers to actuator displacement, not angle.
+Verify the AGP stage's configured units: `units="mm"` is a label, not firmware
+configuration or calibration.
+
+Client examples for a calibrated Thorlabs mount:
+
+```python
+mount.GetPosition("X", units="mm")
+mount.GetPosition("X", units="counts")
+mount.GetPositions(units="mm")
+mount.GetMotionCapabilities()  # Detected identity, limits, scales and suggested steps.
+# mount.MoveTo("X", 1.0, units="mm")  # Waits for completion by default.
+# mount.MoveTo("X", 1000, units="counts")
+```
+
+An omitted `units` uses the axis's advertised canonical units. Unavailable unit
+conversions raise an error rather than assuming a scale. Low-level `MoveAbs` and
+`MoveRel` methods remain native count operations; `MoveTo` is the calibrated API.
 
 ### 2. Start the motor server on the hardware computer
 
