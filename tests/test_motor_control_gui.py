@@ -3,10 +3,65 @@ import os
 import time
 import types
 import unittest
+from unittest.mock import Mock
 
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Server import MotorisedStageZMQServer
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Widget import MotorisedStageControlWindow
+
+
+class FocusCheckTests(unittest.TestCase):
+    def test_tcl_only_combobox_popdown_does_not_require_python_widget(self):
+        window = types.SimpleNamespace(root=Mock(), focus_after_id='pending', release_jog=Mock())
+        window.root._w = '.'
+        window.root.tk.call.return_value = '.layout.popdown.f.l'
+        MotorisedStageControlWindow.check_application_focus(window)
+        window.root.tk.call.assert_called_once_with('focus', '-displayof', '.')
+        window.root.focus_displayof.assert_not_called()
+        window.release_jog.assert_not_called()
+        self.assertIsNone(window.focus_after_id)
+
+    def test_focus_outside_application_releases_and_disarms_jog(self):
+        window = types.SimpleNamespace(root=Mock(), focus_after_id='pending', release_jog=Mock())
+        window.root.tk.call.return_value = ''
+        MotorisedStageControlWindow.check_application_focus(window)
+        window.release_jog.assert_called_once_with(disarm=True)
+
+
+class KeyboardModifierTests(unittest.TestCase):
+    def test_lock_keys_allow_jog_and_shortcut_modifiers_block_it(self):
+        cases = [
+            ('win32', 0x8, True),  # Windows Num Lock must not block movement.
+            ('win32', 0x2 | 0x8 | 0x20, True),  # Caps/Num/Scroll Lock.
+            ('win32', 0x4 | 0x8, False),
+            ('win32', 0x20000 | 0x8, False),
+            ('aqua', 0x2, True),
+            ('aqua', 0x4, False),
+            ('aqua', 0x8, False),
+            ('aqua', 0x10, False),
+            ('x11', 0x10, True),  # Typical X11 Num Lock mapping.
+            ('x11', 0x4, False),
+            ('x11', 0x8, False),
+            ('x11', 0x40, False),
+        ]
+        for window_system, state, should_move in cases:
+            with self.subTest(window_system=window_system, state=state):
+                window = types.SimpleNamespace(
+                    root=Mock(), keyboard=Mock(), held_key=None,
+                    capabilities={'X': {}}, can_move=Mock(return_value=True),
+                    jog_once=Mock(return_value=True), step=Mock())
+                window.keyboard.get.return_value = True
+                window.step.get.return_value = '0.1'
+                window.root.tk.call.return_value = window_system
+                widget = Mock()
+                widget.winfo_class.return_value = 'Tk'
+                event = types.SimpleNamespace(keysym='d', widget=widget, state=state)
+                MotorisedStageControlWindow.key_pressed(window, event)
+                if should_move:
+                    window.jog_once.assert_called_once_with('X', 1)
+                    self.assertEqual(window.held_key, 'd')
+                else:
+                    window.jog_once.assert_not_called()
 
 
 @unittest.skipUnless(os.environ.get('JAZLABS_TEST_MOTOR_GUI') == '1', 'Requires a desktop display')

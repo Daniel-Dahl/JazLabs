@@ -342,7 +342,15 @@ class MotorisedStageControlWindow:
             return
         if event.widget.winfo_class() in ("Entry", "TEntry", "TCombobox", "Spinbox", "TSpinbox", "Text"):
             return
-        if event.state & (0x4 | 0x8 | 0x40):
+        window_system = self.root.tk.call("tk", "windowingsystem")
+        if window_system == "win32":
+            # Windows uses Mod1 (0x8) for Num Lock and 0x20000 for Alt.
+            shortcut_modifiers = 0x4 | 0x20000
+        elif window_system == "aqua":
+            shortcut_modifiers = 0x4 | 0x8 | 0x10  # Control, Command, Option.
+        else:
+            shortcut_modifiers = 0x4 | 0x8 | 0x40  # Control, Alt, Super on X11.
+        if event.state & shortcut_modifiers:
             return  # Leave Ctrl/Alt/Command shortcuts to the desktop.
         if self.held_key:
             if self.held_key == key and self.release_after_id:
@@ -355,6 +363,20 @@ class MotorisedStageControlWindow:
             return "break"
         axis = axes[index]
         if not self.can_move(axis):
+            current = self.state["axes"].get(axis, {})
+            if not self.state["connected"] or current.get("age", 999) >= 1:
+                reason = "waiting for live feedback"
+            elif self.state["stopped"] or self.state["stop_pending"]:
+                reason = "press Resume after stopping"
+            elif current.get("fault"):
+                reason = str(current["fault"])
+            elif not current.get("enabled"):
+                reason = "enable the axis first"
+            elif self.capabilities[axis]["home"] and not current.get("homed"):
+                reason = "home the axis first"
+            else:
+                reason = "wait for the current movement to finish"
+            self.keyboard_hint.set(f"Keyboard: {axis} cannot move · {reason}")
             return "break"
         if self.jog_once(axis, sign):
             self.held_key, self.held_axis = key, axis
@@ -390,7 +412,10 @@ class MotorisedStageControlWindow:
 
     def check_application_focus(self):
         self.focus_after_id = None
-        if self.root.focus_displayof() is None:
+        # Combobox popdowns exist in Tcl without a corresponding Python widget.
+        # Only ask whether focus exists; do not resolve its path via nametowidget.
+        focused_window = self.root.tk.call("focus", "-displayof", self.root._w)
+        if not focused_window:
             self.release_jog(disarm=True)
 
     def focus_entered(self, event):
