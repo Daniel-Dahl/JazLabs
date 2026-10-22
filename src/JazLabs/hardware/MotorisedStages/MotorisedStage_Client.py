@@ -5,11 +5,13 @@ same client. Only the client's network thread handles asynchronous RPCs; it
 never imports or accesses a hardware driver.
 """
 import math
+import logging
 import time
 import uuid
 
 import zmq
 
+logger = logging.getLogger(__name__)
 
 class MotorisedStageClient:
     def __init__(self, host="127.0.0.1", command_port=50931, timeout_ms=500):
@@ -28,19 +30,21 @@ class MotorisedStageClient:
         self.wake = threading.Event()
         self.held_jog = None
         self.received_at = None
+        self.communication_stop_reason = None
         self.snapshot = {"connected": False, "name": "Connecting…", "capabilities": [],
                          "axes": {}, "stopped": False, "stop_pending": False,
                          "message": "Connecting…", "error": None, "sequence": 0}
         self.thread = threading.Thread(target=self.run, name="motor-network-owner", daemon=True)
 
-    def request(self, command, axis=None, value=None, operation_id=None):
+    def request(self, command, axis=None, value=None, operation_id=None, stop_reason=None):
         socket = self.context.socket(zmq.REQ)
         socket.setsockopt(zmq.LINGER, 0)
         socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
         socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
         try:
             socket.connect(self.endpoint)
-            socket.send_json({"command": command, "axis": axis, "value": value, "operation_id": operation_id})
+            socket.send_json({"command": command, "axis": axis, "value": value,
+                              "operation_id": operation_id, "stop_reason": stop_reason})
             response = socket.recv_json()
             if not response.get("ok"):
                 raise RuntimeError(response.get("error", "Motion service rejected request"))
@@ -154,6 +158,7 @@ class MotorisedStageClient:
                 while not self.commands.empty():
                     self.commands.get_nowait()
                 self.snapshot["stop_pending"] = True
+                self.communication_stop_reason = None
                 self.stop_requested.set()
             elif command == "release_jog":
                 self.held_jog = None
@@ -209,16 +214,23 @@ class MotorisedStageClient:
                         self.held_jog = None
                         command, axis, value = "state", None, None
                 try:
-                    state = self.request(command, axis, value)
+                    if stopping:
+                        state = self.request(command, axis, value, stop_reason=self.communication_stop_reason)
+                    else:
+                        state = self.request(command, axis, value)
                     with self.lock:
                         self.snapshot = state
                         self.received_at = time.monotonic()
                         if stopping:
                             self.stop_requested.clear()
+                            self.communication_stop_reason = None
                     if self.closing.is_set() and stopping:
                         break
                 except Exception as exc:
                     with self.lock:
+                        if not self.stop_requested.is_set():
+                            self.communication_stop_reason = f"Client {command} request failed: {exc}"
+                            logger.warning("Motor stop requested: %s", self.communication_stop_reason)
                         self.snapshot.update(connected=False, error=str(exc), message="Motion service unavailable")
                         self.held_jog = None
                         while not self.commands.empty():

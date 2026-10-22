@@ -16,7 +16,7 @@ MOTOR_SERVERS = [
         "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "CONEXAGAPSerial",
         "stage_kwargs": {"port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0},
-        "limits": {},  # Add calibrated U/V limits in degrees to enable sliders.
+        "limits": {"U": [-0.7600, 0.7600], "V": [-0.7600, 0.7600]},  # Add calibrated U/V limits in degrees to enable sliders.
         "default_axis": "U",  # U = yaw, V = pitch.
         "relative_step": 0.005,
         "expected_units": "deg",

@@ -127,6 +127,53 @@ class NetworkTests(unittest.TestCase):
             self.assertTrue(result['stop_pending'] or result['stopped'])
         self.wait(lambda: self.client.request('state')['stopped'])
 
+    def test_first_move_feedback_failure_preserves_stop_reason_after_resume(self):
+        original = SimulatedStage.GetAxisStatus
+        failed = False
+
+        def fail_after_first_movement(mount, axis):
+            nonlocal failed
+            status = original(mount, axis)
+            if not failed and status['position'] > 5:
+                failed = True
+                raise OSError('simulated first-move serial read failure')
+            return status
+
+        with patch.object(SimulatedStage, 'GetAxisStatus', fail_after_first_movement):
+            self.client.request('relative', 'X', .02)
+            self.wait(lambda: self.client.request('state')['stopped'])
+            state = self.client.request('state')
+            reason = state['stop_reason']
+            self.assertIn('simulated first-move serial read failure', reason)
+            self.assertIn(reason, state['message'])
+            self.client.request('resume')
+            self.wait(lambda: not self.client.request('state')['stopped'])
+            state = self.client.request('state')
+            self.assertIsNone(state['stop_reason'])
+            self.assertEqual(state['last_stop_reason'], reason)
+            self.client.MoveTo('X', 5.1)
+
+    def test_gui_connection_failure_reports_why_it_requested_stop(self):
+        endpoint = MotorisedStageClient(command_port=self.port)
+        original_request = endpoint.request
+
+        def lose_first_move_reply(command, *args, **kwargs):
+            state = original_request(command, *args, **kwargs)
+            if command == 'relative':
+                raise TimeoutError('simulated lost first-move reply')
+            return state
+
+        with patch.object(endpoint, 'request', side_effect=lose_first_move_reply):
+            endpoint.submit('relative', 'X', .02)
+            endpoint.start()
+            try:
+                self.wait(lambda: endpoint.get_state()['stopped'])
+                self.assertEqual(endpoint.get_state()['stop_reason'],
+                                 'Client relative request failed: simulated lost first-move reply')
+            finally:
+                endpoint.close()
+                endpoint.thread.join(2)
+
     def test_remote_short_tap_survives_release_before_network_send(self):
         endpoint = MotorisedStageClient(command_port=self.port)
         # Both events happen before the network loop gets a turn.

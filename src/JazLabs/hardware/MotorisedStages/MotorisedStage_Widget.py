@@ -447,7 +447,10 @@ class MotorisedStageControlWindow:
         self.name.set(state.get("name", "Motion"))
         self.connection.set("Feedback unavailable / stale" if stale else "Connected · live feedback")
         self.connection_label.configure(foreground=self.colors["amber"] if stale else self.colors["green"])
-        self.message.set(self.local_error or state.get("error") or state.get("message", ""))
+        if state.get("stop_reason") and (state["stopped"] or state["stop_pending"]):
+            self.message.set(f"Motion stopped: {state['stop_reason']}")
+        else:
+            self.message.set(self.local_error or state.get("error") or state.get("message", ""))
         self.resume_button.state(["!disabled"] if state["stopped"] and state["connected"] and not state["stop_pending"] and not busy else ["disabled"])
         for axis, widgets in self.axis_widgets.items():
             spec = self.capabilities[axis]

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import logging
 import math
 import multiprocessing as mp
 import queue
@@ -7,6 +8,7 @@ import time
 
 import zmq
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_STAGE_TYPES = (
     "simulation",
@@ -147,7 +149,8 @@ class MotorisedStageZMQServer:
                         if command not in {"absolute", "relative", "home", "jog", "release_jog",
                                            "stop", "resume", "speed", "enable"}:
                             raise ValueError(f"Unknown motion command {command}")
-                        worker.submit(command, message.get("axis"), message.get("value"), operation_id=message.get("operation_id"))
+                        worker.submit(command, message.get("axis"), message.get("value"),
+                                      operation_id=message.get("operation_id"), stop_reason=message.get("stop_reason"))
                     response = {"ok": True, "state": worker.get_state()}
                 except Exception as exc:
                     response = {"ok": False, "error": str(exc)}
@@ -187,7 +190,8 @@ class StageServerWorker:
         self.epoch = 0
         self.snapshot = {"connected": False, "name": "Connecting…", "capabilities": [],
                          "axes": {}, "stopped": False, "stop_pending": False,
-                         "error": None, "message": "Connecting…", "sequence": 0, "operations": {}}
+                         "error": None, "message": "Connecting…", "sequence": 0, "operations": {},
+                         "stop_reason": None, "last_stop_reason": None}
         self.thread = threading.Thread(target=self.run, name="motor-hardware-owner", daemon=True)
 
     def start(self):
@@ -202,11 +206,16 @@ class StageServerWorker:
                 state["age"] = now - state.pop("updated_at", now)
             return result
 
-    def submit(self, command, axis=None, value=None, operation_id=None):
+    def submit(self, command, axis=None, value=None, operation_id=None, stop_reason=None):
         with self.lock:
             if self.closing.is_set():
                 raise RuntimeError("Motion service is closing")
             if command == "stop":
+                reason = str(stop_reason or "Stop requested by client")
+                if not self.stop_requested.is_set():
+                    if not self.snapshot["stopped"] or reason != self.snapshot["last_stop_reason"]:
+                        logger.warning("Motor motion stopped: %s", reason)
+                    self.snapshot.update(stop_reason=reason, last_stop_reason=reason)
                 self.epoch += 1
                 self.held_jog = None
                 self.snapshot["stop_pending"] = True
@@ -305,7 +314,7 @@ class StageServerWorker:
                     try:
                         driver.StopAll()
                         with self.lock:
-                            self.snapshot.update(message="Stopped · all axes")
+                            self.snapshot.update(message=f"Motion stopped: {self.snapshot['stop_reason']}")
                     except Exception as exc:
                         with self.lock:
                             self.snapshot.update(message="Stop failed", error=str(exc))
@@ -376,7 +385,7 @@ class StageServerWorker:
                         if command == "resume":
                             if active_axis or any(s["moving"] or s["homing"] for s in self.snapshot["axes"].values()):
                                 raise ValueError("Wait for all axes to stop before resuming")
-                            self.snapshot.update(stopped=False, error=None, message="Ready · keyboard off")
+                            self.snapshot.update(stopped=False, error=None, stop_reason=None, message="Ready · keyboard off")
                             continue
                         if active_axis or any(s["moving"] or s["homing"] for s in self.snapshot["axes"].values()):
                             raise ValueError("Wait for motion to complete")
@@ -450,7 +459,7 @@ class StageServerWorker:
                             self.snapshot["operations"][intent_operation].update(status="failed", error=str(exc))
                         self.snapshot.update(error=str(exc), message=str(exc))
                     if active_axis or any(s.get("fault") for s in self.snapshot["axes"].values()):
-                        self.submit("stop")
+                        self.submit("stop", stop_reason=str(exc))
                 except Exception as exc:
                     with self.lock:
                         self.held_jog = None
@@ -458,7 +467,7 @@ class StageServerWorker:
                             if operation_id is not None:
                                 self.snapshot["operations"][operation_id].update(status="failed", error=str(exc))
                         self.snapshot.update(connected=False, error=str(exc), message="Feedback unavailable")
-                    self.submit("stop")
+                    self.submit("stop", stop_reason=str(exc))
                 self.wake.wait(self.poll_interval)
         except Exception as exc:
             with self.lock:

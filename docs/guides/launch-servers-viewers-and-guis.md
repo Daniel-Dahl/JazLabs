@@ -421,6 +421,10 @@ Use **Enable axis** if needed before homing or moving an incremental stage.
   unavailable through the serial drivers, so those controls remain disabled.
 - Escape or **STOP ALL AXES** sends controller stop commands, clears pending
   motion, and latches motion off. **Re-enable motion** requires stopped feedback.
+  This button clears the server's stop latch; **Enable axis** controls the
+  controller's motor enable separately. Automatic stops show their triggering
+  reason in the GUI and terminal. The snapshot retains `last_stop_reason` after
+  re-enabling so a first-move failure can be diagnosed.
   This software stop cannot replace a physical emergency stop or deliver a
   command over a disconnected serial link.
 

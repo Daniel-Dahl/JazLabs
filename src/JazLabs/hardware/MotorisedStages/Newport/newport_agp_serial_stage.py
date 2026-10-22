@@ -182,7 +182,7 @@ class NewportAGPSerialStage:
                 "homing": state == 0x1E, "homed": state in referenced,
                 "enabled": state in ready or state in (0x1E, 0x28, 0x29, 0x46) or 0x0A <= state <= 0x10,
                 "fault": f"Positioner error 0x{status['error']:04X}" if status["error"] else None,
-                "speed": None}
+                "speed": None, "controller_state": state, "positioner_error": status["error"]}
 
     def MoveTo(self, axis, target, wait=True, timeout=None):
         if timeout is None:
