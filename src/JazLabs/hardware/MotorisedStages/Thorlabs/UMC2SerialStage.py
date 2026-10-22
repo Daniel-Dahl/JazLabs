@@ -192,7 +192,7 @@ class UMC2SerialStage(APTSerialMotion):
             return {"raw": bits, "trajectory_position": trajectory,
                     "encoder_position": encoder, "velocity": velocity,
                     "motor_current_ma": current, "homing": bool(bits & 0x200),
-                    "homed": bool(bits & 0x400), "moving": bool(bits & 0xF0),
+                    "homed": bool(bits & 0x400), "moving": bool(bits & (0xF0 | 0x800 | 0x20000000)),
                     "enabled": bool(bits & 0x80000000)}
 
     def MoveAbs(self, axis, value, wait=False):

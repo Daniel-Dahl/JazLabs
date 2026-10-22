@@ -1,5 +1,6 @@
 """Opt-in native Tk smoke tests: JAZLABS_TEST_MOTOR_GUI=1 pytest ..."""
 import os
+from copy import deepcopy
 import time
 import types
 import unittest
@@ -171,6 +172,41 @@ class NativeGuiTests(unittest.TestCase):
             self.pump(.5)
             self.assertAlmostEqual(original()['axes']['X']['position'], 5.12)
             self.assertAlmostEqual(float(gui.axis_widgets['X']['slider'].get()), 5000)
+
+    def test_units_are_visible_and_default_to_mm_with_counts_server_units(self):
+        snapshot = self.client.get_state()
+        for index, spec in enumerate(snapshot['capabilities'], start=1):
+            axis = spec['id']
+            scale = index * 1000
+            spec.update(units='counts', unit_scales={'counts': 1, 'mm': scale},
+                        independent_mount=True, step=100, resolution=1,
+                        minimum=0, maximum=25000)
+            snapshot['axes'][axis]['position'] *= scale
+        self.window.close()
+        client = Mock()
+        client.get_state.side_effect = lambda: deepcopy(snapshot)
+        self.window = MotorisedStageControlWindow(client)
+        gui = self.window
+        self.pump(.1)
+        self.assertEqual(gui.axis_units['X'].get(), 'mm')
+        self.assertEqual(gui.axis_widgets['X']['unit_selector'].cget('values'), ('counts', 'mm'))
+        self.assertNotIn('disabled', gui.axis_widgets['X']['unit_selector'].state())
+        gui.axis_steps['X'].set('.25')
+        gui.axis_units['X'].set('counts')
+        gui.axis_widgets['X']['unit_selector'].event_generate('<<ComboboxSelected>>')
+        self.pump(.1)
+        self.assertEqual(float(gui.axis_steps['X'].get()), 250)
+        self.assertEqual(gui.axis_units['Y'].get(), 'mm')
+        gui.axis_units['X'].set('mm')
+        gui.axis_widgets['X']['unit_selector'].event_generate('<<ComboboxSelected>>')
+        self.pump(.1)
+        self.assertEqual(float(gui.axis_steps['X'].get()), .25)
+        snapshot['capabilities'][0]['unit_scales'] = {'counts': 1}
+        self.pump(.2)
+        self.assertEqual(gui.axis_units['X'].get(), 'counts')
+        self.assertIn('disabled', gui.axis_widgets['X']['unit_selector'].state())
+        self.assertIn('calibration', gui.axis_widgets['X']['unit_note'].get())
+        self.assertEqual(float(gui.axis_steps['X'].get()), 100)
 
     def test_typing_disarms_and_focus_loss_releases(self):
         gui = self.window

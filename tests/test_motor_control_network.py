@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from JazLabs.hardware.MotorisedStages.SimulatedStage import SimulatedStage
-from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
+from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient, MotorCommandRejected
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Server import MotorisedStageZMQServer
 
 
@@ -220,6 +220,40 @@ class NetworkTests(unittest.TestCase):
             finally:
                 endpoint.close()
                 endpoint.thread.join(2)
+
+    def test_rejected_gui_command_does_not_stop_another_active_move(self):
+        self.client.MoveTo('X', 6, wait=False)
+        self.wait(lambda: self.client.request('state')['axes']['X']['commanded'])
+        self.client.request('absolute', 'X', 5.5, operation_id='reserved-pending-move')
+        endpoint = MotorisedStageClient(command_port=self.port)
+        original_request = endpoint.request
+        rejected = threading.Event()
+
+        def capture_rejection(command, *args, **kwargs):
+            try:
+                return original_request(command, *args, **kwargs)
+            except MotorCommandRejected:
+                rejected.set()
+                raise
+
+        with patch.object(endpoint, 'request', side_effect=capture_rejection):
+            endpoint.submit('absolute', 'X', 5.2)
+            endpoint.start()
+            try:
+                self.assertTrue(rejected.wait(1))
+                time.sleep(.15)
+                self.assertFalse(self.client.request('state')['stopped'])
+                self.assertIsNone(self.client.request('state')['last_stop_reason'])
+            finally:
+                endpoint.close()
+                endpoint.thread.join(2)
+
+    def test_synchronous_rejected_move_does_not_send_stop(self):
+        with patch.object(self.client, 'request', side_effect=MotorCommandRejected('command queue full')) as request:
+            with self.assertRaises(MotorCommandRejected):
+                self.client.MoveTo('X', 5.1, timeout=1)
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(request.call_args.args[0], 'absolute')
 
     def test_remote_short_tap_survives_release_before_network_send(self):
         endpoint = MotorisedStageClient(command_port=self.port)

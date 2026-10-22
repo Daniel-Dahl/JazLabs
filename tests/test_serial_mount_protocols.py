@@ -121,6 +121,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status['motor_current_ma'], -5)
         self.assertTrue(status['homed'])
 
+    def test_umc_active_command_is_busy_even_after_direction_bits_clear(self):
+        stage = umc.UMC2SerialStage('fake', detect_stages=False)
+        for flags, expected_busy in ((0xA0000400, True), (0x80000C00, True), (0x80000400, False)):
+            with self.subTest(flags=flags):
+                stage.serial.chunks = [packet(0x0494, 0x21, struct.pack('<HiiHhI', 1, 100, 100, 0, 0, flags))]
+                self.assertEqual(stage.GetAxisStatus('X')['moving'], expected_busy)
+
     def test_umc_timeout_and_invalid_count(self):
         stage = umc.UMC2SerialStage('fake', detect_stages=False)
         with self.assertRaises(TimeoutError):

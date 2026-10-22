@@ -13,6 +13,10 @@ import zmq
 
 logger = logging.getLogger(__name__)
 
+class MotorCommandRejected(RuntimeError):
+    """The server replied but did not accept the requested command."""
+
+
 class MotorisedStageClient:
     def __init__(self, host="127.0.0.1", command_port=50931, timeout_ms=500):
         import queue
@@ -47,7 +51,7 @@ class MotorisedStageClient:
                               "operation_id": operation_id, "stop_reason": stop_reason})
             response = socket.recv_json()
             if not response.get("ok"):
-                raise RuntimeError(response.get("error", "Motion service rejected request"))
+                raise MotorCommandRejected(response.get("error", "Motion service rejected request"))
             return response.get("state")
         except zmq.Again as exc:
             raise TimeoutError("Motion service did not respond") from exc
@@ -149,6 +153,9 @@ class MotorisedStageClient:
                     raise RuntimeError(status.get("fault") or "Motor feedback is stale")
                 time.sleep(.05)
             raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+        except MotorCommandRejected:
+            # A rejected RPC did not start this move; leave other motion alone.
+            raise
         except Exception as exc:
             if stop_required:
                 try:
@@ -194,7 +201,12 @@ class MotorisedStageClient:
                 try:
                     self.commands.put_nowait((command, axis, value))
                 except queue.Full as exc:
-                    raise RuntimeError("A motor command is already pending") from exc
+                    pending = self.commands.get_nowait()
+                    if command == "relative" and pending[0] == "relative":
+                        self.commands.put_nowait((command, axis, value))
+                    else:
+                        self.commands.put_nowait(pending)
+                        raise RuntimeError("A motor command is already pending") from exc
         self.wake.set()
 
     def get_state(self):
@@ -249,6 +261,12 @@ class MotorisedStageClient:
                             self.communication_stop_reason = None
                     if self.closing.is_set() and stopping:
                         break
+                except MotorCommandRejected as exc:
+                    # A valid rejection is not a lost reply or a broken link.
+                    with self.lock:
+                        self.snapshot.update(error=str(exc), message="Command rejected")
+                        self.held_jog = None
+                        self.release_requested.set()
                 except Exception as exc:
                     with self.lock:
                         waiting_for_initial_connection = (

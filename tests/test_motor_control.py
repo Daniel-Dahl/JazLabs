@@ -62,6 +62,43 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(len(self.backend.moves), 1)
         self.assertAlmostEqual(self.worker.get_state()['axes']['X']['position'], 5.02)
 
+    def test_rapid_taps_keep_one_pending_step_and_do_not_interrupt_active_move(self):
+        self.worker.submit('relative', 'X', .2)
+        wait_until(lambda: len(self.backend.moves) == 1)
+        for _ in range(100):
+            self.worker.submit('relative', 'X', .01)
+        self.assertLessEqual(self.worker.commands.qsize(), 1)
+        wait_until(lambda: len(self.backend.moves) == 2)
+        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
+        self.assertFalse(self.worker.get_state()['stopped'])
+        self.assertIsNone(self.worker.get_state()['error'])
+        self.assertAlmostEqual(self.backend.GetPosition('X'), 5.21)
+        time.sleep(.2)
+        self.assertEqual(len(self.backend.moves), 2)
+
+    def test_held_jog_waits_for_controller_to_finish_active_command(self):
+        original = self.backend.GetAxisStatus
+        controller_finished = threading.Event()
+
+        def busy_until_controller_finishes(axis):
+            status = original(axis)
+            if axis == 'X' and self.backend.moves and not controller_finished.is_set():
+                status['moving'] = True
+            return status
+
+        self.backend.GetAxisStatus = busy_until_controller_finishes
+        for _ in range(10):
+            self.worker.submit('jog', 'X', .01)
+            time.sleep(.04)
+        self.assertEqual(len(self.backend.moves), 1)
+        controller_finished.set()
+        self.worker.submit('jog', 'X', .01)
+        wait_until(lambda: len(self.backend.moves) >= 2)
+        self.worker.submit('release_jog')
+        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
+        self.assertFalse(self.worker.get_state()['stopped'])
+        self.assertIsNone(self.worker.get_state()['error'])
+
     def test_held_jog_repeats_without_queue_and_release_finishes_step(self):
         for _ in range(12):
             self.worker.submit('jog', 'X', .01)

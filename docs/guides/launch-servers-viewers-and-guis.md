@@ -363,8 +363,11 @@ an arbitrary attached mechanism. No homing, movement or parameter writes occur
 during detection. Restart the server after changing fitted stages.
 
 Each UMC2 bay is shown as a separate mount panel in the same GUI, with its own
-label, units selector, relative step, target and slider. Both panels share one
-server and COM port. The current scheduler performs one move at a time; keyboard
+label, units selector, relative step, target and slider. The units selector is
+beside the position readout. The GUI prefers mm when calibrated, even if the
+server's canonical units are counts, and converts a custom step when units change.
+Without counts/mm calibration, it shows a disabled counts selector and an explicit
+millimetre-unavailable message. Both panels share one server and COM port. The current scheduler performs one move at a time; keyboard
 A/D controls the first mount and W/S the second. STOP ALL AXES stops both mounts.
 
 In `stage_kwargs.mounts`, declare `physical_units="mm"` for each fitted linear
@@ -456,8 +459,10 @@ Use **Enable axis** if needed before homing or moving an incremental stage.
 
 - Enable **Keyboard control**: A/D jog the first axis, W/S the second, and Q/E
   the third. A tap sends one configured relative step; holding repeats one step
-  at a time after the preceding move completes. Release finishes the current
-  step and cancels further repetition. Choose a small step for fine alignment.
+  at a time after the preceding move completes. Rapid taps while busy retain
+  only the latest pending step instead of accumulating a long movement queue.
+  Release finishes the current step and cancels further held-key repetition.
+  Choose a small step for fine alignment.
 - Absolute targets use the axis's displayed units. Slider dragging previews a
   target; release sends one absolute move within the configured travel limits.
 - Speed controls are available only when the driver advertises support. The

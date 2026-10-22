@@ -248,7 +248,14 @@ class StageServerWorker:
             try:
                 self.commands.put_nowait((self.epoch, command, axis, value, operation_id))
             except queue.Full as exc:
-                raise RuntimeError("A motor command is already pending") from exc
+                pending = self.commands.get_nowait()
+                if command == "relative" and operation_id is None and pending[1] == "relative" and pending[4] is None:
+                    # Rapid GUI taps keep only the latest pending step. Moves
+                    # with completion receipts must never be silently replaced.
+                    self.commands.put_nowait((self.epoch, command, axis, value, None))
+                else:
+                    self.commands.put_nowait(pending)
+                    raise RuntimeError("A motor command is already pending") from exc
             if operation_id is not None:
                 operations = self.snapshot["operations"]
                 operations[operation_id] = {"axis": axis, "status": "queued", "error": None}
@@ -377,11 +384,11 @@ class StageServerWorker:
                         # One in-flight axis is deliberate: hold repetition never
                         # creates hidden queued moves or simultaneous directions.
                         intent = None
-                        if not active_axis and not self.snapshot["stopped"] and self.held_jog:
+                        if not active_axis and not self.commands.empty():
+                            intent = self.commands.get_nowait()
+                        elif not active_axis and not self.snapshot["stopped"] and self.held_jog:
                             axis, delta, expires = self.held_jog
                             intent = (self.epoch, "relative", axis, delta, None)
-                        elif not self.commands.empty():
-                            intent = self.commands.get_nowait()
                     if intent:
                         epoch, command, axis, value, intent_operation = intent
                         if epoch != self.epoch:

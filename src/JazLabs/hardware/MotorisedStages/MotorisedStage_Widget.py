@@ -29,6 +29,7 @@ class MotorisedStageControlWindow:
         self.capabilities = {}
         self.axis_widgets = {}
         self.axis_units = {}
+        self.axis_display_units = {}
         self.axis_steps = {}
         self.state = {"connected": False, "axes": {}, "stopped": False, "stop_pending": False}
         self.layout = tk.StringVar(value=layout)
@@ -136,12 +137,33 @@ class MotorisedStageControlWindow:
     def _axis_readout(self, parent, axis):
         ttk = self.ttk
         spec = self.capabilities[axis]
-        self.axis_units.setdefault(axis, self.tk.StringVar(value=spec["units"]))
+        scales = spec.get("unit_scales", {spec["units"]: 1.0})
+        default_unit = "mm" if "mm" in scales else spec["units"]
+        self.axis_units.setdefault(axis, self.tk.StringVar(value=default_unit))
+        if self.axis_units[axis].get() not in scales:
+            self.axis_units[axis].set(default_unit)
+            self.axis_display_units[axis] = default_unit
+            self.axis_steps.pop(axis, None)
+        self.axis_display_units.setdefault(axis, self.axis_units[axis].get())
         panel = self._panel(parent)
         ttk.Label(panel, text=spec["label"], style="Heading.TLabel").pack(anchor="w")
         value = self.tk.StringVar(value="—")
         status = self.tk.StringVar(value="Awaiting feedback")
         ttk.Label(panel, textvariable=value, style="Position.TLabel").pack(anchor="w", pady=6)
+        unit_selector = None
+        unit_note = self.tk.StringVar(value="")
+        if "unit_scales" in spec:
+            unit_row = ttk.Frame(panel, style="Panel.TFrame")
+            unit_row.pack(anchor="w", pady=(0, 6))
+            ttk.Label(unit_row, text="Units", style="Panel.TLabel").pack(side="left")
+            unit_selector = ttk.Combobox(unit_row, textvariable=self.axis_units[axis],
+                values=list(scales), state="readonly" if len(scales) > 1 else "disabled", width=10)
+            unit_selector.pack(side="left", padx=8)
+            unit_selector.bind("<<ComboboxSelected>>", lambda event: self.units_changed(axis))
+            if "mm" not in scales and spec["units"] == "counts":
+                unit_note.set("Millimetres unavailable: no confirmed counts/mm calibration.")
+                ttk.Label(panel, textvariable=unit_note, wraplength=320,
+                          style="Warning.TLabel").pack(anchor="w", pady=(0, 6))
         indicator = ttk.Label(panel, textvariable=status, style="Warning.TLabel")
         indicator.pack(anchor="w")
         actions = ttk.Frame(panel, style="Panel.TFrame")
@@ -151,7 +173,8 @@ class MotorisedStageControlWindow:
             home.pack(side="left")
         enable = ttk.Button(actions, text="Enable axis", command=lambda: self.send("enable", axis))
         self.axis_widgets[axis] = {"position": value, "status": status, "indicator": indicator,
-                                   "home": home, "enable": enable, "move_controls": []}
+                                   "home": home, "enable": enable, "move_controls": [],
+                                   "unit_selector": unit_selector, "unit_note": unit_note}
         return panel
 
     def _position_controls(self, parent, axis):
@@ -160,14 +183,6 @@ class MotorisedStageControlWindow:
         widgets = self.axis_widgets[axis]
         unit = self.axis_units[axis].get()
         scales = spec.get("unit_scales", {spec["units"]: 1.0})
-        if len(scales) > 1:
-            unit_row = ttk.Frame(parent, style="Panel.TFrame")
-            unit_row.pack(fill="x", pady=(0, 8))
-            ttk.Label(unit_row, text="Position units", style="Panel.TLabel").pack(side="left")
-            selector = ttk.Combobox(unit_row, textvariable=self.axis_units[axis],
-                values=list(scales), state="readonly", width=10)
-            selector.pack(side="left", padx=8)
-            selector.bind("<<ComboboxSelected>>", lambda event: self.units_changed(axis))
         if spec.get("independent_mount") or len(scales) > 1:
             self.axis_steps.setdefault(axis, self.tk.StringVar(value=str(self.display_value(axis, spec["step"]))))
             step_row = ttk.Frame(parent, style="Panel.TFrame")
@@ -313,10 +328,23 @@ class MotorisedStageControlWindow:
 
     def units_changed(self, axis):
         self.release_jog(disarm=True)
+        spec = self.capabilities[axis]
+        scales = spec.get("unit_scales", {spec["units"]: 1.0})
+        previous_unit = self.axis_display_units[axis]
+        selected_unit = self.axis_units[axis].get()
         if axis in self.axis_steps:
-            self.axis_steps[axis].set(str(self.display_value(axis, self.capabilities[axis]["step"])))
+            try:
+                step = float(self.axis_steps[axis].get()) * scales[previous_unit] / scales[selected_unit]
+                if not math.isfinite(step) or step <= 0:
+                    raise ValueError("Invalid step")
+                if selected_unit == "counts":
+                    step = max(1, round(step))
+            except ValueError:
+                step = self.display_value(axis, spec["step"])
+            self.axis_steps[axis].set(str(step))
         elif len(self.capabilities) == 1:
-            self.step.set(str(self.display_value(axis, self.capabilities[axis]["step"])))
+            self.step.set(str(self.display_value(axis, spec["step"])))
+        self.axis_display_units[axis] = selected_unit
         self.rebuild_layout()
 
     def number(self, axis, value):

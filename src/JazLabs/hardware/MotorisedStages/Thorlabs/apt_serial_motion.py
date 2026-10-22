@@ -134,7 +134,10 @@ class APTSerialMotion:
             fault_mask = 0x40000000 | 0x00020000 | 0x00040000 | 0x00080000 | 0x02000000 | 0x08000000
             profile = self._motion_profiles[axis]
             positions = {unit: position / scale for unit, scale in profile["unit_scales"].items()}
-            return {"position": positions[profile["units"]], "positions": positions, "units": profile["units"], "moving": bool(bits & 0xF0),
+            # Direction flags can clear before the controller finishes a command.
+            busy_bits = 0xF0 | 0x800 | 0x20000000
+            return {"position": positions[profile["units"]], "positions": positions, "units": profile["units"], "moving": bool(bits & busy_bits),
+                    "controller_status_bits": bits,
                     "homing": bool(bits & 0x200), "homed": bool(bits & 0x400),
                     "enabled": bool(bits & 0x80000000),
                     "fault": f"APT fault 0x{bits:08X}" if bits & fault_mask else None, "speed": None}
