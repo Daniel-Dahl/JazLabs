@@ -10,3 +10,4 @@
 - [`guides/instrument-client-examples.md`](guides/instrument-client-examples.md)
   indexes the minimal scripts and matching notebooks.
 - The remaining files in `guides/` describe individual procedures.
+- [Motor control GUI and service](motor_control.md): alignment pad, axis console, serial hardware and simulation.

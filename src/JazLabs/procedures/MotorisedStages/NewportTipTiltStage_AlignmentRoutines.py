@@ -2,13 +2,14 @@ import numpy as np
 import cma
 from scipy.optimize import minimize
 
-from JazLabs.hardware.MotorisedStages.Newport.NewportMounts import NewportM100D_VISA, AgilisUC8Stage
+from JazLabs.hardware.MotorisedStages.Newport.newport_agap_serial_stage import NewportM100DSerialStage
+from JazLabs.hardware.MotorisedStages.Newport.newport_agp_serial_stage import NewportAGPSerialStage
 from JazLabs.utils import AlignmentFunctions as AlignFunc
 from JazLabs.utils.camera_utils import get_relative_power
 
 
 class AlignmentObj:
-    def __init__(self, stage_objs: list[NewportM100D_VISA], pwr_objs: list | None = None, cam_objs: list | None = None, stage_obj_trans: list[AgilisUC8Stage] | None = None):
+    def __init__(self, stage_objs: list[NewportM100DSerialStage], pwr_objs: list | None = None, cam_objs: list | None = None, stage_obj_trans: list[NewportAGPSerialStage] | None = None):
         self.stage_objs = stage_objs
         self.pwr_objs = [] if pwr_objs is None else pwr_objs
         self.cam_objs = [] if cam_objs is None else cam_objs
@@ -45,7 +46,7 @@ class AlignmentObj:
             raise TypeError("properties_to_align must be a list.")
 
         if initial_step_sizes is None:
-            initial_step_sizes = [{"d_YAW": 0.1, "d_PITCH": 0.1, "d_FOCUS": 1000} for _ in range(max(len(self.stage_objs), len(self.stage_obj_trans), 1))]
+            initial_step_sizes = [{"d_YAW": 0.1, "d_PITCH": 0.1} for _ in range(max(len(self.stage_objs), len(self.stage_obj_trans), 1))]
         if not isinstance(initial_step_sizes, list):
             raise TypeError("initial_step_sizes must be a list.")
 
@@ -68,12 +69,12 @@ class AlignmentObj:
 
             if stage_props.get("AlignYAW", False):
                 active_axes.append(("mirror", stage_idx, "U"))
-                initial_physical.append(self.stage_objs[stage_idx].get_position("U"))
+                initial_physical.append(self.stage_objs[stage_idx].GetPositions()["U"])
                 step_array.append(stage_steps["d_YAW"])
 
             if stage_props.get("AlignPITCH", False):
                 active_axes.append(("mirror", stage_idx, "V"))
-                initial_physical.append(self.stage_objs[stage_idx].get_position("V"))
+                initial_physical.append(self.stage_objs[stage_idx].GetPositions()["V"])
                 step_array.append(stage_steps["d_PITCH"])
 
             if stage_props.get("AlignFOCUS", False):
@@ -81,8 +82,12 @@ class AlignmentObj:
                     raise IndexError(
                         f"AlignFOCUS requested for stage index {stage_idx}, but stage_obj_trans is missing that index."
                     )
-                active_axes.append(("focus", stage_idx, None))
-                initial_physical.append(self.stage_obj_trans[stage_idx].get_stepsFromZero())
+                if "d_FOCUS" not in stage_steps:
+                    raise ValueError(
+                        "AlignFOCUS requires an explicit d_FOCUS in the AGP stage's configured units."
+                    )
+                active_axes.append(("focus", stage_idx, "X"))
+                initial_physical.append(self.stage_obj_trans[stage_idx].GetPositions()[0])
                 step_array.append(stage_steps["d_FOCUS"])
 
         if not active_axes:
@@ -119,9 +124,9 @@ class AlignmentObj:
 
             for i, (kind, stage_idx, axis) in enumerate(active_axes):
                 if kind == "mirror":
-                    self.stage_objs[stage_idx].move_abs(physical_vertex[i], axis)
+                    self.stage_objs[stage_idx].MoveAbs(axis, float(physical_vertex[i]), wait=True)
                 else:
-                    self.stage_obj_trans[stage_idx].move_relative_steps(int(round(physical_vertex[i])))
+                    self.stage_obj_trans[stage_idx].MoveAbs(axis, float(physical_vertex[i]), wait=True)
 
             if use_power_meter:
                 metric_value = float(self.pwr_objs[pwr_meter_obj_idx].GetPower())
@@ -211,9 +216,9 @@ class AlignmentObj:
             print("Updating stage(s) to best-found properties")
             for i, (kind, stage_idx, axis) in enumerate(active_axes):
                 if kind == "mirror":
-                    self.stage_objs[stage_idx].move_abs(best_physical_vertex[i], axis)
+                    self.stage_objs[stage_idx].MoveAbs(axis, float(best_physical_vertex[i]), wait=True)
                 else:
-                    self.stage_obj_trans[stage_idx].move_relative_steps(int(round(best_physical_vertex[i])))
+                    self.stage_obj_trans[stage_idx].MoveAbs(axis, float(best_physical_vertex[i]), wait=True)
 
         AlignFunc.ChangeFileForStopAliginment(0)
 

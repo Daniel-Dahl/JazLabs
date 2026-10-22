@@ -1,321 +1,509 @@
-import multiprocessing as mp
-import traceback
+"""New motor console: capability-driven layouts and leased hold-to-jog.
 
-
-def _as_float(text):
-    text = str(text).strip()
-    if text == "":
-        return None
-    return float(text)
+Run with no arguments for a hardware-free simulator. All I/O belongs to the
+motor client; Tk only submits intents and draws the client's cached state.
+"""
+import math
+import time
 
 
 class MotorisedStageControlWindow:
-    def __init__(self, host="127.0.0.1", command_port=50931, timeout_ms=5000, refresh_ms=1000):
+    def __init__(self, client, layout="alignment"):
         import tkinter as tk
         from tkinter import ttk
-
-        from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import (
-            MotorisedStageClient,
-        )
-
-        self.tk = tk
-        self.ttk = ttk
-        self.refresh_ms = int(refresh_ms)
-        self.status_after_id = None
-
-        self.stage = MotorisedStageClient(host=host, command_port=command_port, timeout_ms=timeout_ms, client_id="motorised_stage_widget")
-
+        self.tk, self.ttk = tk, ttk
+        self.client = client
         self.root = tk.Tk()
-        self.root.title("Motorised Stage Control")
+        self.root.title("JazLabs · Motion")
+        self.root.geometry("1050x760")
+        self.root.minsize(720, 540)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.closed = False
+        self.after_id = None
+        self.focus_after_id = None
+        self.release_after_id = None
+        self.held_key = None
+        self.held_axis = None
+        self.held_distance = None
+        self.held_started = 0
+        self.capabilities = {}
+        self.axis_widgets = {}
+        self.state = {"connected": False, "axes": {}, "stopped": False, "stop_pending": False}
+        self.layout = tk.StringVar(value=layout)
+        self.keyboard = tk.BooleanVar(value=False)
+        self.step = tk.StringVar(value="0.01")
+        self.selected_axis = tk.StringVar()
+        self.name = tk.StringVar(value="Connecting…")
+        self.connection = tk.StringVar(value="Connecting…")
+        self.message = tk.StringVar(value="Connecting…")
+        self.keyboard_hint = tk.StringVar(value="Keyboard off · Escape stops all axes")
+        self.local_error = None
+        self._configure_style()
+        self._build_shell()
+        self.root.bind("<KeyPress>", self.key_pressed)
+        self.root.bind("<KeyRelease>", self.key_released)
+        self.root.bind("<FocusOut>", self.focus_left)
+        self.root.bind("<FocusIn>", self.focus_entered)
+        self.root.bind("<Unmap>", self.window_hidden)
+        self.client.start()
+        self.tick()
 
-        self.status_var = tk.StringVar(value="Connected")
-        self.properties_var = tk.StringVar(value="")
-        self.axis_var = tk.StringVar(value="X")
-        self.units_var = tk.StringVar(value="Steps")
-        self.value_var = tk.StringVar(value="0")
-        self.jog_size_var = tk.StringVar(value="1")
-        self.positions_var = tk.StringVar(value="")
-        self.stage_type = None
-        self.supports_mm = False
-        self.native_units_label = "Steps"
+    def _configure_style(self):
+        style = self.ttk.Style(self.root)
+        style.theme_use("clam")
+        self.colors = {"background": "#08090b", "panel": "#14171b", "ink": "#edf1f5",
+                       "muted": "#a7b0be", "line": "#363e49", "blue": "#89baff",
+                       "green": "#83d4a5", "amber": "#f0c981", "red": "#ff9c9c",
+                       "field": "#0c0e11", "control": "#252a32", "active": "#333d4b"}
+        c = self.colors
+        self.root.configure(background=c["background"])
+        style.configure(".", background=c["background"], foreground=c["ink"], bordercolor=c["line"])
+        self.root.option_add("*TCombobox*Listbox.background", c["field"])
+        self.root.option_add("*TCombobox*Listbox.foreground", c["ink"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", c["active"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", c["ink"])
+        style.configure("TEntry", fieldbackground=c["field"], foreground=c["ink"],
+                        insertcolor=c["ink"], bordercolor=c["line"], padding=6)
+        style.configure("TCombobox", fieldbackground=c["field"], background=c["control"],
+                        foreground=c["ink"], arrowcolor=c["ink"], bordercolor=c["line"], padding=5)
+        style.map("TCombobox", fieldbackground=[("readonly", c["field"])],
+                  foreground=[("readonly", c["ink"])], selectbackground=[("readonly", c["active"])])
+        style.configure("Horizontal.TScale", background=c["blue"], troughcolor=c["field"],
+                        bordercolor=c["line"], lightcolor=c["line"], darkcolor=c["line"])
+        style.map("Horizontal.TScale", background=[("disabled", c["line"])])
+        style.configure("Vertical.TScrollbar", background=c["control"], troughcolor=c["background"],
+                        arrowcolor=c["ink"], bordercolor=c["line"])
+        style.map("Vertical.TScrollbar", background=[("active", c["active"])])
+        style.configure("TFrame", background=c["background"])
+        style.configure("Panel.TFrame", background=c["panel"])
+        style.configure("TLabel", background=c["background"], foreground=c["ink"], font=("Arial", 11))
+        style.configure("Panel.TLabel", background=c["panel"])
+        style.configure("Heading.TLabel", background=c["panel"], font=("Arial", 12, "bold"))
+        style.configure("Position.TLabel", background=c["panel"], font=("Courier", 22))
+        style.configure("Good.TLabel", background=c["panel"], foreground=c["green"], font=("Arial", 10))
+        style.configure("Warning.TLabel", background=c["panel"], foreground=c["amber"], font=("Arial", 10))
+        style.configure("Muted.TLabel", background=c["panel"], foreground=c["muted"], font=("Arial", 10))
+        style.configure("TButton", padding=(12, 9), font=("Arial", 11),
+                        background=c["control"], foreground=c["ink"], bordercolor=c["line"])
+        style.map("TButton", background=[("active", c["active"]), ("disabled", c["panel"])],
+                  foreground=[("disabled", c["muted"])])
+        style.configure("Stop.TButton", background="#401a20", foreground=c["red"], font=("Arial", 12, "bold"))
+        style.map("Stop.TButton", background=[("active", "#622530")])
+        style.configure("TCheckbutton", background=c["panel"], foreground=c["ink"],
+                        indicatorbackground=c["field"], indicatorforeground=c["ink"], font=("Arial", 11))
+        style.map("TCheckbutton", background=[("active", c["panel"])],
+                  indicatorbackground=[("selected", c["blue"]), ("!selected", c["field"])])
 
-        self._build_layout()
-        self._configure_by_stage_type()
-        self.refresh_all()
-        self._schedule_status_refresh()
-
-    def _build_layout(self):
+    def _build_shell(self):
         ttk = self.ttk
+        shell = ttk.Frame(self.root, padding=18)
+        shell.pack(fill="both", expand=True)
+        chrome = ttk.Frame(shell)
+        chrome.pack(fill="x", pady=(0, 14))
+        ttk.Label(chrome, text="JazLabs / Motion", font=("Arial", 13, "bold")).pack(side="left")
+        ttk.Label(chrome, textvariable=self.name).pack(side="left", padx=18)
+        picker = ttk.Combobox(chrome, values=("alignment", "console"), textvariable=self.layout,
+                              state="readonly", width=12)
+        picker.pack(side="right")
+        picker.bind("<<ComboboxSelected>>", lambda event: self.rebuild_layout())
+        self.connection_label = ttk.Label(shell, textvariable=self.connection)
+        self.connection_label.pack(anchor="w", pady=(0, 10))
+        viewport = ttk.Frame(shell)
+        viewport.pack(fill="both", expand=True)
+        canvas = self.tk.Canvas(viewport, background=self.colors["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        self.content = ttk.Frame(canvas)
+        content_window = canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
+        footer = ttk.Frame(shell)
+        footer.pack(fill="x", pady=(14, 0))
+        self.stop_button = ttk.Button(footer, text="■ STOP ALL AXES · Esc", style="Stop.TButton", command=self.stop)
+        self.stop_button.pack(side="right")
+        self.resume_button = ttk.Button(footer, text="Re-enable motion", command=lambda: self.send("resume"))
+        self.resume_button.pack(side="right", padx=8)
+        ttk.Label(footer, textvariable=self.message, wraplength=460).pack(anchor="w")
+        ttk.Label(footer, textvariable=self.keyboard_hint, foreground=self.colors["muted"]).pack(anchor="w")
 
-        main = ttk.Frame(self.root, padding=10)
-        main.grid(row=0, column=0, sticky="nsew")
+    def _panel(self, parent):
+        return self.ttk.Frame(parent, style="Panel.TFrame", padding=16)
 
-        status = ttk.LabelFrame(main, text="Status", padding=8)
-        status.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
-        ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(status, textvariable=self.properties_var).grid(row=1, column=0, sticky="w")
-        ttk.Label(status, textvariable=self.positions_var).grid(row=2, column=0, sticky="w")
+    def _axis_readout(self, parent, axis):
+        ttk = self.ttk
+        spec = self.capabilities[axis]
+        panel = self._panel(parent)
+        ttk.Label(panel, text=spec["label"], style="Heading.TLabel").pack(anchor="w")
+        value = self.tk.StringVar(value="—")
+        status = self.tk.StringVar(value="Awaiting feedback")
+        ttk.Label(panel, textvariable=value, style="Position.TLabel").pack(anchor="w", pady=6)
+        indicator = ttk.Label(panel, textvariable=status, style="Warning.TLabel")
+        indicator.pack(anchor="w")
+        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions.pack(anchor="w", pady=(8, 0))
+        home = ttk.Button(actions, text="Home", command=lambda: self.send("home", axis)) if spec["home"] else None
+        if home:
+            home.pack(side="left")
+        enable = ttk.Button(actions, text="Enable axis", command=lambda: self.send("enable", axis))
+        self.axis_widgets[axis] = {"position": value, "status": status, "indicator": indicator,
+                                   "home": home, "enable": enable, "move_controls": []}
+        return panel
 
-        move = ttk.LabelFrame(main, text="Move", padding=8)
-        move.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-
-        ttk.Label(move, text="Axis").grid(row=0, column=0, sticky="w")
-        self.axis_combo = ttk.Combobox(
-            move,
-            textvariable=self.axis_var,
-            values=("X", "Y", "Z", "ROLL", "YAW", "PITCH"),
-            width=10,
-            state="readonly",
-        )
-        self.axis_combo.grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Label(move, text="Units").grid(row=1, column=0, sticky="w")
-        self.units_combo = ttk.Combobox(
-            move,
-            textvariable=self.units_var,
-            values=("Steps",),
-            width=10,
-            state="readonly",
-        )
-        self.units_combo.grid(row=1, column=1, sticky="ew", padx=3)
-        self.units_combo.bind("<<ComboboxSelected>>", lambda _event: self.get_positions())
-
-        ttk.Label(move, text="Target / delta").grid(row=2, column=0, sticky="w")
-        ttk.Entry(move, textvariable=self.value_var, width=12).grid(row=2, column=1, sticky="ew", padx=3)
-        ttk.Button(move, text="Move Abs", command=self.move_abs).grid(row=3, column=0, sticky="ew", padx=3, pady=2)
-        ttk.Button(move, text="Move Rel", command=self.move_rel).grid(row=3, column=1, sticky="ew", padx=3, pady=2)
-
-        ttk.Separator(move, orient="horizontal").grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=6
-        )
-        ttk.Label(move, text="Jog size").grid(row=5, column=0, sticky="w")
-        ttk.Entry(move, textvariable=self.jog_size_var, width=12).grid(
-            row=5, column=1, sticky="ew", padx=3
-        )
-        ttk.Button(move, text="− Backward", command=self.jog_backward).grid(
-            row=6, column=0, sticky="ew", padx=3, pady=2
-        )
-        ttk.Button(move, text="+ Forward", command=self.jog_forward).grid(
-            row=6, column=1, sticky="ew", padx=3, pady=2
-        )
-
-        controls = ttk.LabelFrame(main, text="Controls", padding=8)
-        controls.grid(row=1, column=1, sticky="nsew", padx=8)
-
-        ttk.Button(controls, text="Get Positions", command=self.get_positions).grid(row=0, column=0, sticky="ew", pady=2)
-        self.home_btn = ttk.Button(controls, text="Home All", command=self.home_all)
-        self.home_btn.grid(row=1, column=0, sticky="ew", pady=2)
-        self.nominal_btn = ttk.Button(controls, text="Set Nominal", command=self.set_nominal)
-        self.nominal_btn.grid(row=2, column=0, sticky="ew", pady=2)
-        ttk.Button(controls, text="Refresh", command=self.refresh_all).grid(row=3, column=0, sticky="ew", pady=2)
-
-        server = ttk.LabelFrame(main, text="Server", padding=8)
-        server.grid(row=1, column=2, sticky="nsew", padx=(8, 0))
-        ttk.Button(server, text="Shutdown Server", command=self.shutdown_server).grid(row=0, column=0, sticky="ew", pady=2)
-        ttk.Button(server, text="Close Window", command=self.close).grid(row=1, column=0, sticky="ew", pady=2)
-
-    def set_status(self, message):
-        self.status_var.set(str(message))
-
-    def show_error(self, exc):
-        self.status_var.set(f"ERROR: {type(exc).__name__}: {exc}")
-
-    def refresh_status(self):
-        try:
-            props = self.stage.GetProperties()
-            if props.get("stage_type") != self.stage_type:
-                self.stage_type = props.get("stage_type")
-                self._configure_by_stage_type()
-            self.properties_var.set(f"type={props['stage_type']} host={props['host']} port={props['command_port']}")
-        except Exception as exc:
-            self.show_error(exc)
-
-    def _configure_by_stage_type(self):
-        props = {}
-        try:
-            props = self.stage.GetProperties()
-            stage_type = props.get("stage_type", "Luminos")
-        except Exception:
-            stage_type = "Luminos"
-
-        self.stage_type = stage_type
-        self.supports_mm = bool(props.get("supports_mm", False))
-        native_units = props.get("units", "steps")
-        if native_units in (
-            "controller_counts",
-            "controller_microsteps",
-            "steps",
-            "steps_from_zero",
-        ):
-            self.native_units_label = "Steps"
-        elif native_units == "deg":
-            self.native_units_label = "deg"
+    def _position_controls(self, parent, axis):
+        ttk = self.ttk
+        spec = self.capabilities[axis]
+        widgets = self.axis_widgets[axis]
+        ttk.Label(parent, text=f"Absolute target ({spec['units']})", style="Panel.TLabel").pack(anchor="w")
+        row = ttk.Frame(parent, style="Panel.TFrame")
+        row.pack(fill="x", pady=(6, 12))
+        target = self.tk.StringVar(value="")
+        entry = ttk.Entry(row, textvariable=target, width=14)
+        entry.pack(side="left", fill="x", expand=True)
+        go = ttk.Button(row, text="Go", command=lambda: self.absolute_move(axis))
+        go.pack(side="left", padx=(8, 0))
+        entry.bind("<Return>", lambda event: self.absolute_move(axis))
+        widgets.update(target=target, entry=entry, target_initialized=False)
+        widgets["move_controls"].append(go)
+        jog_row = ttk.Frame(parent, style="Panel.TFrame")
+        jog_row.pack(fill="x", pady=(0, 12))
+        for sign, text in ((-1, "−"), (1, "+")):
+            button = ttk.Button(jog_row, text=f"{text} {spec['label']}", command=lambda sign=sign: self.jog_once(axis, sign))
+            button.pack(side="left", expand=True, fill="x", padx=(0, 5))
+            widgets["move_controls"].append(button)
+        if spec["minimum"] is not None and spec["maximum"] is not None:
+            preview = self.tk.StringVar(value="Slider target")
+            ttk.Label(parent, textvariable=preview, style="Panel.TLabel").pack(anchor="w")
+            slider = ttk.Scale(parent, from_=spec["minimum"], to=spec["maximum"],
+                               command=lambda value: preview.set(f"Slider target · {self.number(axis, float(value))} {spec['units']}"))
+            slider.pack(fill="x", pady=8)
+            slider.bind("<ButtonPress-1>", lambda event: widgets.update(dragging=True))
+            slider.bind("<ButtonRelease-1>", lambda event: self.slider_released(axis))
+            # Keyboard arrow adjustments commit on key release too.
+            slider.bind("<KeyRelease>", lambda event: self.slider_released(axis) if event.keysym in ("Left", "Right", "Up", "Down", "Home", "End") else None)
+            widgets.update(slider=slider, dragging=False, slider_initialized=False)
+            widgets["move_controls"].append(slider)
+            ttk.Label(parent, text="Drag to preview · release to move", style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(parent, text=f"Range {spec['minimum']:g} to {spec['maximum']:g} {spec['units']}", style="Muted.TLabel").pack(anchor="w")
         else:
-            self.native_units_label = str(native_units)
-        if self.supports_mm:
-            self.units_combo.configure(values=(self.native_units_label, "mm"))
-            if self.units_var.get() not in (self.native_units_label, "mm"):
-                self.units_var.set(self.native_units_label)
+            ttk.Label(parent, text="Slider unavailable · configure travel limits", style="Muted.TLabel", wraplength=260).pack(anchor="w")
+        speed_panel = ttk.Frame(parent, style="Panel.TFrame")
+        speed_panel.pack(fill="x", pady=(16, 0))
+        ttk.Label(speed_panel, text="Motion speed", style="Heading.TLabel").pack(anchor="w")
+        if spec["speed"]:
+            speed = self.tk.StringVar(value="")
+            speed_row = ttk.Frame(speed_panel, style="Panel.TFrame")
+            speed_row.pack(fill="x", pady=(6, 0))
+            ttk.Entry(speed_row, textvariable=speed, width=9).pack(side="left")
+            apply = ttk.Button(speed_row, text="Apply", command=lambda: self.speed_changed(axis))
+            apply.pack(side="left", padx=6)
+            ttk.Label(speed_row, text=spec["speed_units"], style="Panel.TLabel").pack(side="left")
+            widgets.update(speed=speed, speed_initialized=False, speed_button=apply)
         else:
-            self.units_combo.configure(values=(self.native_units_label,))
-            self.units_var.set(self.native_units_label)
+            ttk.Label(speed_panel, text="Unavailable in this driver", style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
 
-        if stage_type == "Luminos":
-            self.axis_combo.configure(values=("X", "Y", "Z", "ROLL", "YAW", "PITCH"))
-            self.axis_var.set("X")
-            self.home_btn.state(["!disabled"])
-            self.nominal_btn.state(["!disabled"])
-        elif stage_type == "NewportM100D":
-            self.axis_combo.configure(values=("U", "V"))
-            self.axis_var.set("U")
-            self.home_btn.state(["disabled"])
-            self.nominal_btn.state(["disabled"])
-        elif stage_type == "BSC203Serial":
-            slots = props.get("slots", [0, 1, 2])
-            axes = ("Z", "X", "Y")[:len(slots)]
-            self.axis_combo.configure(values=axes)
-            self.axis_var.set(axes[0])
-            self.home_btn.state(["!disabled"])
-            self.nominal_btn.state(["!disabled"])
-        elif stage_type == "KDC101Serial":
-            self.axis_combo.configure(values=("X",))
-            self.axis_var.set("X")
-            self.home_btn.state(["!disabled"])
-            self.nominal_btn.state(["!disabled"])
-        elif stage_type == "KST201Serial":
-            axis = props.get("mount_axis") or "X"
-            self.axis_combo.configure(values=(axis,))
-            self.axis_var.set(axis)
-            self.home_btn.state(["!disabled"])
-            self.nominal_btn.state(["!disabled"])
+    def rebuild_layout(self):
+        self.release_jog(disarm=True)
+        for child in self.content.winfo_children():
+            child.destroy()
+        self.axis_widgets = {}
+        if not self.capabilities:
+            return
+        ttk = self.ttk
+        axes = list(self.capabilities)
+        self.root.minsize(960 if self.layout.get() == "alignment" and len(axes) > 1 else 740, 540)
+        tools = self._panel(self.content)
+        tools.pack(side="bottom", fill="x", pady=(12, 0))
+        ttk.Checkbutton(tools, text="Keyboard control", variable=self.keyboard, command=self.keyboard_changed).pack(side="left")
+        ttk.Label(tools, text="Relative step", style="Panel.TLabel").pack(side="left", padx=(22, 8))
+        ttk.Entry(tools, textvariable=self.step, width=10).pack(side="left")
+        units = {spec["units"] for spec in self.capabilities.values()}
+        ttk.Label(tools, text=next(iter(units)) if len(units) == 1 else "selected axis units", style="Panel.TLabel").pack(side="left", padx=6)
+        ttk.Label(tools, text="Tap = one step · hold to repeat", style="Muted.TLabel").pack(side="right")
+        if self.layout.get() == "console":
+            for index, axis in enumerate(axes):
+                row = ttk.Frame(self.content)
+                row.pack(fill="both", expand=True, pady=(0, 10))
+                readout = self._axis_readout(row, axis)
+                readout.pack(side="left", fill="both", padx=(0, 10))
+                controls = self._panel(row)
+                controls.pack(side="left", fill="both", expand=True)
+                self._position_controls(controls, axis)
         else:
-            self.axis_combo.configure(values=("X",))
-            self.axis_var.set("X")
-            self.home_btn.state(["disabled"])
-            self.nominal_btn.state(["disabled"])
+            left = ttk.Frame(self.content)
+            left.pack(side="left", fill="both", expand=True, padx=(0, 12))
+            readouts = ttk.Frame(left)
+            readouts.pack(fill="x")
+            for index, axis in enumerate(axes):
+                panel = self._axis_readout(readouts, axis)
+                column = index % 2
+                panel.grid(row=index // 2, column=column, sticky="nsew", padx=(0, 8), pady=(0, 8))
+                readouts.columnconfigure(column, weight=1)
+            pad_panel = self._panel(left)
+            pad_panel.pack(fill="both", expand=True, pady=(12, 0))
+            ttk.Label(pad_panel, text="Mount alignment" if len(axes) > 1 else "Axis jog", style="Heading.TLabel").pack(anchor="w")
+            pad = ttk.Frame(pad_panel, style="Panel.TFrame")
+            pad.pack(expand=True, pady=18)
+            directions = [(0, -1, "A  ←", 1, 0), (0, 1, "D  →", 1, 2)]
+            if len(axes) > 1:
+                directions += [(1, 1, "W  ↑", 0, 1), (1, -1, "S  ↓", 2, 1)]
+            for axis_index, sign, label, row, column in directions:
+                axis = axes[axis_index]
+                button = ttk.Button(pad, text=label, command=lambda axis=axis, sign=sign: self.jog_once(axis, sign), width=8)
+                button.grid(row=row, column=column, padx=5, pady=5)
+                self.axis_widgets[axis]["move_controls"].append(button)
+            ttk.Label(pad, text=" / ".join(axes[:2]), style="Muted.TLabel").grid(row=1, column=1, padx=10)
+            if len(axes) > 2:
+                axis = axes[2]
+                for column, sign, label in ((0, -1, f"Q / −{axis}"), (2, 1, f"E / +{axis}")):
+                    button = ttk.Button(pad, text=label, command=lambda sign=sign: self.jog_once(axis, sign))
+                    button.grid(row=3, column=column, padx=5, pady=10)
+                    self.axis_widgets[axis]["move_controls"].append(button)
+            right = self._panel(self.content)
+            right.pack(side="right", fill="both")
+            ttk.Label(right, text="Precise positioning", style="Heading.TLabel").pack(anchor="w", pady=(0, 12))
+            if self.selected_axis.get() not in axes:
+                self.selected_axis.set(axes[0])
+            if len(axes) > 1:
+                selector = ttk.Combobox(right, textvariable=self.selected_axis, values=axes, state="readonly", width=18)
+                selector.pack(fill="x", pady=(0, 14))
+                selector.bind("<<ComboboxSelected>>", lambda event: self.rebuild_layout())
+            self._position_controls(right, self.selected_axis.get())
+        self.draw_state()
 
-    def refresh_all(self):
-        self.refresh_status()
-        self.get_positions()
+    def number(self, axis, value):
+        resolution = self.capabilities[axis]["resolution"]
+        decimals = 0 if resolution >= 1 else min(6, max(3, math.ceil(-math.log10(resolution))))
+        return f"{value:.{decimals}f}"
 
-    def _schedule_status_refresh(self):
-        self.refresh_status()
-        self.status_after_id = self.root.after(self.refresh_ms, self._schedule_status_refresh)
-
-    def get_positions(self):
+    def send(self, command, axis=None, value=None):
         try:
-            step_positions = self.stage.GetPositions()
-            if self.supports_mm:
-                mm_positions = self.stage.GetPositionsMM()
-                self.positions_var.set(
-                    f"{self.native_units_label}={step_positions}  mm={mm_positions}"
-                )
+            self.client.submit(command, axis, value)
+            self.local_error = None
+        except Exception as exc:
+            self.local_error = str(exc)
+            self.message.set(str(exc))
+            return False
+        return True
+
+    def absolute_move(self, axis):
+        self.release_jog(disarm=True)
+        try:
+            target = float(self.axis_widgets[axis]["target"].get())
+            if not math.isfinite(target):
+                raise ValueError("Enter a finite absolute target")
+            self.send("absolute", axis, target)
+        except ValueError:
+            self.local_error = "Enter a finite absolute target"
+            self.message.set(self.local_error)
+
+    def jog_once(self, axis, sign):
+        try:
+            distance = float(self.step.get())
+            if not math.isfinite(distance) or distance <= 0:
+                raise ValueError("Relative step must be positive and finite")
+            return self.send("relative", axis, sign * distance)
+        except ValueError:
+            self.local_error = "Relative step must be positive and finite"
+            self.message.set(self.local_error)
+            return False
+
+    def slider_released(self, axis):
+        widgets = self.axis_widgets[axis]
+        widgets["dragging"] = False
+        if "disabled" not in widgets["slider"].state():
+            self.release_jog(disarm=True)
+            widgets["target"].set(self.number(axis, widgets["slider"].get()))
+            self.absolute_move(axis)
+
+    def speed_changed(self, axis):
+        try:
+            self.send("speed", axis, float(self.axis_widgets[axis]["speed"].get()))
+        except ValueError:
+            self.local_error = "Enter a valid speed"
+            self.message.set(self.local_error)
+
+    def keyboard_changed(self):
+        self.release_jog(disarm=not self.keyboard.get())
+        self.keyboard_hint.set("Keyboard armed · A/D first axis · W/S second · Q/E third" if self.keyboard.get() else "Keyboard off · Escape stops all axes")
+
+    def key_pressed(self, event):
+        if event.keysym == "Escape":
+            self.stop()
+            return "break"
+        key = event.keysym.lower()
+        bindings = {"a": (0, -1), "d": (0, 1), "w": (1, 1), "s": (1, -1), "q": (2, -1), "e": (2, 1)}
+        if not self.keyboard.get() or key not in bindings:
+            return
+        if event.widget.winfo_class() in ("Entry", "TEntry", "TCombobox", "Spinbox", "TSpinbox", "Text"):
+            return
+        if event.state & (0x4 | 0x8 | 0x40):
+            return  # Leave Ctrl/Alt/Command shortcuts to the desktop.
+        if self.held_key:
+            if self.held_key == key and self.release_after_id:
+                self.root.after_cancel(self.release_after_id)
+                self.release_after_id = None
+            return "break"
+        index, sign = bindings[key]
+        axes = list(self.capabilities)
+        if index >= len(axes):
+            return "break"
+        axis = axes[index]
+        if not self.can_move(axis):
+            return "break"
+        if self.jog_once(axis, sign):
+            self.held_key, self.held_axis = key, axis
+            self.held_distance = sign * float(self.step.get())
+            self.held_started = time.monotonic()
+        return "break"
+
+    def key_released(self, event):
+        if self.held_key == event.keysym.lower():
+            # X11 can emit synthetic release/press pairs during auto repeat.
+            # Deferring cancellation lets the matching press suppress that pair.
+            if self.release_after_id:
+                self.root.after_cancel(self.release_after_id)
+            self.release_after_id = self.root.after(25, self.release_jog)
+            return "break"
+
+    def release_jog(self, disarm=False):
+        if self.release_after_id:
+            self.root.after_cancel(self.release_after_id)
+            self.release_after_id = None
+        was_held = self.held_key is not None
+        self.held_key = self.held_axis = self.held_distance = None
+        if was_held:
+            self.send("release_jog")
+        if disarm:
+            self.keyboard.set(False)
+            self.keyboard_hint.set("Keyboard off · Escape stops all axes")
+
+    def focus_left(self, event):
+        if self.focus_after_id:
+            self.root.after_cancel(self.focus_after_id)
+        self.focus_after_id = self.root.after(30, self.check_application_focus)
+
+    def check_application_focus(self):
+        self.focus_after_id = None
+        if self.root.focus_displayof() is None:
+            self.release_jog(disarm=True)
+
+    def focus_entered(self, event):
+        if event.widget.winfo_class() in ("Entry", "TEntry", "TCombobox", "Spinbox", "TSpinbox", "Text"):
+            self.release_jog(disarm=True)
+
+    def window_hidden(self, event):
+        if event.widget is self.root:
+            self.release_jog(disarm=True)
+
+    def stop(self):
+        self.release_jog(disarm=True)
+        self.send("stop")
+        self.message.set("Stop requested…")
+
+    def can_move(self, axis):
+        state = self.state
+        current = state["axes"].get(axis, {})
+        busy = any(a.get("moving") or a.get("homing") or a.get("commanded") for a in state["axes"].values())
+        return bool(state["connected"] and not state["stopped"] and not state["stop_pending"]
+                    and current.get("age", 999) < 1 and not busy and current.get("enabled")
+                    and not current.get("fault") and (not self.capabilities[axis]["home"] or current.get("homed")))
+
+    def draw_state(self):
+        state = self.state
+        busy = any(a.get("moving") or a.get("homing") or a.get("commanded") for a in state["axes"].values())
+        available = state["connected"] and not state["stopped"] and not state["stop_pending"]
+        stale = not state["connected"] or any(a.get("age", 999) >= 1 for a in state["axes"].values())
+        self.name.set(state.get("name", "Motion"))
+        self.connection.set("Feedback unavailable / stale" if stale else "Connected · live feedback")
+        self.connection_label.configure(foreground=self.colors["amber"] if stale else self.colors["green"])
+        self.message.set(self.local_error or state.get("error") or state.get("message", ""))
+        self.resume_button.state(["!disabled"] if state["stopped"] and state["connected"] and not state["stop_pending"] and not busy else ["disabled"])
+        for axis, widgets in self.axis_widgets.items():
+            spec = self.capabilities[axis]
+            current = state["axes"].get(axis)
+            if not current:
+                continue
+            widgets["position"].set(f"{self.number(axis, current['position'])} {spec['units']}")
+            if stale:
+                text = "Feedback stale · motion disabled"
+            elif current.get("fault"):
+                text = current["fault"]
+            elif current["homing"]:
+                text = "Homing…"
+            elif not current["enabled"]:
+                text = "Axis disabled"
+            elif current["moving"] or current.get("commanded"):
+                text = "Moving…"
+            elif not spec["home"]:
+                text = "Absolute sensor · no homing"
             else:
-                self.positions_var.set(
-                    f"{self.native_units_label}={step_positions}"
-                )
-        except Exception as exc:
-            self.show_error(exc)
-
-    def move_abs(self):
-        try:
-            axis = self.axis_var.get().strip()
-            value = _as_float(self.value_var.get())
-            if value is None:
-                raise ValueError("Value is required")
-            if self.units_var.get() == "mm":
-                self.stage.MoveAbsMM(axis, value)
+                text = "Homed" if current["homed"] else "Needs homing"
+            widgets["status"].set(text)
+            good = available and not stale and (not spec["home"] or current["homed"]) and current["enabled"] and not current["fault"]
+            widgets["indicator"].configure(style="Good.TLabel" if good else "Warning.TLabel")
+            for control in widgets["move_controls"]:
+                control.state(["!disabled"] if self.can_move(axis) else ["disabled"])
+            if widgets["home"]:
+                widgets["home"].state(["!disabled"] if available and not stale and not busy and current["enabled"] else ["disabled"])
+            if not current["enabled"]:
+                widgets["enable"].pack(side="left", padx=5)
+                widgets["enable"].state(["!disabled"] if available and not stale and not busy else ["disabled"])
             else:
-                self.stage.MoveAbs(axis, value)
-            self.get_positions()
-        except Exception as exc:
-            self.show_error(exc)
+                widgets["enable"].pack_forget()
+            if "target" in widgets and not widgets["target_initialized"]:
+                widgets["target"].set(self.number(axis, current["position"]))
+                widgets["target_initialized"] = True
+            if "slider" in widgets and not widgets["slider_initialized"]:
+                widgets["slider"].set(current["position"])
+                widgets["slider_initialized"] = True
+            if "speed" in widgets:
+                if not widgets["speed_initialized"] and current["speed"] is not None:
+                    widgets["speed"].set(f"{current['speed']:g}")
+                    widgets["speed_initialized"] = True
+                widgets["speed_button"].state(["!disabled"] if available and not busy and not stale else ["disabled"])
+        if stale or state["stopped"] or state["stop_pending"] or state.get("error"):
+            self.release_jog(disarm=True)
 
-    def move_rel(self):
-        try:
-            axis = self.axis_var.get().strip()
-            value = _as_float(self.value_var.get())
-            if value is None:
-                raise ValueError("Value is required")
-            if self.units_var.get() == "mm":
-                self.stage.MoveRelMM(axis, value)
-            else:
-                self.stage.MoveRel(axis, value)
-            self.get_positions()
-        except Exception as exc:
-            self.show_error(exc)
-
-    def jog_backward(self):
-        self.jog(-1.0)
-
-    def jog_forward(self):
-        self.jog(1.0)
-
-    def jog(self, direction):
-        try:
-            axis = self.axis_var.get().strip()
-            jog_size = _as_float(self.jog_size_var.get())
-            if jog_size is None:
-                raise ValueError("Jog size is required")
-            if jog_size < 0:
-                raise ValueError("Jog size must be non-negative")
-
-            signed_distance = float(direction) * jog_size
-            if self.units_var.get() == "mm":
-                self.stage.MoveRelMM(axis, signed_distance)
-            else:
-                self.stage.MoveRel(axis, signed_distance)
-            self.get_positions()
-        except Exception as exc:
-            self.show_error(exc)
-
-    def home_all(self):
-        try:
-            self.stage.HomeAll()
-            self.get_positions()
-        except Exception as exc:
-            self.show_error(exc)
-
-    def set_nominal(self):
-        try:
-            self.stage.SetNominal()
-            self.get_positions()
-        except Exception as exc:
-            self.show_error(exc)
-
-    def shutdown_server(self):
-        try:
-            self.stage.ShutdownServer()
-            self.set_status("Shutdown command sent")
-        except Exception as exc:
-            self.show_error(exc)
+    def tick(self):
+        if self.closed:
+            return
+        self.state = self.client.get_state()
+        capabilities = {axis["id"]: axis for axis in self.state.get("capabilities", [])}
+        if capabilities != self.capabilities:
+            self.capabilities = capabilities
+            if capabilities:
+                self.step.set(str(next(iter(capabilities.values()))["step"]))
+            self.rebuild_layout()
+        self.draw_state()
+        if self.held_key and not self.release_after_id and time.monotonic() - self.held_started >= 0.35:
+            self.send("jog", self.held_axis, self.held_distance)
+        self.after_id = self.root.after(80, self.tick)
 
     def close(self):
-        if self.status_after_id is not None:
-            try:
-                self.root.after_cancel(self.status_after_id)
-            except Exception:
-                pass
-            self.status_after_id = None
+        if self.closed:
+            return
+        self.release_jog(disarm=True)
+        self.closed = True
+        for callback in (self.after_id, self.focus_after_id, self.release_after_id):
+            if callback:
+                self.root.after_cancel(callback)
+        self.client.close()
         self.root.destroy()
 
     def run(self):
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        finally:
+            self.client.close()
+            # Keep the process alive long enough for the hardware owner to send
+            # stop and close the port after the window has been destroyed.
+            self.client.thread.join(timeout=3)
+            if self.client.thread.is_alive():
+                raise RuntimeError("Motion connection did not close within 3 seconds; stop is unconfirmed")
 
 
-def launch_motorised_stage_widget(host="127.0.0.1", command_port=50931, timeout_ms=5000, refresh_ms=1000):
-    try:
-        win = MotorisedStageControlWindow(host=host, command_port=command_port, timeout_ms=timeout_ms, refresh_ms=refresh_ms)
-        win.run()
-    except Exception:
-        traceback.print_exc()
-
-
-def launch_motorised_stage_widget_process(host="127.0.0.1", command_port=50931, timeout_ms=5000, refresh_ms=1000):
-    proc = mp.Process(
-        target=launch_motorised_stage_widget,
-        args=(host, command_port, timeout_ms, refresh_ms),
-        daemon=False,
-    )
-    proc.start()
-    return proc
+if __name__ == "__main__":
+    from JazLabs.launchers.launch_motorised_stage_widget import main
+    main()

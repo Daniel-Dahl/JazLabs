@@ -9,10 +9,12 @@ import time
 
 import serial
 
+from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
+
 __all__ = ["KDC101SerialStage"]
 
 
-class KDC101SerialStage:
+class KDC101SerialStage(APTSerialMotion):
     """
     Control a single-channel KDC101 using APT messages over serial.
 
@@ -66,6 +68,8 @@ class KDC101SerialStage:
 
         # Prime comms
         self.GetPositions()
+
+        self._configure_motion({"X": self.destination})
 
     def __del__(self):
         try:

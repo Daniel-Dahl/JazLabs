@@ -9,10 +9,12 @@ import time
 
 import serial
 
+from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
+
 __all__ = ["BSC203SerialStage"]
 
 
-class BSC203SerialStage:
+class BSC203SerialStage(APTSerialMotion):
     """
     Control a BSC203 using APT messages over serial.
 
@@ -89,6 +91,10 @@ class BSC203SerialStage:
         except Exception:
             self.CloseStage()
             raise
+
+        self._configure_motion(dict(zip(
+            ("Z", "X", "Y"), (self._slot_destination(slot) for slot in self.slots)
+        )))
 
     def __del__(self):
         try:

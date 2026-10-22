@@ -6,6 +6,28 @@ JazLabs. `repo_structure.md` explains where files live, and
 some of the extra helper objects exist and what problems they are trying to
 remove from day-to-day lab work.
 
+## Instrument access: widget, client, server, driver
+
+Instrument widgets communicate through their instrument client, just as an
+experiment script does. The normal control path is:
+
+`Widget or user script -> Client -> Server -> Hardware driver -> Instrument`
+
+The widget owns presentation and user input. The client owns communication with
+the server. The server owns its hardware driver and coordinates instrument
+operations. Serial packets and vendor-specific commands belong in the driver,
+not in the widget, client, or an additional control adapter.
+
+A user may also instantiate a hardware driver directly when a server is not
+needed. That is a separate choice for scripts, rather than an alternative
+hardware path hidden inside a widget. Camera and motor widgets both use clients.
+
+For motorised stages, the server schedules repeated jog steps, polls driver
+state, enforces configured travel limits, and prioritises stops. A thread inside
+the server keeps its network loop responsive during finite driver transactions.
+The widget sees only the motor client's commands and cached state. Even a local
+simulator demo uses a client and server; the simulator is simply another driver.
+
 ## digHolo
 
 digHolo is an external library by Joel Carpenter for high-speed off-axis digital

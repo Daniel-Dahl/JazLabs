@@ -12,6 +12,8 @@ import warnings
 
 import serial
 
+from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
+
 __all__ = [
     "ActuatorProfile",
     "MountProfile",
@@ -93,7 +95,7 @@ _ACTUATORS = {"ZFS13B": ZFS13B_ACTUATOR}
 _MOUNTS = {"PY004/M": PY004_M_MOUNT, "PY004": PY004_M_MOUNT}
 
 
-class KST201SerialStage:
+class KST201SerialStage(APTSerialMotion):
     """
     Control one ZFS13B actuator on a KST201 controller using APT messages.
 
@@ -192,6 +194,12 @@ class KST201SerialStage:
             self.ConfigureActuator()
 
         self.GetPositions()
+
+        self._configure_motion(
+            {self.mount_axis or "X": self.destination}, units="mm",
+            counts_per_unit=self.actuator.microsteps_per_mm,
+            limits={self.mount_axis or "X": (self.minimum_mm, self.maximum_mm)},
+        )
 
     def __del__(self):
         try:
