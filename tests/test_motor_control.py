@@ -28,9 +28,9 @@ class RecordingMount(SimulatedStage):
         self.stops = 0
         self.closed = False
 
-    def MoveTo(self, axis, target):
+    def MoveTo(self, axis, target, wait=True, timeout=None):
         self.moves.append((axis, target))
-        super().MoveTo(axis, target)
+        return super().MoveTo(axis, target, wait=wait, timeout=timeout)
 
     def StopAll(self):
         self.stops += 1
@@ -116,13 +116,13 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(self.backend.velocity['X'], 1.5)
 
     def test_feedback_failure_latches_stop_instead_of_repeating(self):
-        original = self.backend.GetAxisState
+        original = self.backend.GetAxisStatus
         fail = threading.Event()
         def poll(axis):
             if fail.is_set():
                 raise TimeoutError('unplugged')
             return original(axis)
-        self.backend.GetAxisState = poll
+        self.backend.GetAxisStatus = poll
         self.worker.submit('jog', 'X', .01)
         wait_until(lambda: len(self.backend.moves) > 0)
         fail.set()
@@ -133,14 +133,14 @@ class MotionTests(unittest.TestCase):
         self.assertFalse(self.worker.get_state()['connected'])
 
     def test_stop_submit_does_not_wait_for_hardware_read_lock(self):
-        original = self.backend.GetAxisState
+        original = self.backend.GetAxisStatus
         reading = threading.Event()
         release = threading.Event()
         def poll(axis):
             reading.set()
             release.wait(1)
             return original(axis)
-        self.backend.GetAxisState = poll
+        self.backend.GetAxisStatus = poll
         self.assertTrue(reading.wait(1))
         began = time.monotonic()
         self.worker.submit('stop')
@@ -187,14 +187,30 @@ class FakeAPTDriver(APTSerialMotion):
         pass
 
 
+class BlockingDriverTests(unittest.TestCase):
+    def test_direct_driver_move_waits_by_default(self):
+        stage = SimulatedStage(axes=1)
+        began = time.monotonic()
+        status = stage.MoveTo('X', 5.2)
+        self.assertGreaterEqual(time.monotonic() - began, .15)
+        self.assertFalse(status['moving'])
+        self.assertAlmostEqual(stage.GetPosition('X'), 5.2)
+
+    def test_direct_driver_timeout_raises_and_stops(self):
+        stage = SimulatedStage(axes=1)
+        with self.assertRaises(TimeoutError):
+            stage.MoveTo('X', 7, timeout=.05)
+        self.assertFalse(stage.GetAxisStatus('X')['moving'])
+
+
 class DriverTests(unittest.TestCase):
     def test_apt_fragmented_poll_home_stop_and_custom_slot_routing(self):
         driver = FakeAPTDriver(routes={"Z": 0x23, "X": 0x21}, limits={"Z": [0, 1000]})
-        state = driver.GetAxisState('Z')
+        state = driver.GetAxisStatus('Z')
         self.assertEqual(state['position'], 123)
         self.assertTrue(state['homed'])
         self.assertTrue(state['enabled'])
-        driver.MoveTo('Z', 321)
+        driver.MoveTo('Z', 321, wait=False)
         self.assertEqual(driver.serial.writes[-1], struct.pack('<HHBBHi', 0x0453, 6, 0xA3, 1, 1, 321))
         driver.HomeAxis('X')
         self.assertEqual(driver.serial.writes[-1], struct.pack('<HBBBB', 0x0443, 1, 0, 0x21, 1))
@@ -203,8 +219,8 @@ class DriverTests(unittest.TestCase):
 
     def test_driver_unit_conversion_and_travel_limits(self):
         driver = FakeAPTDriver(units='mm', scale=1000, limits={'X': [.1, 12.9]})
-        self.assertAlmostEqual(driver.GetAxisState('X')['position'], .123)
-        driver.MoveTo('X', 2.5)
+        self.assertAlmostEqual(driver.GetAxisStatus('X')['position'], .123)
+        driver.MoveTo('X', 2.5, wait=False)
         self.assertEqual(struct.unpack_from('<i', driver.serial.writes[-1], 8)[0], 2500)
         with self.assertRaises(ValueError):
             driver.MoveTo('X', 13)
@@ -221,7 +237,7 @@ class DriverTests(unittest.TestCase):
         driver = FakeAPTDriver()
         driver.SetStopRequested(lambda: True)
         with self.assertRaises(InterruptedError):
-            driver.GetAxisState('X')
+            driver.GetAxisStatus('X')
 
 
 if __name__ == '__main__':

@@ -63,7 +63,7 @@ class APTSerialMotion:
         raise TimeoutError(f"No APT 0x{message:04X} response from 0x{destination:02X}")
 
 
-    def GetAxisState(self, axis):
+    def GetAxisStatus(self, axis):
         with self._motion_lock:
             destination = self._motion_routes[axis]
             if self._motion_umc_status:
@@ -91,7 +91,12 @@ class APTSerialMotion:
                     "enabled": bool(bits & 0x80000000),
                     "fault": f"APT fault 0x{bits:08X}" if bits & fault_mask else None, "speed": None}
 
-    def MoveTo(self, axis, target):
+    def MoveTo(self, axis, target, wait=True, timeout=None):
+        if timeout is None:
+            timeout = self.GetProperties().get("move_timeout", 60.0)
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
         target = float(target)
         if not math.isfinite(target):
             raise ValueError("Target must be finite")
@@ -104,6 +109,33 @@ class APTSerialMotion:
         with self._motion_lock:
             payload = struct.pack("<Hi", 1, counts)
             self.serial.write(struct.pack("<HHBB", 0x0453, 6, self._motion_routes[axis] | 0x80, 1) + payload)
+
+        target = counts / self._motion_scale
+        tolerance = 2 / self._motion_scale
+        if not wait:
+            return None
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                status = self.GetAxisStatus(axis)
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before the target was reached")
+                if (not status["moving"] and not status["homing"]
+                        and abs(status["position"] - target) <= tolerance):
+                    return status
+                time.sleep(.05)
+            raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop could not be confirmed: {stop_exc}") from exc
+            raise
+
+    def GetPosition(self, axis):
+        return self.GetAxisStatus(axis)["position"]
 
     def HomeAxis(self, axis):
         with self._motion_lock:

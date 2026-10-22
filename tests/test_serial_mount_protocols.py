@@ -141,9 +141,16 @@ class ProtocolTests(unittest.TestCase):
         stage = agp.NewportAGPSerialStage('fake')
         stage.serial.chunks = [b'1TP1.25\r\n']
         self.assertEqual(stage.GetPositions(), [1.25])
-        stage.serial.chunks = [b'1TE@\r\n', b'1TS00001E\r\n', b'1TS000032\r\n']
+        stage.serial.chunks = [b'1TS00000A\r\n', b'1TE@\r\n', b'1TS00001E\r\n', b'1TS000032\r\n']
         stage.HomeAll()
         self.assertIn(b'1OR\r\n', stage.serial.writes)
+
+    def test_agp_home_already_referenced_sends_no_home_command(self):
+        stage = agp.NewportAGPSerialStage('fake')
+        stage.serial.chunks = [b'1TS000032\r\n']
+        stage.HomeAxis('X')
+        self.assertEqual(stage.serial.writes, [b'1TS\r\n'])
+        self.assertFalse(stage.GetMotionCapabilities()[0]['home_when_referenced'])
 
     def test_agap_positions(self):
         stage = agap.NewportM100DSerialStage('fake')

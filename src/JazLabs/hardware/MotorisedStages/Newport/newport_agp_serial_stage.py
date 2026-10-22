@@ -118,6 +118,18 @@ class NewportAGPSerialStage:
 
     def HomeAll(self, wait=True):
         with self._lock:
+            status = self.GetStatus()
+            if status["error"]:
+                raise RuntimeError(f"CONEX positioner error 0x{status['error']:04X}")
+            state = status["state"]
+            if state in (0x32, 0x33, 0x34, 0x3C, 0x3D):
+                return  # Already referenced; OR is rejected in READY/DISABLE.
+            if state == 0x1E:
+                if wait:
+                    self.wait_until_ready()
+                return
+            if not 0x0A <= state <= 0x10:
+                raise RuntimeError(f"Cannot home CONEX in controller state 0x{state:02X}")
             self.write("OR")
             self._check_command_error()
             if wait:
@@ -154,10 +166,10 @@ class NewportAGPSerialStage:
         for axis in ("X",):
             capabilities.append({"id": axis, "label": axis, "units": self.units,
                 "minimum": None, "maximum": None, "resolution": .000001, "tolerance": .001,
-                "step": .01, "home": True, "stop": True, "speed": False})
+                "step": .01, "home": True, "home_when_referenced": False, "stop": True, "speed": False})
         return capabilities
 
-    def GetAxisState(self, axis):
+    def GetAxisStatus(self, axis):
         suffix = self._axis_suffix(axis)
         with self._lock:
             response = self.query(f"TP{suffix}")
@@ -172,8 +184,39 @@ class NewportAGPSerialStage:
                 "fault": f"Positioner error 0x{status['error']:04X}" if status["error"] else None,
                 "speed": None}
 
-    def MoveTo(self, axis, target):
+    def MoveTo(self, axis, target, wait=True, timeout=None):
+        if timeout is None:
+            timeout = self.GetProperties().get("move_timeout", 60.0)
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        target = float(target)
         self.MoveAbs(axis, target, wait=False)
+        tolerance = .001
+        if not wait:
+            return None
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                status = self.GetAxisStatus(axis)
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before the target was reached")
+                if (not status["moving"] and not status["homing"]
+                        and abs(status["position"] - target) <= tolerance):
+                    return status
+                time.sleep(.05)
+            raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop could not be confirmed: {stop_exc}") from exc
+            raise
+
+    def GetPosition(self, axis):
+        return self.GetAxisStatus(axis)["position"]
 
     def HomeAxis(self, axis):
         self._axis_suffix(axis)

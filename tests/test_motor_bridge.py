@@ -69,7 +69,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.client.GetMotionCapabilities()[0]['id'], 'X')
         self.assertGreaterEqual(state['axes']['X']['age'], 0)
         self.client.MoveTo('X', 5.02)
-        self.wait(lambda: self.client.GetAxisState('X')['position'] >= 5.019)
+        self.wait(lambda: self.client.GetAxisStatus('X')['position'] >= 5.019)
 
     def test_hold_release_stop_and_resume_through_bridge(self):
         for _ in range(8):
@@ -77,10 +77,10 @@ class BridgeTests(unittest.TestCase):
             time.sleep(.06)
         self.client.request('release_jog')
         time.sleep(.4)
-        position = self.client.GetAxisState('X')['position']
+        position = self.client.GetAxisStatus('X')['position']
         self.assertGreaterEqual(position, 5.02)
         time.sleep(.4)
-        self.assertEqual(self.client.GetAxisState('X')['position'], position)
+        self.assertEqual(self.client.GetAxisStatus('X')['position'], position)
         self.client.StopAll()
         self.wait(lambda: self.client.request('state')['stopped'])
         with self.assertRaises(RuntimeError):

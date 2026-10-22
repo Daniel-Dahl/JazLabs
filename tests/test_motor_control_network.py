@@ -43,12 +43,62 @@ class NetworkTests(unittest.TestCase):
             time.sleep(.02)
         self.fail('Network motion state did not arrive')
 
+    def test_intuitive_position_readers(self):
+        self.assertEqual(self.client.GetPosition('X'), 5)
+        self.assertEqual(self.client.GetPositions(), {'X': 5})
+        self.assertIn('homed', self.client.GetAxisStatus('X'))
+
+    def test_move_waits_for_its_own_stopped_completion_by_default(self):
+        began = time.monotonic()
+        result = self.client.MoveTo('X', 5.2)
+        self.assertGreaterEqual(time.monotonic() - began, .15)
+        self.assertAlmostEqual(result['position'], 5.2, places=3)
+        self.assertFalse(result['moving'])
+        self.assertFalse(result['commanded'])
+
+    def test_wait_false_returns_an_operation_before_motion_finishes(self):
+        result = self.client.MoveTo('X', 6, wait=False)
+        operation_id = result['operation_id']
+        self.assertIn(self.client.request('state')['operations'][operation_id]['status'], ('queued', 'running'))
+        self.client.StopAll()
+
+    def test_rejected_move_raises_without_claiming_completion(self):
+        with self.assertRaisesRegex(RuntimeError, 'travel limit'):
+            self.client.MoveTo('X', 26)
+        self.assertEqual(self.client.GetPosition('X'), 5)
+        self.assertFalse(self.client.request('state')['stopped'])
+
+    def test_same_position_is_a_successful_no_op(self):
+        result = self.client.MoveTo('X', 5)
+        self.assertFalse(result['moving'])
+        self.assertEqual(result['position'], 5)
+
+    def test_client_timeout_requests_stop_and_raises(self):
+        with self.assertRaises(TimeoutError):
+            self.client.MoveTo('X', 7, timeout=.1)
+        self.wait(lambda: self.client.request('state')['stopped'])
+
+    def test_stop_from_another_client_interrupts_a_blocking_move(self):
+        def stop_from_gui():
+            stopper = MotorisedStageClient(command_port=self.port)
+            try:
+                stopper.StopAll()
+            finally:
+                stopper.close()
+        stop_timer = threading.Timer(.2, stop_from_gui)
+        stop_timer.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'stop'):
+                self.client.MoveTo('X', 7)
+        finally:
+            stop_timer.join(1)
+
     def test_user_client_exposes_the_driver_facing_api(self):
         self.assertEqual(self.client.GetMotionCapabilities()[0]['id'], 'X')
         self.assertEqual(self.client.GetProperties()['stage_type'], 'simulation')
-        self.assertEqual(self.client.GetAxisState('X')['position'], 5)
+        self.assertEqual(self.client.GetAxisStatus('X')['position'], 5)
         self.client.MoveTo('X', 5.02)
-        self.wait(lambda: self.client.GetAxisState('X')['position'] >= 5.019)
+        self.wait(lambda: self.client.GetAxisStatus('X')['position'] >= 5.019)
         self.client.StopAll()
         self.wait(lambda: self.client.request('state')['stopped'])
 
@@ -64,12 +114,12 @@ class NetworkTests(unittest.TestCase):
 
     def test_server_acknowledges_stop_while_hardware_poll_is_slow(self):
         entered = threading.Event()
-        original = SimulatedStage.GetAxisState
+        original = SimulatedStage.GetAxisStatus
         def slow_read(mount, axis):
             entered.set()
             time.sleep(.4)
             return original(mount, axis)
-        with patch.object(SimulatedStage, 'GetAxisState', slow_read):
+        with patch.object(SimulatedStage, 'GetAxisStatus', slow_read):
             self.assertTrue(entered.wait(1))
             began = time.monotonic()
             result = self.client.request('stop')

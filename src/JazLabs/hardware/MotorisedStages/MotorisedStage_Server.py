@@ -147,7 +147,7 @@ class MotorisedStageZMQServer:
                         if command not in {"absolute", "relative", "home", "jog", "release_jog",
                                            "stop", "resume", "speed", "enable"}:
                             raise ValueError(f"Unknown motion command {command}")
-                        worker.submit(command, message.get("axis"), message.get("value"))
+                        worker.submit(command, message.get("axis"), message.get("value"), operation_id=message.get("operation_id"))
                     response = {"ok": True, "state": worker.get_state()}
                 except Exception as exc:
                     response = {"ok": False, "error": str(exc)}
@@ -187,7 +187,7 @@ class StageServerWorker:
         self.epoch = 0
         self.snapshot = {"connected": False, "name": "Connecting…", "capabilities": [],
                          "axes": {}, "stopped": False, "stop_pending": False,
-                         "error": None, "message": "Connecting…", "sequence": 0}
+                         "error": None, "message": "Connecting…", "sequence": 0, "operations": {}}
         self.thread = threading.Thread(target=self.run, name="motor-hardware-owner", daemon=True)
 
     def start(self):
@@ -202,7 +202,7 @@ class StageServerWorker:
                 state["age"] = now - state.pop("updated_at", now)
             return result
 
-    def submit(self, command, axis=None, value=None):
+    def submit(self, command, axis=None, value=None, operation_id=None):
         with self.lock:
             if self.closing.is_set():
                 raise RuntimeError("Motion service is closing")
@@ -231,10 +231,24 @@ class StageServerWorker:
                 raise RuntimeError("Motion is stopped; resume first")
             if self.held_jog:
                 raise RuntimeError("Release keyboard jog before another command")
+            if operation_id is not None:
+                if command not in ("absolute", "relative", "home") or not isinstance(operation_id, str):
+                    raise ValueError("An operation ID must be a string for a movement or homing command")
+                if operation_id in self.snapshot["operations"]:
+                    raise ValueError("Duplicate motion operation ID; command was not repeated")
             try:
-                self.commands.put_nowait((self.epoch, command, axis, value))
+                self.commands.put_nowait((self.epoch, command, axis, value, operation_id))
             except queue.Full as exc:
                 raise RuntimeError("A motor command is already pending") from exc
+            if operation_id is not None:
+                operations = self.snapshot["operations"]
+                operations[operation_id] = {"axis": axis, "status": "queued", "error": None}
+                while len(operations) > 64:
+                    removable = next((key for key, item in operations.items()
+                                      if item["status"] not in ("queued", "running")), None)
+                    if removable is None:
+                        break
+                    del operations[removable]
             self.wake.set()
 
     def close(self):
@@ -251,6 +265,8 @@ class StageServerWorker:
         target = None
         homing = False
         started_at = 0.0
+        active_operation = None
+        intent_operation = None
         try:
             driver = self.driver_factory()
             if hasattr(driver, "SetStopRequested"):
@@ -273,6 +289,7 @@ class StageServerWorker:
                     name=getattr(driver, "name", driver.GetProperties().get("stage_type", type(driver).__name__)),
                     properties=driver.GetProperties(), capabilities=deepcopy(list(capabilities.values())))
             while True:
+                intent_operation = None
                 self.wake.clear()
                 if self.stop_requested.is_set():
                     # Normal intents and held-key leases are invalidated before
@@ -281,6 +298,9 @@ class StageServerWorker:
                         self.held_jog = None
                         while not self.commands.empty():
                             self.commands.get_nowait()
+                        for operation in self.snapshot["operations"].values():
+                            if operation["status"] in ("queued", "running"):
+                                operation.update(status="stopped", error="Motion interrupted by stop")
                         self.snapshot.update(stopped=True, stop_pending=True)
                     try:
                         driver.StopAll()
@@ -290,6 +310,7 @@ class StageServerWorker:
                         with self.lock:
                             self.snapshot.update(message="Stop failed", error=str(exc))
                     active_axis = None
+                    active_operation = None
                     with self.lock:
                         self.snapshot["stop_pending"] = False
                         self.stop_requested.clear()
@@ -298,7 +319,7 @@ class StageServerWorker:
                 try:
                     for axis in capabilities:
                         try:
-                            state = driver.GetAxisState(axis)
+                            state = driver.GetAxisStatus(axis)
                         except InterruptedError:
                             raise
                         except Exception as exc:
@@ -323,12 +344,18 @@ class StageServerWorker:
                         tolerance = capabilities[active_axis].get("tolerance", capabilities[active_axis]["resolution"] * 2)
                         complete = current["homed"] if homing else abs(current["position"] - target) <= tolerance
                         if not current["moving"] and not current["homing"] and complete and now - started_at >= 0.15:
+                            with self.lock:
+                                if active_operation is not None:
+                                    self.snapshot["operations"][active_operation].update(
+                                        status="completed", result=dict(current, commanded=False))
+                            active_operation = None
                             active_axis = None
                             self.snapshot["message"] = "Ready"
                             for state in self.snapshot["axes"].values():
                                 state["commanded"] = False
                         elif now - started_at > self.motion_timeout:
                             raise TimeoutError("Motion did not complete before its timeout")
+                    intent_operation = None
                     with self.lock:
                         if self.held_jog and self.held_jog[2] < now:
                             self.held_jog = None
@@ -337,11 +364,11 @@ class StageServerWorker:
                         intent = None
                         if not active_axis and not self.snapshot["stopped"] and self.held_jog:
                             axis, delta, expires = self.held_jog
-                            intent = (self.epoch, "relative", axis, delta)
+                            intent = (self.epoch, "relative", axis, delta, None)
                         elif not self.commands.empty():
                             intent = self.commands.get_nowait()
                     if intent:
-                        epoch, command, axis, value = intent
+                        epoch, command, axis, value, intent_operation = intent
                         if epoch != self.epoch:
                             continue
                         if self.stop_requested.is_set():
@@ -384,9 +411,16 @@ class StageServerWorker:
                             if spec["maximum"] is not None and target > spec["maximum"]:
                                 raise ValueError("Target is above the configured travel limit")
                             if abs(current["position"] - target) < spec["resolution"] / 2:
-                                raise ValueError("Requested move is smaller than the axis resolution")
+                                if command == "relative":
+                                    raise ValueError("Requested step is smaller than the axis resolution")
+                                if intent_operation is not None:
+                                    with self.lock:
+                                        self.snapshot["operations"][intent_operation].update(
+                                            status="completed", result=dict(current, commanded=False))
+                                self.snapshot.update(error=None, message="Ready")
+                                continue
                             homing = False
-                            driver.MoveTo(axis, target)
+                            driver.MoveTo(axis, target, wait=False)
                         elif command == "speed":
                             if not spec["speed"]:
                                 raise ValueError("Speed control is unavailable for this driver")
@@ -398,6 +432,10 @@ class StageServerWorker:
                         else:
                             raise ValueError(f"Unknown command {command}")
                         active_axis = axis
+                        active_operation = intent_operation
+                        if active_operation is not None:
+                            with self.lock:
+                                self.snapshot["operations"][active_operation]["status"] = "running"
                         started_at = time.monotonic()
                         self.snapshot["axes"][axis]["commanded"] = True
                         self.snapshot.update(error=None, message=f"{'Homing' if homing else 'Moving'} {axis}")
@@ -408,12 +446,17 @@ class StageServerWorker:
                     # active motion on a hardware error, then require explicit resume.
                     with self.lock:
                         self.held_jog = None
+                        if intent_operation is not None:
+                            self.snapshot["operations"][intent_operation].update(status="failed", error=str(exc))
                         self.snapshot.update(error=str(exc), message=str(exc))
                     if active_axis or any(s.get("fault") for s in self.snapshot["axes"].values()):
                         self.submit("stop")
                 except Exception as exc:
                     with self.lock:
                         self.held_jog = None
+                        for operation_id in (active_operation, intent_operation):
+                            if operation_id is not None:
+                                self.snapshot["operations"][operation_id].update(status="failed", error=str(exc))
                         self.snapshot.update(connected=False, error=str(exc), message="Feedback unavailable")
                     self.submit("stop")
                 self.wake.wait(self.poll_interval)

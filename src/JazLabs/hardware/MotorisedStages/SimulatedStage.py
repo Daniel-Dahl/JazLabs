@@ -33,7 +33,7 @@ class SimulatedStage:
             self.homed[axis] = absolute_sensor or index == 0
             self.velocity[axis] = 0.2 if absolute_sensor else 1.0
 
-    def GetAxisState(self, axis):
+    def GetAxisStatus(self, axis):
         now = time.monotonic()
         elapsed = now - self.last_update
         self.last_update = now
@@ -50,8 +50,46 @@ class SimulatedStage:
                 "homed": self.homed[axis], "homing": axis in self.homing,
                 "enabled": True, "fault": None, "speed": self.velocity[axis]}
 
-    def MoveTo(self, axis, target):
+    def MoveTo(self, axis, target, wait=True, timeout=None):
+        if timeout is None:
+            timeout = self.GetProperties().get("move_timeout", 60.0)
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        target = float(target)
+        spec = next(item for item in self.axes if item["id"] == axis)
+        if not math.isfinite(target) or not spec["minimum"] <= target <= spec["maximum"]:
+            raise ValueError("Target is outside the simulated travel limits")
+        self.GetAxisStatus(axis)
         self.targets[axis] = target
+        tolerance = spec.get("tolerance", 2 * spec["resolution"])
+        if not wait:
+            return None
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                status = self.GetAxisStatus(axis)
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before the target was reached")
+                if (not status["moving"] and not status["homing"]
+                        and abs(status["position"] - target) <= tolerance):
+                    return status
+                time.sleep(.05)
+            raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop could not be confirmed: {stop_exc}") from exc
+            raise
+
+    def GetPosition(self, axis):
+        return self.GetAxisStatus(axis)["position"]
+
+    def GetPositions(self):
+        return {axis["id"]: self.GetPosition(axis["id"]) for axis in self.axes}
 
     def HomeAxis(self, axis):
         self.homed[axis] = False

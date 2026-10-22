@@ -54,6 +54,25 @@ class NativeGuiTests(unittest.TestCase):
         self.assertTrue(self.client.get_state()['stopped'])
         self.assertIn('disabled', gui.axis_widgets['X']['move_controls'][0].state())
 
+    def test_checkbox_takes_focus_and_real_key_events_move(self):
+        gui = self.window
+        gui.root.focus_force()
+        gui.axis_widgets['X']['entry'].focus_set()
+        self.pump(.1)
+        gui.keyboard_checkbox.invoke()
+        self.pump(.1)
+        self.assertTrue(gui.keyboard.get())
+        self.assertEqual(gui.root.focus_get(), gui.root)
+        before = self.client.get_state()['axes']['X']['position']
+        gui.root.event_generate('<KeyPress-d>')
+        self.pump(.85)
+        gui.root.event_generate('<KeyRelease-d>')
+        self.pump(.5)
+        after = self.client.get_state()['axes']['X']['position']
+        self.assertGreater(after, before)
+        self.pump(.5)
+        self.assertAlmostEqual(self.client.get_state()['axes']['X']['position'], after)
+
     def test_absolute_move_slider_release_and_close(self):
         gui = self.window
         gui.axis_widgets['X']['target'].set('5.1')

@@ -467,23 +467,47 @@ from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStag
 mount = MotorisedStageClient(host="127.0.0.1", command_port=51941)
 try:
     print(mount.GetMotionCapabilities())
-    print(mount.GetAxisState("U"))
-    # mount.MoveTo("U", 0.1)  # Check the fitted mount and limits before moving.
-    # Poll state for commanded/moving/homing and errors before another move.
+    print(mount.GetPosition("U"))       # One position, in degrees for this mount.
+    print(mount.GetPositions())          # {"U": ..., "V": ...}
+    print(mount.GetAxisStatus("U"))      # Position plus moving/homed/enabled/fault status.
+    # mount.MoveTo("U", 0.1)             # Waits for stopped/target feedback by default.
+    # mount.MoveTo("U", 0.1, wait=False) # Submit without waiting; poll status yourself.
     # mount.StopAll()
 finally:
     mount.close()
 ```
 
-The notebook `notebooks/instrument_clients/motorised_mount_client.ipynb` loads
-these same presets. Select `MOUNT_NAME`, set `USE_BRIDGE` if appropriate, and
-run its printed server/bridge launch commands in separate terminals. Motion is
-disabled by default. The notebook verifies stage type and units, reads every
-axis, and includes optional homing, speed, relative/absolute moves, and stop.
+The notebook `notebooks/instrument_clients/motorised_mount_client.ipynb` contains
+short client examples, like the camera notebook. Set `HOST`, `COMMAND_PORT` and
+`AXIS` to match your server (or the bridge's local endpoint). It reads positions
+and status; uncomment individual move, home or stop examples when needed.
+CONEX-AGP Home is available only when referencing is needed. An already referenced
+controller rejects another home command in READY, so the GUI disables that button.
+Enable **Keyboard control** to use A/D for the first axis, W/S for the second,
+and Q/E for the third. Holding a key continues movement; releasing it stops jogging.
+Typing in a number field disarms keyboard movement; enable the checkbox again to resume.
 
-A client acknowledgement means an intent was submitted, not that movement
-finished. Poll feedback and check errors, stale state, stop state, and target
-arrival. Never blindly retry a relative move after a communication timeout.
+`GetPosition(axis)` returns a current position and `GetPositions()` returns an
+axis-to-position dictionary in the advertised units. `GetAxisStatus(axis)` adds
+moving, homed, enabled and fault information. Position-only reads reject stale
+or unavailable feedback.
+
+`MoveTo(axis, target, wait=True, timeout=None)` waits for that specific operation
+to complete and returns its stopped axis status. The default timeout comes from
+the controller's `move_timeout`, or 60 seconds. Faults, rejected moves, stop,
+lost feedback and timeout raise instead of reporting success; a deadline or
+unavailable feedback triggers a stop request. The client polls completion, so
+the server remains responsive to a GUI or another client's Stop command. Direct
+serial-driver `MoveTo` calls also wait by default; the server explicitly uses
+`wait=False` when scheduling them.
+
+With `wait=False`, `MoveTo` returns an `operation_id` after submission; the
+corresponding record is in `request("state")["operations"]`. Lower-level
+`request("absolute", ...)`, `request("relative", ...)`, and `HomeAxis` still
+acknowledge submission rather than movement completion. Poll status and errors
+when using those asynchronous operations. Existing driver `MoveAbs`/`MoveRel`
+retain their own documented wait options and native units. Never blindly retry
+a relative move after a communication timeout.
 Closing a synchronous notebook/script client does not stop the server or an
 active move; explicitly request `StopAll()` when that is your intention.
 

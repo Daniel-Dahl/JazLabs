@@ -1,20 +1,21 @@
-"""Read the new motion service; uncomment moves after choosing valid targets."""
+"""Simple motor client examples. Start the matching server first."""
 from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
-from JazLabs.launchers.config import get_named_config, load_config
+
+HOST = "127.0.0.1"
+COMMAND_PORT = 50941  # Tip/tilt: 50941; Newport translation: 50942; Thorlabs UMC2: 50943
+AXIS = "U"  # Tip/tilt: U or V; translation: X; UMC2: X or Y
 
 
 def main():
-    motor = get_named_config(load_config("motorised_mounts"), "MOTOR_SERVERS", "newport_tip_tilt")
-    use_bridge = False
-    host = motor["local_host"] if use_bridge else motor["client_host"]
-    port = motor["local_command_port"] if use_bridge else motor["command_port"]
-    axis = motor["default_axis"]
-    mount = MotorisedStageClient(host=host, command_port=port)
+    mount = MotorisedStageClient(host=HOST, command_port=COMMAND_PORT)
     try:
-        print("Capabilities:", mount.GetMotionCapabilities())
-        print("Live axis:", axis, mount.GetAxisState(axis))
-        # mount.MoveTo(axis, 0.1)
-        # Poll state until the move finishes before issuing another move.
+        print(mount.GetPositions())
+        print(mount.GetPosition(AXIS))
+        print(mount.GetAxisStatus(AXIS))
+
+        # Uncomment individual examples after choosing a suitable position in the stage's units.
+        # mount.MoveTo(AXIS, 0.1)  # Waits until the move finishes; raises on failure.
+        # mount.HomeAxis(AXIS)  # Starts homing if the axis needs it; check GetAxisStatus().
         # mount.StopAll()
     finally:
         mount.close()

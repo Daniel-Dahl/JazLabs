@@ -215,7 +215,8 @@ class MotorisedStageControlWindow:
         self.root.minsize(960 if self.layout.get() == "alignment" and len(axes) > 1 else 740, 540)
         tools = self._panel(self.content)
         tools.pack(side="bottom", fill="x", pady=(12, 0))
-        ttk.Checkbutton(tools, text="Keyboard control", variable=self.keyboard, command=self.keyboard_changed).pack(side="left")
+        self.keyboard_checkbox = ttk.Checkbutton(tools, text="Keyboard control", variable=self.keyboard, command=self.keyboard_changed)
+        self.keyboard_checkbox.pack(side="left")
         ttk.Label(tools, text="Relative step", style="Panel.TLabel").pack(side="left", padx=(22, 8))
         ttk.Entry(tools, textvariable=self.step, width=10).pack(side="left")
         units = {spec["units"] for spec in self.capabilities.values()}
@@ -326,6 +327,9 @@ class MotorisedStageControlWindow:
 
     def keyboard_changed(self):
         self.release_jog(disarm=not self.keyboard.get())
+        if self.keyboard.get():
+            # Clicking the checkbox can leave keyboard focus in a numeric entry.
+            self.root.focus_set()
         self.keyboard_hint.set("Keyboard armed · A/D first axis · W/S second · Q/E third" if self.keyboard.get() else "Keyboard off · Escape stops all axes")
 
     def key_pressed(self, event):
@@ -446,7 +450,8 @@ class MotorisedStageControlWindow:
             for control in widgets["move_controls"]:
                 control.state(["!disabled"] if self.can_move(axis) else ["disabled"])
             if widgets["home"]:
-                widgets["home"].state(["!disabled"] if available and not stale and not busy and current["enabled"] else ["disabled"])
+                widgets["home"].state(["!disabled"] if available and not stale and not busy and current["enabled"]
+                    and (not current["homed"] or spec.get("home_when_referenced", True)) else ["disabled"])
             if not current["enabled"]:
                 widgets["enable"].pack(side="left", padx=5)
                 widgets["enable"].state(["!disabled"] if available and not stale and not busy else ["disabled"])

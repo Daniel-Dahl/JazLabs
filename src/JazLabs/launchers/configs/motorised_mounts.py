@@ -34,9 +34,9 @@ MOTOR_SERVERS = [
             "port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0,
             "units": "mm",  # Label only: verify that this matches the fitted AGP stage.
         },
-        "limits": {},  # Add calibrated X endpoints in the stage's configured units.
+        "limits": {"X": [0, 27]},  # Add calibrated X endpoints in the stage's configured units.
         "default_axis": "X",
-        "relative_step": 0.01,
+        "relative_step": 0.1,
         "expected_units": "mm",
     },
     {
