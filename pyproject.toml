@@ -58,7 +58,9 @@ all-pip = [
 ]
 
 [project.scripts]
-jazlabs-motors = "JazLabs.launchers.launch_motorised_stage_widget:main"
+jazlabs-server-motor = "JazLabs.launchers.launch_motorised_stage_server:main"
+jazlabs-bridge-motor = "JazLabs.launchers.launch_motorised_stage_bridge:main"
+jazlabs-view-motor = "JazLabs.launchers.launch_motorised_stage_widget:main"
 jazlabs-server-camera = "JazLabs.launchers.launch_camera_server:main"
 jazlabs-server-laser = "JazLabs.launchers.launch_laser_server:main"
 jazlabs-server-daq = "JazLabs.launchers.launch_daq_server:main"

@@ -1,6 +1,6 @@
 """New motor console: capability-driven layouts and leased hold-to-jog.
 
-Run with no arguments for a hardware-free simulator. All I/O belongs to the
+Start the configured server before launching this widget. All I/O belongs to the
 motor client; Tk only submits intents and draws the client's cached state.
 """
 import math

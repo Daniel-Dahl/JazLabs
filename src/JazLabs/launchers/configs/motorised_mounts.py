@@ -1,4 +1,4 @@
-"""Serial-only motor setups for the motor notebook and jazlabs-motors launcher.
+"""Serial-only motor setups for the motor server, bridge, widget and notebook.
 
 Replace each hardware port with its OS serial port. Limits are deliberately
 unset until calibrated for the installed mechanism. The simulation needs no
@@ -11,6 +11,9 @@ MOTOR_SERVERS = [
         "host": "127.0.0.1",
         "client_host": "127.0.0.1",
         "command_port": 50941,
+        "local_host": "127.0.0.1",
+        "local_command_port": 51941,
+        "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "CONEXAGAPSerial",
         "stage_kwargs": {"port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0},
         "limits": {},  # Add calibrated U/V limits in degrees to enable sliders.
@@ -23,6 +26,9 @@ MOTOR_SERVERS = [
         "host": "127.0.0.1",
         "client_host": "127.0.0.1",
         "command_port": 50942,
+        "local_host": "127.0.0.1",
+        "local_command_port": 51942,
+        "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "CONEXAGPSerial",
         "stage_kwargs": {
             "port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0,
@@ -38,6 +44,9 @@ MOTOR_SERVERS = [
         "host": "127.0.0.1",
         "client_host": "127.0.0.1",
         "command_port": 50943,
+        "local_host": "127.0.0.1",
+        "local_command_port": 51943,
+        "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "UMC2Serial",
         "stage_kwargs": {
             "port": None, "baudrate": 115200, "timeout": 0.25,
@@ -53,6 +62,9 @@ MOTOR_SERVERS = [
         "host": "127.0.0.1",
         "client_host": "127.0.0.1",
         "command_port": 50944,
+        "local_host": "127.0.0.1",
+        "local_command_port": 51944,
+        "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "simulation",
         "stage_kwargs": {"axes": 2, "absolute_sensor": False},
         "limits": {},

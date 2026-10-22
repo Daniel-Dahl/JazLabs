@@ -300,6 +300,215 @@ Only request values that are safe for the connected laser and optical setup.
 The physical interlock and operating procedure remain authoritative. A driver
 that does not implement a control reports that capability as unavailable.
 
+## Example 4: Motor Server, Bridge, and Control GUI
+
+Motors follow the same separately launched server/bridge/client pattern as the
+other instruments. The widget never starts a server or opens a serial port.
+
+```text
+Serial motor controller
+        |
+        v
+Motor server (hardware computer)
+        |
+        +----> Motor client / GUI on the same computer
+        |
+        `----> Motor bridge (control computer)
+                       |
+                       +----> Motor control GUI
+                       `----> Motor client / experiment notebook
+```
+
+There is no continuous image stream or shared memory for motors. Commands and
+position/status snapshots travel over the command endpoint. All serial commands
+stay in the stage driver; the hardware server schedules motion and polls status.
+Users can also instantiate a serial driver directly from a script when a server
+is not wanted. The widget always uses the client.
+
+### 1. Configure the mount
+
+The presets in `src/JazLabs/launchers/configs/motorised_mounts.py` use
+`MOTOR_SERVERS`, with one named entry per controller:
+
+| Name | Controller | Axes and displayed units | Server port | Local bridge port |
+|---|---|---|---:|---:|
+| `newport_tip_tilt` | CONEX-AGAP / AG-M100D | U = yaw, V = pitch; degrees | 50941 | 51941 |
+| `newport_translation` | CONEX-AGP | X; configured physical units, labelled mm in the preset | 50942 | 51942 |
+| `thorlabs_umc2` | UMC2 | X/Y; native controller counts | 50943 | 51943 |
+| `simulation` | Simulated translation stage | X/Y; mm | 50944 | 51944 |
+
+For serial hardware, install `pip install -e '.[serial]'`, then replace
+`stage_kwargs.port = None` with the hardware computer's port, such as `COM5` or
+`/dev/ttyUSB0`. A `--serial-port` override is also available. Close Kinesis,
+Newport's GUI, and other programs using that port first. These drivers use
+pyserial directly and do not require a VISA backend. The AGP translation preset
+is not an AG-UC8 driver; check the controller model before selecting it.
+
+Configure these fields for the selected mount:
+
+- `host` / `command_port`: where the hardware server binds.
+- `client_host`: reachable hardware-server address for a direct client.
+- `stage_type` / `stage_kwargs`: controller selection and driver settings.
+- `limits`: calibrated lower/upper endpoints for each axis in displayed units.
+  Leave them empty until measured; a slider is disabled without both endpoints.
+- `local_host` / `local_command_port`: where a bridge binds on the control computer.
+- `remote_host`: the hardware-server address a bridge connects to; it can also
+  be supplied using `--remote-host`.
+
+Do not infer UMC2 millimetre scaling from another controller. Its fitted stages
+set the count-to-distance conversion; the current UMC2 readout is trajectory
+position in counts. Verify the AGP stage's configured units: `units="mm"` is a
+label, not firmware configuration or calibration. KST201 drivers use their
+actuator profile for millimetres and preserve the existing travel margin.
+
+### 2. Start the motor server on the hardware computer
+
+For the tip/tilt mount:
+
+```bash
+jazlabs-server-motor --config motorised_mounts --name newport_tip_tilt --serial-port COM5
+```
+
+For the other hardware presets, in separate terminals as needed:
+
+```bash
+jazlabs-server-motor --config motorised_mounts --name newport_translation --serial-port COM6
+jazlabs-server-motor --config motorised_mounts --name thorlabs_umc2 --serial-port COM7
+```
+
+Replace the serial port names with the actual ones, or omit `--serial-port`
+once they are saved in the config. The server owns that serial port until it
+stops. Driver startup does not home or enable the motors. The GUI will report
+connection/startup failures rather than assume that hardware is ready.
+
+To accept clients or a bridge from another computer, add `--host 0.0.0.0` and
+allow the configured command port through the firewall on a trusted lab network.
+Clients must use the computer's real address, not `0.0.0.0`. The motor protocol
+has no authentication; do not expose it to an untrusted network.
+
+### 3. Open the motor control GUI
+
+With the server running, open another terminal on the same computer:
+
+```bash
+jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt
+```
+
+The black control GUI offers an **alignment** pad and an **axis console**:
+
+```bash
+jazlabs-view-motor --config motorised_mounts --name newport_translation --layout console
+```
+
+For a direct connection from a different computer, supply its reachable address:
+
+```bash
+jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --host 192.168.1.25
+```
+
+The GUI reports live position, homed/needs homing, homing, moving, disabled,
+fault, and stale-feedback states. AGAP absolute sensors require no homing.
+Use **Enable axis** if needed before homing or moving an incremental stage.
+
+- Enable **Keyboard control**: A/D jog the first axis, W/S the second, and Q/E
+  the third. A tap sends one configured relative step; holding repeats one step
+  at a time after the preceding move completes. Release finishes the current
+  step and cancels further repetition. Choose a small step for fine alignment.
+- Absolute targets use the axis's displayed units. Slider dragging previews a
+  target; release sends one absolute move within the configured travel limits.
+- Speed controls are available only when the driver advertises support. The
+  simulator supports them; physical-unit velocity configuration is currently
+  unavailable through the serial drivers, so those controls remain disabled.
+- Escape or **STOP ALL AXES** sends controller stop commands, clears pending
+  motion, and latches motion off. **Re-enable motion** requires stopped feedback.
+  This software stop cannot replace a physical emergency stop or deliver a
+  command over a disconnected serial link.
+
+Editing a value, changing layout, minimizing, or losing application focus
+releases/disarms keyboard jogging. Held-key requests expire at the hardware
+server after 350 ms without renewal, so a lost client cannot queue endless jog
+steps. A step or absolute move already accepted by hardware can still finish.
+Closing the GUI requests a stop and closes its client; the server stays running.
+
+### 4. Optional: bridge to the control computer
+
+Start the hardware server first with a reachable bind address. Then, on the
+control computer, start the bridge in a second terminal:
+
+```bash
+jazlabs-bridge-motor --config motorised_mounts --name newport_tip_tilt --remote-host 192.168.1.25
+```
+
+The preset above forwards local `127.0.0.1:51941` to the hardware server's
+`192.168.1.25:50941`. Distinct local ports also allow server and bridge testing
+on the same computer. Override ports using `--local-command-port` and
+`--remote-command-port` when needed, and give clients the matching local port.
+
+In another terminal on the control computer:
+
+```bash
+jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --bridge
+```
+
+The bridge forwards requests and replies and never imports a hardware driver.
+It preserves position-feedback age and adds its relay time. A timed-out movement
+request has an unknown outcome and is never automatically retried. Keep the
+link responsive for held-key jogging; use `--timeout-ms` only to change the
+finite request timeout, not the hardware server's jog lease.
+
+### 5. Use a client or the notebook
+
+A script connects to the same server or bridge endpoint as the GUI:
+
+```python
+from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
+
+# Direct server: 50941. Local bridge: 51941.
+mount = MotorisedStageClient(host="127.0.0.1", command_port=51941)
+try:
+    print(mount.GetMotionCapabilities())
+    print(mount.GetAxisState("U"))
+    # mount.MoveTo("U", 0.1)  # Check the fitted mount and limits before moving.
+    # Poll state for commanded/moving/homing and errors before another move.
+    # mount.StopAll()
+finally:
+    mount.close()
+```
+
+The notebook `notebooks/instrument_clients/motorised_mount_client.ipynb` loads
+these same presets. Select `MOUNT_NAME`, set `USE_BRIDGE` if appropriate, and
+run its printed server/bridge launch commands in separate terminals. Motion is
+disabled by default. The notebook verifies stage type and units, reads every
+axis, and includes optional homing, speed, relative/absolute moves, and stop.
+
+A client acknowledgement means an intent was submitted, not that movement
+finished. Poll feedback and check errors, stale state, stop state, and target
+arrival. Never blindly retry a relative move after a communication timeout.
+Closing a synchronous notebook/script client does not stop the server or an
+active move; explicitly request `StopAll()` when that is your intention.
+
+For a hardware-free test, use two terminals:
+
+```bash
+# Terminal 1
+jazlabs-server-motor --config motorised_mounts --name simulation
+
+# Terminal 2
+jazlabs-view-motor --config motorised_mounts --name simulation
+```
+
+The three independent module launchers can also be used without console scripts:
+
+```bash
+python -m JazLabs.launchers.launch_motorised_stage_server --config motorised_mounts --name simulation
+python -m JazLabs.launchers.launch_motorised_stage_bridge --config motorised_mounts --name simulation --remote-host 127.0.0.1
+python -m JazLabs.launchers.launch_motorised_stage_widget --config motorised_mounts --name simulation --bridge
+```
+
+Run each in its own terminal, in the order shown. Reinstall the editable project
+with `pip install -e .` if the new `jazlabs-server-motor`, `jazlabs-bridge-motor`,
+and `jazlabs-view-motor` entry points are not yet available in your environment.
+
 ## Launch Order at a Glance
 
 ### Same-computer camera
@@ -324,11 +533,23 @@ that does not implement a control reports that capability as unavailable.
 | 1 | Laser computer | Laser server | `jazlabs-server-laser --config HDStokes --name tunable_laser` |
 | 2 | Control computer | Laser GUI | `jazlabs-view-laser --config HDStokes --name tunable_laser --host <laser-host>` |
 
+### Bridged motor mount
+
+| Order | Computer | Process | Command |
+|---:|---|---|---|
+| 1 | Hardware computer | Motor server | `jazlabs-server-motor --config motorised_mounts --name newport_tip_tilt --host 0.0.0.0` |
+| 2 | Control computer | Motor bridge | `jazlabs-bridge-motor --config motorised_mounts --name newport_tip_tilt --remote-host <motor-host>` |
+| 3 | Control computer | Motor GUI | `jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --bridge` |
+
 ## Stopping the Processes
 
 Close GUI windows normally. For a long-running server, bridge, or terminal
 viewer, return to its terminal and press `Ctrl+C`. Stop clients before their
 server so they do not continue waiting for a connection that has disappeared.
+For motors, close the GUI/clients first, then the bridge, then the hardware
+server. `shutdown_bridge` sent to a motor bridge stops only that bridge;
+`shutdown` requests shutdown of the hardware server. The server requests a stop
+before closing the serial port.
 
 ## Troubleshooting
 
@@ -350,3 +571,10 @@ server so they do not continue waiting for a connection that has disappeared.
   bridge and Windows server for acknowledgement or LUT/hardware errors. The
   viewer alone proves that shared memory changed, not that the SLM accepted the
   image.
+
+- **Motor sliders are unavailable:** set calibrated axis endpoints in `limits`;
+  no range is invented for an unknown fitted stage.
+- **Motor moves are disabled:** check the connection age, homing and enable
+  indicators, controller errors, and the latched stop state.
+- **Motor GUI reaches the wrong endpoint:** use the server port for a direct
+  connection, or `--bridge` / its local command port for a bridged connection.

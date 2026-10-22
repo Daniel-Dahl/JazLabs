@@ -25,8 +25,9 @@ hardware path hidden inside a widget. Camera and motor widgets both use clients.
 For motorised stages, the server schedules repeated jog steps, polls driver
 state, enforces configured travel limits, and prioritises stops. A thread inside
 the server keeps its network loop responsive during finite driver transactions.
-The widget sees only the motor client's commands and cached state. Even a local
-simulator demo uses a client and server; the simulator is simply another driver.
+The widget sees only the motor client's commands and cached state. Start server and widget separately, even for a local simulator demo. A bridge
+may forward a remote server to local clients; it never owns a hardware driver.
+The simulator is simply another driver.
 
 ## digHolo
 
