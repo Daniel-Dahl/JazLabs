@@ -2,8 +2,8 @@
 
 Each bay is an independent mount on a shared serial connection. Startup reads
 stage-axis parameters without homing, moving, or writing controller settings.
-Counts are always available. Millimetres require a positive calibration and an
-explicit physical_units="mm" declaration for the fitted linear mechanism.
+Counts are always available. Millimetres use the controller's position scale for
+an identified linear mechanism, or an explicit counts_per_mm calibration.
 """
 import math
 import struct
@@ -62,10 +62,22 @@ class UMC2SerialStage(APTSerialMotion):
                         note = f"Stage detection unavailable: {exc}"
                 mm_scale = options.get("counts_per_mm")
                 physical_units = options.get("physical_units")
+                if physical_units is None and stage is not None:
+                    if stage["part_number"].upper() in ("DRV250", "NRT100", "NRT100/M"):
+                        physical_units = "mm"
                 if physical_units not in (None, "mm"):
                     raise ValueError("UMC2 linear mounts use physical_units='mm'; otherwise leave it unset")
                 if mm_scale is None and physical_units == "mm" and stage is not None:
-                    mm_scale = stage["counts_per_unit"] or None
+                    # XA SDK 1.12 TLMC_StageAxisParams defines positionScale in
+                    # bytes previously marked reserved in the APT manual. UMC
+                    # stepper conversion uses this field; countsPerUnit is the
+                    # encoder calibration and may be zero on DRV250/NRT100.
+                    position_scale = stage["position_scale"]
+                    if math.isfinite(position_scale) and position_scale > 0:
+                        mm_scale = position_scale
+                        note += "; using controller positionScale for mm"
+                    else:
+                        mm_scale = stage["counts_per_unit"] or None
                 if options.get("counts_per_mm") is not None:
                     note += "; using configured counts_per_mm"
                 if mm_scale is not None:
@@ -124,8 +136,20 @@ class UMC2SerialStage(APTSerialMotion):
             part_number = payload[6:22].split(b"\0", 1)[0].decode("ascii").strip()
             serial_number, counts_per_unit = struct.unpack_from("<II", payload, 22)
             minimum, maximum, acceleration, deceleration, velocity = struct.unpack_from("<iiiii", payload, 30)
+            gearbox_ratio, microsteps = struct.unpack_from("<HH", payload, 50)
+            position_scale, velocity_scale, acceleration_scale = struct.unpack_from("<fff", payload, 54)
+            # Nonfinite vendor fields must not leak NaN/Infinity into JSON state.
+            if not math.isfinite(position_scale):
+                position_scale = 0.0
+            if not math.isfinite(velocity_scale):
+                velocity_scale = 0.0
+            if not math.isfinite(acceleration_scale):
+                acceleration_scale = 0.0
             return {"stage_id": stage_id, "axis_id": axis_id, "part_number": part_number,
                     "serial_number": serial_number, "counts_per_unit": counts_per_unit,
+                    "gearbox_ratio": gearbox_ratio, "microsteps": microsteps,
+                    "position_scale": position_scale, "velocity_scale": velocity_scale,
+                    "acceleration_scale": acceleration_scale,
                     "minimum_counts": minimum, "maximum_counts": maximum,
                     "maximum_acceleration_counts_per_cycle_squared": acceleration,
                     "maximum_deceleration_counts_per_cycle_squared": deceleration,

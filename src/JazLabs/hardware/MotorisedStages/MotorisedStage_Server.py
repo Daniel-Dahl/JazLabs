@@ -191,7 +191,7 @@ class StageServerWorker:
         self.snapshot = {"connected": False, "name": "Connecting…", "capabilities": [],
                          "axes": {}, "stopped": False, "stop_pending": False,
                          "error": None, "message": "Connecting…", "sequence": 0, "operations": {},
-                         "stop_reason": None, "last_stop_reason": None}
+                         "stop_reason": None}
         self.thread = threading.Thread(target=self.run, name="motor-hardware-owner", daemon=True)
 
     def start(self):
@@ -213,9 +213,9 @@ class StageServerWorker:
             if command == "stop":
                 reason = str(stop_reason or "Stop requested by client")
                 if not self.stop_requested.is_set():
-                    if not self.snapshot["stopped"] or reason != self.snapshot["last_stop_reason"]:
+                    if reason != "Stop requested by client" and reason != self.snapshot["stop_reason"]:
                         logger.warning("Motor motion stopped: %s", reason)
-                    self.snapshot.update(stop_reason=reason, last_stop_reason=reason)
+                    self.snapshot["stop_reason"] = reason
                 self.epoch += 1
                 self.held_jog = None
                 self.snapshot["stop_pending"] = True

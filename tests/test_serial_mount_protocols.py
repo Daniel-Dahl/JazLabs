@@ -171,6 +171,52 @@ class ProtocolTests(unittest.TestCase):
         status = stage.GetAxisStatus('Y')
         self.assertEqual(status['positions'], {'counts': 1000, 'mm': .5})
 
+    def test_umc_stepper_position_scale_enables_mm_without_encoder_calibration(self):
+        port = SerialPort(timeout=.01)
+        # XA's current 72-byte StageAxisParams follows the channel word.
+        # Deliberately use distinct scales to catch reading countsPerUnit,
+        # velocityScale, or a hard-coded scale for every mount.
+        first = struct.pack('<HHH16sIIiiIIIHHfff8s', 1, 1, 1, b'DRV250',
+                            12345, 0, 0, 50000, 10, 10, 20,
+                            1, 2048, 1000, 2000, 3000, b'')
+        second = struct.pack('<HHH16sIIiiIIIHHfff8s', 1, 2, 1, b'NRT100/M',
+                             67890, 0, 0, 200000, 10, 10, 20,
+                             1, 2048, 2000, 4000, 6000, b'')
+        port.chunks = [packet(0x04F2, 0x21, first), packet(0x04F2, 0x22, second)]
+        with patch.object(umc.serial, 'Serial', return_value=port):
+            stage = umc.UMC2SerialStage('fake')
+        x, y = stage.GetMotionCapabilities()
+        self.assertEqual((x['units'], y['units']), ('mm', 'mm'))
+        self.assertEqual((x['maximum'], y['maximum']), (50, 100))
+        self.assertEqual((x['unit_scales']['mm'], y['unit_scales']['mm']), (1000, 2000))
+        self.assertEqual(x['stage']['counts_per_unit'], 0)
+        self.assertEqual(x['stage']['microsteps'], 2048)
+        self.assertIn('positionScale', x['calibration_note'])
+        stage.MoveTo('X', .01, units='mm', wait=False)
+        self.assertEqual(struct.unpack_from('<i', port.writes[-1], 8)[0], 10)
+        stage.MoveTo('Y', .01, units='mm', wait=False)
+        self.assertEqual(struct.unpack_from('<i', port.writes[-1], 8)[0], 20)
+        with self.assertRaises(ValueError):
+            stage.MoveTo('X', 50.01, units='mm', wait=False)
+
+    def test_umc_position_scale_override_and_invalid_scale_fallback(self):
+        for reported_scale in (0, -1, float('nan'), float('inf'), 2000):
+            with self.subTest(position_scale=reported_scale):
+                data = struct.pack('<HHH16sIIiiIIIHHfff8s', 1, 1, 1, b'DRV250',
+                                   1, 0, 0, 50000, 1, 1, 1,
+                                   1, 2048, reported_scale, 0, 0, b'')
+                port = SerialPort(timeout=.01)
+                port.chunks = [packet(0x04F2, 0x21, data), packet(0x04F2, 0x22, data)]
+                with patch.object(umc.serial, 'Serial', return_value=port):
+                    stage = umc.UMC2SerialStage('fake', mounts={
+                        'X': {'counts_per_mm': 1000, 'limits_mm': [1, 40]}})
+                x, y = stage.GetMotionCapabilities()
+                self.assertEqual((x['minimum'], x['maximum']), (1, 40))
+                self.assertEqual(x['unit_scales']['mm'], 1000)
+                self.assertEqual(y['units'], 'mm' if reported_scale == 2000 else 'counts')
+                if reported_scale == 2000:
+                    self.assertEqual(y['maximum'], 25)  # Never widen detected travel to 50 mm.
+
     def test_umc_missing_detection_keeps_counts_and_rejects_unavailable_mm(self):
         stage = umc.UMC2SerialStage('fake', timeout=.001,
                                   mounts={'X': {'physical_units': 'mm'}})

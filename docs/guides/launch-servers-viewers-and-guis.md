@@ -370,9 +370,15 @@ Without counts/mm calibration, it shows a disabled counts selector and an explic
 millimetre-unavailable message. Both panels share one server and COM port. The current scheduler performs one move at a time; keyboard
 A/D controls the first mount and W/S the second. STOP ALL AXES stops both mounts.
 
-In `stage_kwargs.mounts`, declare `physical_units="mm"` for each fitted linear
-stage/actuator. The packet's counts-per-unit value does not distinguish mm from
-degrees. With `units="auto"`, usable millimetre calibration selects mm as the
+The driver recognises DRV250 and NRT100(/M) as linear mechanisms. For other linear
+stages, declare `physical_units="mm"` in `stage_kwargs.mounts`. It reads the
+controller's `positionScale` calibration from the stage-axis packet, as defined
+by `TLMC_StageAxisParams` in the [XA 1.12 SDK](https://www.thorlabs.com/software-pages/motion_control?tabName=XA%20Software).
+Those float fields were marked reserved in the APT protocol document; the separate
+`countsPerUnit` encoder field may be zero for a stepper mount. Older packets with
+no usable position scale can use a positive counts-per-unit calibration instead.
+No scale is inferred by dividing nominal travel by reported limits.
+With `units="auto"`, usable millimetre calibration selects mm as the
 server's canonical units; otherwise the mount stays in counts and the GUI explains
 what is missing. Detection is read-only and can be disabled with `detect_stages=False`.
 Use a verified `counts_per_mm` override and optional `limits_mm` if the controller
@@ -472,8 +478,8 @@ Use **Enable axis** if needed before homing or moving an incremental stage.
   motion, and latches motion off. **Re-enable motion** requires stopped feedback.
   This button clears the server's stop latch; **Enable axis** controls the
   controller's motor enable separately. Automatic stops show their triggering
-  reason in the GUI and terminal. The snapshot retains `last_stop_reason` after
-  re-enabling so a first-move failure can be diagnosed.
+  reason in the GUI and server terminal. Re-enabling clears the current stop
+  reason. Normal user stops and client shutdowns do not produce warning logs.
   This software stop cannot replace a physical emergency stop or deliver a
   command over a disconnected serial link.
 

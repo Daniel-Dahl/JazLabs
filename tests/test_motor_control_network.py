@@ -127,7 +127,7 @@ class NetworkTests(unittest.TestCase):
             self.assertTrue(result['stop_pending'] or result['stopped'])
         self.wait(lambda: self.client.request('state')['stopped'])
 
-    def test_first_move_feedback_failure_preserves_stop_reason_after_resume(self):
+    def test_feedback_failure_reports_reason_and_resume_clears_it(self):
         original = SimulatedStage.GetAxisStatus
         failed = False
 
@@ -150,7 +150,6 @@ class NetworkTests(unittest.TestCase):
             self.wait(lambda: not self.client.request('state')['stopped'])
             state = self.client.request('state')
             self.assertIsNone(state['stop_reason'])
-            self.assertEqual(state['last_stop_reason'], reason)
             self.client.MoveTo('X', 5.1)
 
     def test_gui_connection_failure_reports_why_it_requested_stop(self):
@@ -243,7 +242,7 @@ class NetworkTests(unittest.TestCase):
                 self.assertTrue(rejected.wait(1))
                 time.sleep(.15)
                 self.assertFalse(self.client.request('state')['stopped'])
-                self.assertIsNone(self.client.request('state')['last_stop_reason'])
+                self.assertIsNone(self.client.request('state')['stop_reason'])
             finally:
                 endpoint.close()
                 endpoint.thread.join(2)

@@ -5,13 +5,10 @@ same client. Only the client's network thread handles asynchronous RPCs; it
 never imports or accesses a hardware driver.
 """
 import math
-import logging
 import time
 import uuid
 
 import zmq
-
-logger = logging.getLogger(__name__)
 
 class MotorCommandRejected(RuntimeError):
     """The server replied but did not accept the requested command."""
@@ -274,7 +271,6 @@ class MotorisedStageClient:
                             and self.received_at is None and command == "state")
                         if not waiting_for_initial_connection and not self.stop_requested.is_set():
                             self.communication_stop_reason = f"Client {command} request failed: {exc}"
-                            logger.warning("Motor stop requested: %s", self.communication_stop_reason)
                         self.snapshot.update(connected=False, error=str(exc),
                             message="Waiting for motor server" if waiting_for_initial_connection else "Motion service unavailable")
                         self.held_jog = None
