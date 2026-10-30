@@ -1,202 +1,353 @@
-"""
-Simple serial (APT protocol) control for a Thorlabs KDC101.
+"""Single-axis KDC101 APT driver. Use one caller per serial connection.
 
-Method names are aligned to MotorisedStage_Client style.
+Axis X uses counts by default, or mm with counts_per_mm calibration.
+Supply limits in the configured units before moving.
 """
-
+import math
 import struct
 import time
 
 import serial
 
-from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
 
-__all__ = ["KDC101SerialStage"]
+class KDC101SerialStage:
+    controller = "KDC101Serial"
 
-
-class KDC101SerialStage(APTSerialMotion):
-    """
-    Control a single-channel KDC101 using APT messages over serial.
-
-    Notes
-    -----
-    - Uses native controller position counts.
-    - Axis is single-channel. Accepted axis values: 0, 1, "1", "X", "U".
-    """
-
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.25,
-                 units="counts", counts_per_mm=None, limits=None) -> None:
-        self.port = port
-        self.baudrate = int(baudrate)
-        self.timeout = float(timeout)
-
-        # APT routing bytes for single USB device
-        self.source = 0x01
-        self.destination = 0x50
-
-        # Message IDs
-        self.MGMSG_HW_NO_FLASH_PROGRAMMING = 0x0018
-        self.MGMSG_MOT_REQ_POSCOUNTER = 0x0411
-        self.MGMSG_MOT_GET_POSCOUNTER = 0x0412
-        self.MGMSG_MOT_MOVE_HOME = 0x0443
-        self.MGMSG_MOT_MOVE_RELATIVE = 0x0448
-        self.MGMSG_MOT_MOVE_ABSOLUTE = 0x0453
-        self.MGMSG_MOT_MOVE_COMPLETED = 0x0464
-
-        self.channel = 1  # KDC101 single channel
-
-        self.serial = serial.Serial(
-            port=self.port,
-            baudrate=self.baudrate,
-            timeout=self.timeout,
-            write_timeout=self.timeout,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-        )
-
-        # Required startup message
-        msg = struct.pack(
-            "<HBBBB",
-            self.MGMSG_HW_NO_FLASH_PROGRAMMING,
-            0x00,
-            0x00,
-            self.destination,
-            self.source,
-        )
-        self.serial.write(msg)
-        time.sleep(0.05)
-
-        # Prime comms
-        self.GetPositions()
-
+    def __init__(self, port, baudrate=115200, timeout=.25, move_timeout=60.,
+                 units="counts", counts_per_mm=None, limits=None):
+        # Millimetre commands require a supplied calibration for the attached stage.
         if units not in ("counts", "mm") or (units == "mm" and counts_per_mm is None):
-            self.CloseStage()
             raise ValueError("mm requires a configured counts_per_mm calibration")
-        self._configure_motion({"X": self.destination}, units=units,
-            counts_per_unit=counts_per_mm if units == "mm" else 1.0, limits=limits,
-            axis_profiles={"X": {"counts_per_mm": counts_per_mm}})
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.move_timeout = move_timeout
 
-    def __del__(self):
+        # Open the controller's single channel and keep partial replies in a buffer.
+        self._received = bytearray()
+        self.serial = serial.Serial(port=port, baudrate=baudrate, timeout=timeout,
+                                    write_timeout=timeout, bytesize=serial.EIGHTBITS,
+                                    parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE)
         try:
-            self.CloseStage()
+            if any(not math.isfinite(value) or value <= 0 for value in (timeout, move_timeout)):
+                raise ValueError("timeout and move_timeout must be positive and finite")
+
+            # Store counts directly and add mm only when its scale is known.
+            unit_scales = {"counts": 1.0}
+            if counts_per_mm is not None:
+                counts_per_mm = float(counts_per_mm)
+                if not math.isfinite(counts_per_mm) or counts_per_mm <= 0:
+                    raise ValueError("counts_per_mm must be positive and finite")
+                unit_scales["mm"] = counts_per_mm
+
+            # Check configured travel bounds for axis X; unknown bounds allow readout only.
+            if set(limits or {}) - {"X"}:
+                raise ValueError("Travel limit key must be X")
+            lower, upper = (limits or {}).get("X", (None, None))
+            if any(value is not None and not math.isfinite(value) for value in (lower, upper)):
+                raise ValueError("Travel limits must be finite")
+            if lower is not None and upper is not None and lower >= upper:
+                raise ValueError("Invalid travel limits for X")
+
+            # Save limits, channel address and calibration for subsequent commands.
+            self._limits = {"X": (lower, upper)}
+            self._axis_destinations = {"X": 0x50}
+            self._axis_profiles = {"X": {"label": "X", "units": units,
+                "counts_per_unit": unit_scales[units], "unit_scales": unit_scales}}
+
+            # Keep individual reads short, then send the startup configuration.
+            self.serial.timeout = min(float(self.serial.timeout or .05), .05)
+            self.write(0x0018, 0x50, 0)  # Disable flash programming.
+            time.sleep(.05)  # Let the controller settle after startup configuration.
         except Exception:
-            pass
+            self.CloseStage()
+            raise
 
-    def _read_exact(self, nbytes: int) -> bytes:
-        data = self.serial.read(nbytes)
-        if len(data) != nbytes:
-            raise TimeoutError(f"Timed out reading {nbytes} bytes (got {len(data)})")
-        return data
+    def write(self, message, destination, param1=1, param2=0, payload=None):
+        """Send an APT command to a controller/bay using its binary header."""
+        if payload is None:
+            packet = struct.pack("<HBBBB", message, param1, param2, destination, 1)
+        else:
+            # The destination's high bit marks a message carrying a payload.
+            packet = struct.pack("<HHBB", message, len(payload), destination | 0x80, 1) + payload
+        # Send the assembled bytes to the controller.
+        self.serial.write(packet)
 
-    def _check_axis(self, axis):
-        valid = {0, 1, "0", "1", "X", "x", "U", "u"}
-        if axis not in valid:
-            raise ValueError("Invalid axis for KDC101. Use one of: 0, 1, '1', 'X', 'U'.")
+    def query(self, message, response, destination, timeout=.5):
+        """Send an APT request and read its complete reply from the selected bay."""
+        self.write(message, destination)
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            # Read the six-byte header before checking for an optional payload.
+            if len(self._received) >= 6:
+                header = bytes(self._received[:6])
+                payload_length = struct.unpack_from("<H", header, 2)[0] if header[4] & 0x80 else 0
+                if payload_length > 4096:
+                    raise RuntimeError("Invalid APT payload length")
 
-    def GetProperties(self):
-        return {
-            "stage_type": "KDC101Serial",
-            "port": self.port,
-            "baudrate": self.baudrate,
-            "timeout": self.timeout,
-            "channel": self.channel,
-            "units": "controller_counts",
-        }
+                # Decode only complete packets; keep partial replies buffered.
+                if len(self._received) >= 6 + payload_length:
+                    payload = bytes(self._received[6:6 + payload_length])
+                    del self._received[:6 + payload_length]
+                    reply_id = struct.unpack_from("<H", header)[0]
+                    if reply_id in (0x0080, 0x0081):
+                        raise RuntimeError(f"APT controller error: {header.hex()} {payload.hex()}")
 
-    def GetPositions(self):
-        req = struct.pack(
-            "<HBBBB",
-            self.MGMSG_MOT_REQ_POSCOUNTER,
-            self.channel,
-            0x00,
-            self.destination,
-            self.source,
-        )
-        self.serial.write(req)
+                    # Match the expected reply, its source bay and motor channel.
+                    if reply_id == response and header[5] == destination:
+                        if len(payload) < 2 or struct.unpack_from("<H", payload)[0] != 1:
+                            raise RuntimeError("Unexpected APT channel")
+                        return payload
+                    continue
 
-        position = 0
-        t0 = time.time()
-        while time.time() - t0 < 2.0:
-            hdr = self._read_exact(6)
-            msg_id = struct.unpack("<H", hdr[:2])[0]
+            # Serial reads can return fragments; append them until a packet is complete.
+            self._received.extend(self.serial.read(max(1, min(4096, self.serial.in_waiting))))
+        raise TimeoutError(f"No APT 0x{response:04X} response from 0x{destination:02X}")
 
-            if (hdr[4] & 0x80) != 0:
-                payload_len = struct.unpack("<H", hdr[2:4])[0]
-                payload = self._read_exact(payload_len)
-            else:
-                payload = b""
+    def GetStatus(self, axis=None):
+        """Read configuration and live feedback into one dictionary.
 
-            if msg_id == self.MGMSG_MOT_GET_POSCOUNTER and len(payload) >= 6:
-                ch, pos = struct.unpack("<Hi", payload[:6])
-                if ch == self.channel:
-                    position = int(pos)
-                    break
+        Positions and limits use the axis's default units. The positions and
+        limits_by_unit dictionaries also include every calibrated alternative.
+        """
+        # Select one axis, or read every configured axis when none is specified.
+        axes = list(self._axis_destinations) if axis is None else [axis]
+        if any(name not in self._axis_destinations for name in axes):
+            raise ValueError(f"Unknown axis {axis!r}; choose from {list(self._axis_destinations)}")
+        result = {"controller": self.controller, "port": self.port,
+                  "baudrate": self.baudrate, "timeout": self.timeout,
+                  "move_timeout": self.move_timeout,
+                  "axes": {}}
+        for name in axes:
+            destination = self._axis_destinations[name]
+            # Read the native position counts, then the motor status flags.
+            payload = self.query(0x0411, 0x0412, destination)
+            if len(payload) != 6:
+                raise RuntimeError("Invalid APT position packet")
+            position = struct.unpack_from("<i", payload, 2)[0]
+            payload = self.query(0x0429, 0x042A, destination)
+            if len(payload) != 6:
+                raise RuntimeError("Invalid APT status packet")
+            bits = struct.unpack_from("<I", payload, 2)[0]
+            profile = self._axis_profiles[name]
+            scale = profile["counts_per_unit"]
+            lower, upper = self._limits[name]
+            step = 100 if profile["units"] == "counts" else .01
 
-        return [float(position)]
+            # Convert the position into every calibrated unit before assembling feedback.
+            positions = {unit: position / unit_scale for unit, unit_scale in profile["unit_scales"].items()}
+            fault_mask = 0x40000000 | 0x00020000 | 0x00040000 | 0x00080000 | 0x02000000 | 0x08000000
+            # Include active-command and initialising flags after direction flags clear.
+            busy_bits = 0xF0 | 0x800 | 0x20000000
 
-    def MoveAbs(self, axis, value, wait: bool = False):
-        self._check_axis(axis)
+            # Return configuration and decoded feedback together for this axis.
+            result["axes"][name] = {
+                "label": profile["label"], "units": profile["units"],
+                "limits": [lower, upper], "resolution": 1 / scale, "tolerance": 2 / scale,
+                "step": step, "unit_scales": dict(profile["unit_scales"]),
+                "step_by_unit": {unit: step * scale / unit_scale for unit, unit_scale in profile["unit_scales"].items()},
+                "resolution_by_unit": {unit: 1 / unit_scale for unit, unit_scale in profile["unit_scales"].items()},
+                "limits_by_unit": {
+                    unit: [None if lower is None else lower * scale / unit_scale,
+                           None if upper is None else upper * scale / unit_scale]
+                    for unit, unit_scale in profile["unit_scales"].items()},
+                "supports": {"home": True, "stop": True, "speed": False},
+                "position": positions[profile["units"]], "positions": positions,
+                "controller_status_bits": bits, "moving": bool(bits & busy_bits),
+                "homing": bool(bits & 0x200), "homed": bool(bits & 0x400),
+                "enabled": bool(bits & 0x80000000),
+                "cw_hardware_limit": bool(bits & 1), "ccw_hardware_limit": bool(bits & 2),
+                "fault": f"APT fault 0x{bits:08X}" if bits & fault_mask else None, "speed": None}
+        return result
 
-        payload = struct.pack("<Hi", self.channel, int(value))
-        header = struct.pack(
-            "<HHBB",
-            self.MGMSG_MOT_MOVE_ABSOLUTE,
-            len(payload),
-            self.destination | 0x80,
-            self.source,
-        )
-        self.serial.write(header + payload)
+    def MoveAbs(self, axis, target, wait=True, timeout=None, units=None):
+        """Move within driver limits; wait for stopped, in-tolerance feedback by default.
 
-        if wait:
-            t0 = time.time()
-            while time.time() - t0 < 10.0:
-                hdr = self._read_exact(6)
-                msg_id = struct.unpack("<H", hdr[:2])[0]
-                if (hdr[4] & 0x80) != 0:
-                    payload_len = struct.unpack("<H", hdr[2:4])[0]
-                    _ = self._read_exact(payload_len)
-                if msg_id == self.MGMSG_MOT_MOVE_COMPLETED:
-                    break
+        Omit units to use the axis's configured units, or specify 'counts'/'mm'.
+        Nonblocking moves have the same checks before sending the command.
+        """
+        # Check the wait timeout before preparing or sending a move.
+        timeout = self.move_timeout if timeout is None else float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
 
-    def MoveRel(self, axis, value, wait: bool = False):
-        self._check_axis(axis)
+        # Validate the target and convert the requested units into this mount's default units.
+        profile = self._axis_profiles[axis]
+        scale = profile["counts_per_unit"]
+        target = float(target)
+        if not math.isfinite(target):
+            raise ValueError("Target must be finite")
+        requested_units = profile["units"] if units is None else units
+        if requested_units == "counts" and target != int(target):
+            raise ValueError("Counts must be integers")
+        target = self.ConvertPosition(axis, target, requested_units, profile["units"])
 
-        payload = struct.pack("<Hi", self.channel, int(value))
-        header = struct.pack(
-            "<HHBB",
-            self.MGMSG_MOT_MOVE_RELATIVE,
-            len(payload),
-            self.destination | 0x80,
-            self.source,
-        )
-        self.serial.write(header + payload)
+        # Both travel endpoints must be known before any ordinary move is allowed.
+        lower, upper = self._limits[axis]
+        if lower is None or upper is None:
+            raise ValueError(f"{axis}: configure travel limits before moving")
 
-        if wait:
-            t0 = time.time()
-            while time.time() - t0 < 10.0:
-                hdr = self._read_exact(6)
-                msg_id = struct.unpack("<H", hdr[:2])[0]
-                if (hdr[4] & 0x80) != 0:
-                    payload_len = struct.unpack("<H", hdr[2:4])[0]
-                    _ = self._read_exact(payload_len)
-                if msg_id == self.MGMSG_MOT_MOVE_COMPLETED:
-                    break
+        # Check the requested target against the allowed travel.
+        if not lower <= target <= upper:
+            raise ValueError("Target is outside the configured actuator travel")
 
-    def HomeAll(self):
-        msg = struct.pack(
-            "<HBBBB",
-            self.MGMSG_MOT_MOVE_HOME,
-            self.channel,
-            0x00,
-            self.destination,
-            self.source,
-        )
-        self.serial.write(msg)
+        # Round to a controller count, then check the actual destination and integer range.
+        counts = round(target * scale)
+        rounded_target = counts / scale
+        if not lower <= rounded_target <= upper:
+            raise ValueError("Rounded target is outside the configured actuator travel")
+        if not -(2**31) <= counts < 2**31:
+            raise ValueError("Target exceeds signed 32-bit controller counts")
 
-    def SetNominal(self):
-        self.MoveAbs(axis=1, value=0, wait=False)
+        # Read fresh feedback: the mount must be stopped, enabled, homed and fault-free.
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["fault"]:
+            raise RuntimeError(status["fault"])
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before issuing another move")
+        if not status["enabled"] or not status["homed"]:
+            raise RuntimeError("Enable and home this axis before moving")
+
+        # Pack channel 1 and its target count into the command payload.
+        payload = struct.pack("<Hi", 1, counts)
+        try:
+            # This write sends the absolute-move command to the selected bay.
+            self.write(0x0453, self._axis_destinations[axis], payload=payload)
+
+            # Nonblocking callers take over monitoring once the command has been sent.
+            if not wait:
+                return None
+
+            # Blocking callers poll feedback until stopped at the rounded target or timed out.
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                status = self.GetStatus(axis)["axes"][axis]
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before the target was reached")
+                if not status["homed"] and not status["homing"]:
+                    raise RuntimeError("Axis lost its home reference during the move")
+
+                # A stopped motor is successful only when its position is within two counts.
+                if (not status["moving"] and not status["homing"]
+                        and abs(status["position"] - rounded_target) <= 2 / scale):
+                    return status
+            raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+
+        # Request a stop on both mounts if sending or monitoring the move fails.
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop failed: {stop_exc}") from exc
+            raise
+
+    def MoveRel(self, axis, distance, wait=True, timeout=None, units=None):
+        """Compute an absolute destination so relative moves obey the same limits."""
+        # Validate the increment and express it in this mount's default units.
+        profile = self._axis_profiles[axis]
+        requested_units = profile["units"] if units is None else units
+        distance = float(distance)
+        if requested_units == "counts" and (not math.isfinite(distance) or distance != int(distance)):
+            raise ValueError("Counts must be finite integers")
+        distance = self.ConvertPosition(axis, distance, requested_units, profile["units"])
+
+        # Read a stopped position so the relative destination has a stable starting point.
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before issuing another move")
+
+        # Use the absolute-move checks for the resulting destination, including travel limits.
+        return self.MoveAbs(axis, status["position"] + distance, wait=wait, timeout=timeout)
+
+    def SetNominal(self, wait=True, timeout=None):
+        """Move each axis halfway between its allowed travel endpoints."""
+        # Check every mount's limits before starting any nominal move.
+        for axis, (lower, upper) in self._limits.items():
+            if lower is None or upper is None:
+                raise ValueError(f"{axis}: configure travel limits before moving to nominal")
+
+        # Move each mount to its travel midpoint, rounded to a whole controller count.
+        for axis, (lower, upper) in self._limits.items():
+            scale = self._axis_profiles[axis]["counts_per_unit"]
+            midpoint = round((lower + upper) / 2 * scale) / scale
+            self.MoveAbs(axis, midpoint, wait=wait, timeout=timeout)
+
+    def HomeAxis(self, axis, wait=True, timeout=None):
+        """Home one axis and wait for stopped, homed feedback by default."""
+        # Validate the timeout and check the mount is enabled, stopped and fault-free.
+        timeout = self.move_timeout if timeout is None else float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["fault"]:
+            raise RuntimeError(status["fault"])
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before homing")
+        if not status["enabled"]:
+            raise RuntimeError("Enable this axis before homing")
+
+        # Send the home command; ordinary-move travel limits do not constrain homing.
+        try:
+            self.write(0x0443, self._axis_destinations[axis])
+            if not wait:
+                return None
+
+            # Wait for the controller to report a stopped mount with a home reference.
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                status = self.GetStatus(axis)["axes"][axis]
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before homing finished")
+                if status["homed"] and not status["moving"] and not status["homing"]:
+                    return status
+            raise TimeoutError(f"{axis} did not finish homing within {timeout:g} s")
+
+        # Request a stop on both mounts if sending or monitoring homing fails.
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop failed: {stop_exc}") from exc
+            raise
+
+    def EnableAxis(self, axis, enabled=True):
+        # APT uses state 1 to enable the motor output and state 2 to disable it.
+        self.write(0x0210, self._axis_destinations[axis], 1, 1 if enabled else 2)
+
+    def StopAll(self):
+        # Attempt an immediate stop on both bays, even if one write fails.
+        failures = []
+        for destination in self._axis_destinations.values():
+            try:
+                self.write(0x0465, destination, 1, 1)
+            except Exception as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    def ConvertPosition(self, axis, value, from_units, to_units):
+        """Convert using this channel's calibration; never assume a counts/mm ratio."""
+        # Only allow units for which this mount has a calibration.
+        scales = self._axis_profiles[axis]["unit_scales"]
+        if from_units not in scales or to_units not in scales:
+            raise ValueError(f"{axis}: units unavailable; choose from {list(scales)}")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("Position must be finite")
+
+        # Convert to native counts first, then from counts to the requested units.
+        return value * scales[from_units] / scales[to_units]
 
     def CloseStage(self):
-        if self.serial is not None and self.serial.is_open:
+        if self.serial.is_open:
             self.serial.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.CloseStage()

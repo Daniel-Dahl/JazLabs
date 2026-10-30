@@ -7,6 +7,7 @@ never imports or accesses a hardware driver.
 import math
 import time
 import uuid
+from copy import deepcopy
 
 import zmq
 
@@ -55,6 +56,38 @@ class MotorisedStageClient:
         finally:
             socket.close()
 
+    def GetStatus(self, axis=None):
+        """Return configuration and cached live feedback in one dictionary.
+
+        Newport uses the driver's GetStatus shape. Other controllers expose the
+        same axes/configuration layout from their server feedback and metadata.
+        """
+        snapshot = self.request("state")
+        if "device_status" in snapshot:
+            status = deepcopy(snapshot["device_status"])
+            status["axes"] = deepcopy(snapshot["axes"])
+        else:
+            status = dict(snapshot.get("properties", {}))
+            status["controller"] = status.get("stage_type", snapshot.get("name"))
+            status["axes"] = deepcopy(snapshot["axes"])
+            for spec in snapshot["capabilities"]:
+                name = spec["id"]
+                if name not in status["axes"]:
+                    continue
+                feedback = status["axes"][name]
+                feedback.update(label=spec["label"], units=spec["units"],
+                                limits=[spec["minimum"], spec["maximum"]],
+                                resolution=spec["resolution"], tolerance=spec.get("tolerance"),
+                                step=spec["step"], supports={"home": spec["home"],
+                                "stop": spec["stop"], "speed": spec["speed"]})
+        if axis is not None:
+            if axis not in status["axes"]:
+                raise ValueError(f"Axis {axis!r} has no feedback")
+            status["axes"] = {axis: status["axes"][axis]}
+        status.update(connected=snapshot["connected"], stopped=snapshot["stopped"],
+                      error=snapshot.get("error"), message=snapshot.get("message"))
+        return status
+
     def GetMotionCapabilities(self):
         return self.request("state")["capabilities"]
 
@@ -93,7 +126,7 @@ class MotorisedStageClient:
             positions[axis] = status["positions"][units]
         return positions
 
-    def MoveTo(self, axis, target, wait=True, timeout=None, units=None):
+    def MoveAbs(self, axis, target, wait=True, timeout=None, units=None):
         """Move to an absolute target; by default wait for this operation to finish.
 
         Waiting polls the server rather than blocking its command loop. StopAll
@@ -126,8 +159,8 @@ class MotorisedStageClient:
             self.request("absolute", axis, target, operation_id=operation_id)
             if not wait:
                 return {"operation_id": operation_id}
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
                 snapshot = self.request("state")
                 operation = snapshot.get("operations", {}).get(operation_id)
                 if operation is None:
@@ -148,7 +181,6 @@ class MotorisedStageClient:
                 status = snapshot["axes"].get(axis)
                 if status is not None and (status.get("fault") or status.get("age", 999) >= 1):
                     raise RuntimeError(status.get("fault") or "Motor feedback is stale")
-                time.sleep(.05)
             raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
         except MotorCommandRejected:
             # A rejected RPC did not start this move; leave other motion alone.

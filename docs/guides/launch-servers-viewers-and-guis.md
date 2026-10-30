@@ -349,15 +349,20 @@ Configure these fields for the selected mount:
 - `host` / `command_port`: where the hardware server binds.
 - `client_host`: reachable hardware-server address for a direct client.
 - `stage_type` / `stage_kwargs`: controller selection and driver settings.
-- `limits`: calibrated lower/upper endpoints for each axis in displayed units.
-  Leave them empty until measured; a slider is disabled without both endpoints.
+- `stage_kwargs.limits`: calibrated lower/upper endpoints for each
+  axis in the driver's configured units. Thorlabs can also use detected/profile
+  bounds. The wrapper checks every absolute and relative destination, including `wait=False` calls. Missing limits allow
+  readout but prevent movement. The example limits must match the installed stage.
+- Top-level `limits`: optional narrower server endpoints. The server
+  passes these into each serial driver; they cannot widen its configured travel limits.
+  A slider is disabled without both endpoints.
 - `local_host` / `local_command_port`: where a bridge binds on the control computer.
 - `remote_host`: the hardware-server address a bridge connects to; it can also
   be supplied using `--remote-host`.
 
 The UMC2 driver queries each bay's stage-axis parameters (`0x04F1/0x04F2`) on
 connection. It exposes the reported part number, stage serial number, scale and
-travel endpoints through `GetMotionCapabilities()`. These are controller-reported
+travel endpoints through `GetStatus()["axes"]`. These are controller-reported
 parameters; they may reflect an assigned stage profile rather than identifying
 an arbitrary attached mechanism. No homing, movement or parameter writes occur
 during detection. Restart the server after changing fitted stages.
@@ -405,14 +410,16 @@ Client examples for a calibrated Thorlabs mount:
 mount.GetPosition("X", units="mm")
 mount.GetPosition("X", units="counts")
 mount.GetPositions(units="mm")
-mount.GetMotionCapabilities()  # Detected identity, limits, scales and suggested steps.
-# mount.MoveTo("X", 1.0, units="mm")  # Waits for completion by default.
-# mount.MoveTo("X", 1000, units="counts")
+mount.GetStatus()  # Per-axis identity, limits, calibration and current feedback.
+# mount.MoveAbs("X", 1.0, units="mm")  # Waits for completion by default.
+# mount.MoveAbs("X", 1000, units="counts")
 ```
 
 An omitted `units` uses the axis's advertised canonical units. Unavailable unit
-conversions raise an error rather than assuming a scale. Low-level `MoveAbs` and
-`MoveRel` methods remain native count operations; `MoveTo` is the calibrated API.
+conversions raise an error rather than assuming a scale. The client and direct Thorlabs drivers both use `MoveAbs` and `MoveRel`, with
+optional `units="mm"` or `units="counts"`. KST201 defaults to mm; UMC2 defaults to
+mm when calibrated. KDC101/BSC203 use their configured units (counts by default).
+The old native-count and millimetre-specific method variants are removed.
 
 ### 2. Start the motor server on the hardware computer
 
@@ -525,12 +532,11 @@ from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStag
 # Direct server: 50941. Local bridge: 51941.
 mount = MotorisedStageClient(host="127.0.0.1", command_port=51941)
 try:
-    print(mount.GetMotionCapabilities())
-    print(mount.GetPosition("U"))       # One position, in degrees for this mount.
-    print(mount.GetPositions())          # {"U": ..., "V": ...}
-    print(mount.GetAxisStatus("U"))      # Position plus moving/homed/enabled/fault status.
-    # mount.MoveTo("U", 0.1)             # Waits for stopped/target feedback by default.
-    # mount.MoveTo("U", 0.1, wait=False) # Submit without waiting; poll status yourself.
+    status = mount.GetStatus()
+    print(status)                       # Configuration, limits, support flags and feedback.
+    print(status["axes"]["U"]["position"])
+    # mount.MoveAbs("U", 0.1)             # Waits for stopped/target feedback by default.
+    # mount.MoveAbs("U", 0.1, wait=False) # Submit without waiting; poll status yourself.
     # mount.StopAll()
 finally:
     mount.close()
@@ -546,29 +552,105 @@ Enable **Keyboard control** to use A/D for the first axis, W/S for the second,
 and Q/E for the third. Holding a key continues movement; releasing it stops jogging.
 Typing in a number field disarms keyboard movement; enable the checkbox again to resume.
 
-`GetPosition(axis)` returns a current position and `GetPositions()` returns an
-axis-to-position dictionary in the advertised units. `GetAxisStatus(axis)` adds
-moving, homed, enabled and fault information. Position-only reads reject stale
+`GetStatus()` returns connection settings and an `axes` dictionary containing
+position, units, limits, resolution, support flags and moving/homed/enabled/fault
+feedback. `GetStatus("U")` keeps the same dictionary shape but selects one axis.
+Newport and Thorlabs drivers use this one public getter; the raw-status, properties,
+capabilities and separate position/status getters have been removed. For example,
+`status["axes"]["U"]["supports"]["home"]` states whether homing is supported.
+A direct driver call reads serial feedback; a client call reads the server's
+latest cached feedback, including its age and connection state. Controller state
+and error codes are retained as dictionary fields rather than separate getters.
+The client still offers position-only convenience methods; those reject stale
 or unavailable feedback.
 
-`MoveTo(axis, target, wait=True, timeout=None)` waits for that specific operation
+`MoveAbs(axis, target, wait=True, timeout=None)` waits for that specific operation
 to complete and returns its stopped axis status. The default timeout comes from
 the controller's `move_timeout`, or 60 seconds. Faults, rejected moves, stop,
 lost feedback and timeout raise instead of reporting success; a deadline or
 unavailable feedback triggers a stop request. The client polls completion, so
 the server remains responsive to a GUI or another client's Stop command. Direct
-serial-driver `MoveTo` calls also wait by default; the server explicitly uses
-`wait=False` when scheduling them.
+Newport/Thorlabs-driver `MoveAbs` calls also wait by default; the server explicitly
+uses `wait=False` when scheduling them. The client uses the same `MoveAbs` name
+for every controller. There is no `MoveTo` alias on the client or Newport/Thorlabs drivers.
 
-With `wait=False`, `MoveTo` returns an `operation_id` after submission; the
+The motor server follows the camera server's single-loop structure. The same
+thread receives network requests, reads one axis's feedback at a time and tracks
+move completion. There is no separate hardware worker thread. A move starts
+without waiting, so the loop can continue handling requests while the motor
+travels. A stop request arriving during a serial call must wait for that call to
+return or time out; serial communication is not interrupted by another thread.
+The command-line launcher calls `run_forever()` directly. The optional Python
+`server.start()` method launches a separate process containing that same loop.
+
+With `wait=False`, `MoveAbs` returns an `operation_id` after submission; the
 corresponding record is in `request("state")["operations"]`. Lower-level
 `request("absolute", ...)`, `request("relative", ...)`, and `HomeAxis` still
 acknowledge submission rather than movement completion. Poll status and errors
-when using those asynchronous operations. Existing driver `MoveAbs`/`MoveRel`
-retain their own documented wait options and native units. Never blindly retry
+when using those asynchronous operations. Direct serial-driver `MoveAbs`/`MoveRel`
+calls wait by default; pass `wait=False` to submit a move and monitor `GetStatus()`
+yourself. Never blindly retry
 a relative move after a communication timeout.
 Closing a synchronous notebook/script client does not stop the server or an
 active move; explicitly request `StopAll()` when that is your intention.
+
+Direct Newport-driver use requires explicit limits, for example:
+
+```python
+from JazLabs.hardware.MotorisedStages.Newport import NewportAGPSerialStage
+
+with NewportAGPSerialStage("COM4", units="mm", limits={"X": [0, 27]}) as stage:
+    # Replace these example limits with the calibrated limits of your stage.
+    status = stage.GetStatus()
+    position = status["axes"]["X"]["position"]
+    # stage.MoveAbs("X", 1.0)  # Checks limits, then waits for stopped target feedback.
+    # stage.MoveRel("X", .1)   # Checks the resulting absolute destination too.
+```
+
+`MoveAbs` returns the final axis-status dictionary when waiting. ESP300 reads
+motion, position and error feedback using the [ESP300 manual's queries](https://www.newport.com/medias/sys_master/images/images/h2f/haa/8797091299358/ESP300-User-Manual.pdf).
+The serial drivers require stopped, in-tolerance feedback. Faults or timeout
+raise and request a stop.
+The fixed 50 ms delay was removed from the absolute-move wait loops; each poll
+waits for serial or network replies. Homing follows the controller's reference
+procedure and can travel outside limits configured for ordinary moves.
+
+The AGP wrapper exposes `HomeAxis("X", wait=True)`; the AGAP wrapper does not
+expose homing because it uses absolute sensors. `StopAll` and `EnableAxis` are the
+public stop/enable operations, with no duplicate `Stop` or `Enable` aliases.
+
+Serial-driver `SetNominal(wait=True)` moves each axis to the midpoint of its
+configured limits using `MoveAbs`. For example, limits `[0, 27]` give a nominal
+position of `13.5`. Every axis must have limits before any nominal moves start.
+
+Each Thorlabs driver is self-contained in its controller's Python file. The
+local `write()` packs APT commands into bytes; `query()` sends a request and
+reads a matching reply. Status decoding, calibration, limits and motion methods
+are also local to that file; no shared APT class is required.
+
+Direct Thorlabs-driver use follows the same pattern:
+
+```python
+from JazLabs.hardware.MotorisedStages.Thorlabs.UMC2SerialStage import UMC2SerialStage
+
+with UMC2SerialStage("COM6") as stage:
+    status = stage.GetStatus()
+    mount_1 = status["axes"]["X"]
+    position_mm = mount_1["positions"].get("mm")
+    position_counts = mount_1["positions"]["counts"]
+    # stage.HomeAxis("X")                 # Waits for homing to finish.
+    # stage.MoveAbs("X", 1.0, units="mm")  # Checks limits and waits for completion.
+    # stage.MoveRel("X", 100, units="counts")
+    # stage.SetNominal()                  # Each mount's allowed-travel midpoint.
+```
+
+`GetStatus()` is the sole public read method on each Thorlabs wrapper; it includes
+raw status bits and UMC2 stage parameters along with decoded feedback. If travel
+bounds are unavailable, readout still works but ordinary moves are rejected.
+Provide `limits={"X": [lower, upper], ...}` in the configured axis units.
+Configured bounds may narrow detected/profile travel but cannot widen it.
+KST201's optional `mount_axis` determines its axis key (for example `"PITCH"`);
+KDC101 uses `"X"`, and BSC203 maps configured slots to `"Z"`, `"X"`, `"Y"` in order.
 
 For a hardware-free test, use two terminals:
 

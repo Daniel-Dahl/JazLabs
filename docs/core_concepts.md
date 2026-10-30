@@ -23,9 +23,45 @@ needed. That is a separate choice for scripts, rather than an alternative
 hardware path hidden inside a widget. Camera and motor widgets both use clients.
 
 For motorised stages, the server schedules repeated jog steps, polls driver
-state, enforces configured travel limits, and prioritises stops. A thread inside
-the server keeps its network loop responsive during finite driver transactions.
-The widget sees only the motor client's commands and cached state. Start server and widget separately, even for a local simulator demo. A bridge
+status, checks requested travel limits, and handles stop requests. One server
+loop receives requests, polls feedback and tracks nonblocking moves. A request
+arriving during a serial call waits for that call to return or time out.
+Multiple clients can connect to that server; it owns the driver and serialises
+hardware access. Direct use of the Newport and Thorlabs drivers requires one
+caller at a time per serial connection; these wrappers do not add locks or create
+threads. Their timeout calculations use `time.perf_counter()`.
+
+Newport and Thorlabs drivers enforce their configured travel limits for absolute and relative
+moves, so those bounds apply even without a server. Direct users must supply
+limits when the driver cannot determine them from its stage/actuator profile; the wrapper does not load a server preset. Server
+limits may narrow the configured driver bounds. `MoveAbs` is the absolute-move method on
+Newport/Thorlabs drivers and the motor client; by default it waits for stopped target
+feedback and raises on failure. `MoveRel` computes an absolute destination and
+uses the same checks. `SetNominal()` uses the midpoint of each axis's limits.
+Thorlabs moves accept `units="counts"` or `units="mm"` when calibrated; omitting
+units uses the axis's default units. UMC2 stage detection and KST201 actuator
+profiles provide their calibration and travel bounds.
+
+Newport and Thorlabs drivers expose one public read method, `GetStatus(axis=None)`. It returns
+connection settings and per-axis configuration, capabilities and live feedback
+in one dictionary. Supplying an axis reads only that axis; omitting it reads all
+axes. The server consumes that same dictionary. Raw protocol decoding remains
+private, and duplicate property, capability, position and raw-status getters are
+removed from these wrappers. The client also exposes `GetStatus` for the cached
+server feedback, with age and connection information.
+
+Each Thorlabs controller has a self-contained driver file: BSC203, KDC101,
+KST201 or UMC2. Its serial `write`/`query`, packet decoding, calibration and motion
+methods are defined in that file. These wrappers use the same APT protocol and
+intentionally repeat common commands so a device can be maintained in one file.
+They do not inherit motion behaviour from a separate APT base class. `query()`
+contains both request writing and reply parsing. UMC2's
+`_identify_stage_parameters()` reads the controller's stage description; KST201's
+method of the same name selects the supplied profiles and checks calibration,
+mount compatibility and travel limits before connecting.
+
+The widget sees only the motor client's commands and cached state. Start server
+and widget separately, even for a local simulator demo. A bridge
 may forward a remote server to local clients; it never owns a hardware driver.
 The simulator is simply another driver.
 

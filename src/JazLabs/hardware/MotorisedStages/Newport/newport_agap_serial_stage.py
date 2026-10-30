@@ -2,11 +2,11 @@
 U/V positions are degrees; absolute sensors require no homing.
 
 Pyserial: 921600 baud, 8N1, XON/XOFF, CRLF. Connection does not move
-or configure the mount.
+or configure the mount. Use one caller at a time for this driver/serial port;
+multiple clients should communicate through the motor server.
 """
 import enum
 import math
-import threading
 import time
 
 import serial
@@ -18,7 +18,7 @@ class Axes(enum.Enum):
 
 
 class NewportM100DSerialStage:
-    def __init__(self, port, address=1, timeout=0.5, move_timeout=30.0):
+    def __init__(self, port, address=1, timeout=0.5, move_timeout=30.0, limits=None):
         if not 1 <= address <= 31 or int(address) != address:
             raise ValueError("address must be an integer in 1..31")
         if timeout <= 0 or move_timeout <= 0:
@@ -28,7 +28,16 @@ class NewportM100DSerialStage:
         self.timeout = timeout
         self.move_timeout = move_timeout
         self.units = "deg"
-        self._lock = threading.RLock()
+        # Limits use the same physical units as position commands. Missing
+        # limits allow readout, but movement must be explicitly configured.
+        self.limits = {}
+        for axis, endpoints in (limits or {}).items():
+            if axis not in ("U", "V") or len(endpoints) != 2:
+                raise ValueError(f"Invalid travel limits for {axis}")
+            lower, upper = map(float, endpoints)
+            if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+                raise ValueError("Travel limits must be finite and minimum < maximum")
+            self.limits[axis] = (lower, upper)
         self.serial = serial.Serial(port=port, baudrate=921600, timeout=timeout,
                                     write_timeout=timeout, xonxoff=True,
                                     bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE,
@@ -37,20 +46,18 @@ class NewportM100DSerialStage:
     def write(self, body):
         if '\r' in body or '\n' in body:
             raise ValueError("Command must not contain a line terminator")
-        with self._lock:
-            self.serial.write(f"{self.address}{body}\r\n".encode("ascii"))
+        self.serial.write(f"{self.address}{body}\r\n".encode("ascii"))
 
     def query(self, body):
-        with self._lock:
-            self.write(body)
-            reply = self.serial.read_until(b"\r\n")
-            if not reply.endswith(b"\r\n"):
-                raise TimeoutError(f"Incomplete CONEX reply to {body}: {reply!r}")
-            response = reply.decode("ascii").strip()
-            prefix = f"{self.address}{body.rstrip('?')}"
-            if not response.startswith(prefix):
-                raise RuntimeError(f"Expected {prefix!r}, received {response!r}")
-            return response
+        self.write(body)
+        reply = self.serial.read_until(b"\r\n")
+        if not reply.endswith(b"\r\n"):
+            raise TimeoutError(f"Incomplete CONEX reply to {body}: {reply!r}")
+        response = reply.decode("ascii").strip()
+        prefix = f"{self.address}{body.rstrip('?')}"
+        if not response.startswith(prefix):
+            raise RuntimeError(f"Expected {prefix!r}, received {response!r}")
+        return response
 
     def _check_command_error(self):
         response = self.query("TE")
@@ -58,38 +65,13 @@ class NewportM100DSerialStage:
         if error != "@":
             raise RuntimeError(f"CONEX rejected command: error {error!r}")
 
-    def GetStatus(self):
+    def _read_controller_status(self):
+        """Decode TS for GetStatus and controller-specific home/stop checks."""
         response = self.query("TS")
         value = response[len(f"{self.address}TS"):]
         if len(value) != 6:
             raise RuntimeError(f"Malformed CONEX status: {response!r}")
-        return {"error": int(value[:4], 16), "state": int(value[4:], 16)}
-
-    def get_status_raw(self):
-        return self.query("TS")
-
-    def is_ready(self):
-        status = self.GetStatus()
-        if status["error"]:
-            raise RuntimeError(f"CONEX positioner error 0x{status['error']:04X}")
-        ready_states = {0x32, 0x33, 0x34, 0x35, 0x36}
-        if status["state"] in ready_states:
-            return True
-        moving_states = {0x28, 0x29, 0x46}
-        if status["state"] not in moving_states:
-            raise RuntimeError(f"CONEX is not ready: state 0x{status['state']:02X}")
-        return False
-
-    def wait_until_ready(self, poll_period=0.05, timeout=None):
-        if poll_period <= 0:
-            raise ValueError("poll_period must be positive")
-        deadline = time.monotonic() + (self.move_timeout if timeout is None else timeout)
-        with self._lock:
-            while time.monotonic() < deadline:
-                if self.is_ready():
-                    return True
-                time.sleep(poll_period)
-        raise TimeoutError("CONEX did not become ready before the move timeout")
+        return int(value[:4], 16), int(value[4:], 16)
 
     def _axis_suffix(self, axis):
         axis = axis.value if isinstance(axis, Axes) else str(axis).upper()
@@ -97,102 +79,33 @@ class NewportM100DSerialStage:
             raise ValueError("Use axis U/YAW or V/PITCH (Axes enum)")
         return axis
 
-    def GetPositions(self):
-        with self._lock:
-            positions = {}
-            for axis in ("U", "V"):
-                response = self.query(f"TP{axis}")
-                positions[axis] = float(response[len(f"{self.address}TP{axis}"):])
-            return positions
-
-    def MoveAbs(self, axis, value, wait=True):
-        suffix = self._axis_suffix(axis)
-        if not math.isfinite(float(value)):
+    def MoveAbs(self, axis, value, wait=True, timeout=None):
+        """Move to an absolute position, checking limits and stopped feedback."""
+        axis = self._axis_suffix(axis)
+        suffix = axis
+        target = float(value)
+        if not math.isfinite(target):
             raise ValueError("Position must be finite")
-        with self._lock:
-            self.write(f"PA{suffix}{float(value):.9g}")
-            self._check_command_error()
-            if wait:
-                self.wait_until_ready()
-
-    def MoveRel(self, axis, value, wait=True):
-        suffix = self._axis_suffix(axis)
-        if not math.isfinite(float(value)):
-            raise ValueError("Displacement must be finite")
-        with self._lock:
-            self.write(f"PR{suffix}{float(value):.9g}")
-            self._check_command_error()
-            if wait:
-                self.wait_until_ready()
-
-    def HomeAll(self, wait=True):
-        raise NotImplementedError("AGAP uses absolute sensors and has no OR homing command")
-
-    def SetNominal(self, wait=True):
-        for axis in ("U", "V"):
-            self.MoveAbs(axis, 0, wait=wait)
-
-    def Stop(self):
-        self.write("ST")
-
-    def Enable(self, enabled=True):
-        self.write(f"MM{int(bool(enabled))}")
-
-    def GetProperties(self):
-        return {"stage_type": "CONEXAGAPSerial", "port": self.port,
-                "address": self.address, "baudrate": 921600, "timeout": self.timeout,
-                "move_timeout": self.move_timeout, "units": self.units,
-                "axes": ["U", "V"]}
-
-    def CloseStage(self):
-        with self._lock:
-            if self.serial.is_open:
-                self.serial.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.CloseStage()
-
-    def GetMotionCapabilities(self):
-        capabilities = []
-        for axis in ("U", "V"):
-            capabilities.append({"id": axis, "label": {"U": "Yaw U", "V": "Pitch V"}.get(axis, axis), "units": self.units,
-                "minimum": None, "maximum": None, "resolution": .000001, "tolerance": .001,
-                "step": .005, "home": False, "stop": True, "speed": False})
-        return capabilities
-
-    def GetAxisStatus(self, axis):
-        suffix = self._axis_suffix(axis)
-        with self._lock:
-            response = self.query(f"TP{suffix}")
-            position = float(response[len(f"{self.address}TP{suffix}"):])
-            status = self.GetStatus()
-        state = status["state"]
-        ready = {0x32, 0x33, 0x34, 0x35, 0x36}
-        referenced = ready | {0x28, 0x3C, 0x3D}
-        return {"position": position, "moving": state in (0x1E, 0x28, 0x29, 0x46),
-                "homing": state == 0x1E, "homed": None,
-                "enabled": state in ready or state in (0x1E, 0x28, 0x29, 0x46) ,
-                "fault": f"Positioner error 0x{status['error']:04X}" if status["error"] else None,
-                "speed": None}
-
-    def MoveTo(self, axis, target, wait=True, timeout=None):
-        if timeout is None:
-            timeout = self.GetProperties().get("move_timeout", 60.0)
-        timeout = float(timeout)
+        if axis not in self.limits:
+            raise ValueError(f"Configure travel limits for {axis} before moving")
+        lower, upper = self.limits[axis]
+        # Validate both the requested target and the value sent on the wire.
+        command_target = float(f"{target:.9g}")
+        if not lower <= target <= upper or not lower <= command_target <= upper:
+            raise ValueError(f"Target is outside {axis} travel limits [{lower}, {upper}]")
+        target = command_target
+        timeout = self.move_timeout if timeout is None else float(timeout)
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
-        target = float(target)
-        self.MoveAbs(axis, target, wait=False)
         tolerance = .001
-        if not wait:
-            return None
-        deadline = time.monotonic() + timeout
         try:
-            while time.monotonic() < deadline:
-                status = self.GetAxisStatus(axis)
+            self.write(f"PA{suffix}{target:.9g}")
+            self._check_command_error()
+            if not wait:
+                return None
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                status = self.GetStatus(axis)["axes"][axis]
                 if status["fault"]:
                     raise RuntimeError(status["fault"])
                 if not status["enabled"]:
@@ -200,7 +113,6 @@ class NewportM100DSerialStage:
                 if (not status["moving"] and not status["homing"]
                         and abs(status["position"] - target) <= tolerance):
                     return status
-                time.sleep(.05)
             raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
         except Exception as exc:
             try:
@@ -209,16 +121,75 @@ class NewportM100DSerialStage:
                 raise RuntimeError(f"{exc}; stop could not be confirmed: {stop_exc}") from exc
             raise
 
-    def GetPosition(self, axis):
-        return self.GetAxisStatus(axis)["position"]
+    def MoveRel(self, axis, value, wait=True, timeout=None):
+        """Check the relative destination using the same absolute move path."""
+        axis = self._axis_suffix(axis)
+        delta = float(value)
+        if not math.isfinite(delta):
+            raise ValueError("Displacement must be finite")
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["fault"]:
+            raise RuntimeError(status["fault"])
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before a relative move")
+        if not status["enabled"]:
+            raise RuntimeError("Enable this axis before moving")
+        return self.MoveAbs(axis, status["position"] + delta, wait=wait, timeout=timeout)
 
-    def HomeAxis(self, axis):
-        self._axis_suffix(axis)
-        self.HomeAll(wait=False)
-
-    def EnableAxis(self, axis):
-        self._axis_suffix(axis)
-        self.Enable(True)
+    def SetNominal(self, wait=True):
+        """Move both axes to the midpoints of their configured travel limits."""
+        if any(axis not in self.limits for axis in ("U", "V")):
+            raise ValueError("Configure travel limits for U and V before setting nominal")
+        for axis in ("U", "V"):
+            lower, upper = self.limits[axis]
+            self.MoveAbs(axis, (lower + upper) / 2, wait=wait)
 
     def StopAll(self):
-        self.Stop()
+        self.write("ST")
+
+    def EnableAxis(self, axis, enabled=True):
+        self._axis_suffix(axis)
+        self.write(f"MM{int(bool(enabled))}")
+
+    def CloseStage(self):
+        if self.serial.is_open:
+            self.serial.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.CloseStage()
+
+    def GetStatus(self, axis=None):
+        """Read live feedback and return it with configuration in one dictionary.
+
+        Omit axis to read every axis. Selecting one axis retains the same shape
+        and lets the server handle network requests between serial transactions.
+        """
+        axes = ("U", "V") if axis is None else (self._axis_suffix(axis),)
+        positions = {}
+        for name in axes:
+            response = self.query(f"TP{name}")
+            position = float(response[len(f"{self.address}TP{name}"):])
+            if not math.isfinite(position):
+                raise RuntimeError(f"Invalid position feedback for {name}")
+            positions[name] = position
+        error, state = self._read_controller_status()
+        ready = {0x32, 0x33, 0x34, 0x35, 0x36}
+        result = {"controller": "CONEXAGAPSerial", "port": self.port,
+                  "address": self.address, "baudrate": 921600, "timeout": self.timeout,
+                  "move_timeout": self.move_timeout, "controller_state": state,
+                  "controller_error": error, "axes": {}}
+        for name, position in positions.items():
+            result["axes"][name] = {
+                "label": {"U": "Yaw U", "V": "Pitch V"}[name], "position": position, "units": self.units,
+                "limits": list(self.limits.get(name, (None, None))),
+                "resolution": .000001, "tolerance": .001, "step": .005,
+                "supports": {"home": False, "stop": True, "speed": False},
+                "moving": state in (0x1E, 0x28, 0x29, 0x46), "homing": state == 0x1E,
+                "homed": None,
+                "enabled": state in ready or state in (0x1E, 0x28, 0x29, 0x46),
+                "fault": f"Positioner error 0x{error:04X}" if error else None,
+                "speed": None}
+        return result

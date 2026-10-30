@@ -32,12 +32,12 @@ class ClientUnitsTests(unittest.TestCase):
     def test_move_converts_requested_units_to_each_mounts_server_units(self):
         with patch.object(self.client, 'GetMotionCapabilities', return_value=self.snapshot['capabilities']), \
              patch.object(self.client, 'request', return_value=self.snapshot) as request:
-            self.client.MoveTo('X', 2500, units='counts', wait=False, timeout=1)
+            self.client.MoveAbs('X', 2500, units='counts', wait=False, timeout=1)
             self.assertEqual(request.call_args.args, ('absolute', 'X', 2.5))
-            self.client.MoveTo('Y', 2.5, units='mm', wait=False, timeout=1)
+            self.client.MoveAbs('Y', 2.5, units='mm', wait=False, timeout=1)
             self.assertEqual(request.call_args.args, ('absolute', 'Y', 5000))
             count = request.call_count
             for target, unit in ((.5, 'counts'), (1, 'deg')):
                 with self.assertRaises(ValueError):
-                    self.client.MoveTo('X', target, units=unit, wait=False, timeout=1)
+                    self.client.MoveAbs('X', target, units=unit, wait=False, timeout=1)
             self.assertEqual(request.call_count, count)

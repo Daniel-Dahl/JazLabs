@@ -34,6 +34,15 @@ def test_missing_serial_port_fails_before_constructing_server():
         server.assert_not_called()
 
 
+def test_newport_presets_put_limits_in_the_driver_options():
+    config = load_config('motorised_mounts')
+    for name, limits in (('newport_translation', {'X': [0, 27]}),
+                         ('newport_tip_tilt', {'U': [-.76, .76], 'V': [-.76, .76]})):
+        preset = get_named_config(config, 'MOTOR_SERVERS', name)
+        assert preset['stage_kwargs']['limits'] == limits
+        assert preset['limits'] == {}
+
+
 def test_limits_command_port_and_driver_overrides_are_used():
     with patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Server.MotorisedStageZMQServer') as server:
         main(['--config', 'motorised_mounts', '--name', 'newport_translation',
