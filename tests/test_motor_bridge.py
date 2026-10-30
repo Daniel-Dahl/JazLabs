@@ -50,14 +50,14 @@ class BridgeTests(unittest.TestCase):
             self.hardware.request('shutdown')
             self.server_thread.join(3)
         finally:
-            self.client.close()
-            self.hardware.close()
+            self.client.CloseStage()
+            self.hardware.CloseStage()
         self.assertFalse(self.bridge_thread.is_alive())
         self.assertFalse(self.server_thread.is_alive())
 
     def wait(self, predicate, timeout=2):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
             if predicate():
                 return
             time.sleep(.02)
@@ -66,10 +66,10 @@ class BridgeTests(unittest.TestCase):
     def test_feedback_and_absolute_move(self):
         state = self.client.request('state')
         self.assertEqual(state['bridge']['remote_command_port'], self.server.command_port)
-        self.assertEqual(self.client.GetMotionCapabilities()[0]['id'], 'X')
+        self.assertEqual(next(iter(self.client.GetStatus()['axes'])), 'X')
         self.assertGreaterEqual(state['axes']['X']['age'], 0)
         self.client.MoveAbs('X', 5.02)
-        self.wait(lambda: self.client.GetAxisStatus('X')['position'] >= 5.019)
+        self.wait(lambda: self.client.GetStatus('X')['axes']['X']['position'] >= 5.019)
 
     def test_hold_release_stop_and_resume_through_bridge(self):
         for _ in range(8):
@@ -77,10 +77,10 @@ class BridgeTests(unittest.TestCase):
             time.sleep(.06)
         self.client.request('release_jog')
         time.sleep(.4)
-        position = self.client.GetAxisStatus('X')['position']
+        position = self.client.GetStatus('X')['axes']['X']['position']
         self.assertGreaterEqual(position, 5.02)
         time.sleep(.4)
-        self.assertEqual(self.client.GetAxisStatus('X')['position'], position)
+        self.assertEqual(self.client.GetStatus('X')['axes']['X']['position'], position)
         self.client.StopAll()
         self.wait(lambda: self.client.request('state')['stopped'])
         with self.assertRaises(RuntimeError):
@@ -146,7 +146,7 @@ class BridgeTimeoutTests(unittest.TestCase):
             self.assertEqual([item['command'] for item in requests], ['relative', 'state'])
         finally:
             client.request('shutdown_bridge')
-            client.close()
+            client.CloseStage()
             bridge_thread.join(2)
             remote_thread.join(2)
         self.assertFalse(bridge_thread.is_alive())

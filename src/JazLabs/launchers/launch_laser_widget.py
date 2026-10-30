@@ -7,7 +7,7 @@ from JazLabs.launchers.config import get_named_config, load_config
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Open a JazLabs laser control GUI.")
-    parser.add_argument("--config", default="HDStokes")
+    parser.add_argument("--config", default="default_lab")
     parser.add_argument("--name", "--laser", dest="name", required=True)
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)

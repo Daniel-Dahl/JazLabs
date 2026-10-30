@@ -4,6 +4,9 @@ These examples are intentionally short. Start the corresponding JazLabs server,
 edit the connection settings and requested hardware value near the top of the
 file, then run the script.
 
+Connection defaults match `default_lab.py`. The digital holography example
+reads its camera connection and analysis settings from that config directly.
+
 - `slm_client.py`: connect, create a phase-mask object, load a `.mat` mask set,
   and display each mode.
 - `camera_client.py`: exposure, frames, software/continuous triggering, and a

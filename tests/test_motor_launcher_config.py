@@ -12,14 +12,15 @@ from JazLabs.launchers.launch_motorised_stage_server import main
     ('newport_translation', 'CONEXAGPSerial', 50942, 'X', 'mm'),
     ('thorlabs_umc2', 'UMC2Serial', 50943, 'X', 'auto'),
 ])
-def test_named_motor_server_options(name, stage, port, axis, units):
-    config = load_config('motorised_mounts')
+@pytest.mark.parametrize('config_name', ['default_lab', 'motorised_mounts'])
+def test_named_motor_server_options(name, stage, port, axis, units, config_name):
+    config = load_config(config_name)
     preset = get_named_config(config, 'MOTOR_SERVERS', name)
     assert preset['stage_kwargs']['port'] is None
     assert preset['default_axis'] == axis
     assert preset['expected_units'] == units
     with patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Server.MotorisedStageZMQServer') as server:
-        main(['--config', 'motorised_mounts', '--name', name, '--serial-port', 'TEST_PORT'])
+        main(['--config', config_name, '--name', name, '--serial-port', 'TEST_PORT'])
         args = server.call_args.kwargs
         assert (args['host'], args['command_port'], args['stage_type']) == ('127.0.0.1', port, stage)
         assert args['stage_kwargs']['port'] == 'TEST_PORT'
@@ -67,12 +68,11 @@ def test_widget_connects_only_to_client_and_does_not_start_hardware():
     with patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Client.MotorisedStageClient') as client, \
          patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Widget.MotorisedStageControlWindow') as window, \
          patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Server.MotorisedStageZMQServer') as server:
-        client.return_value.thread.is_alive.return_value = False
         widget_main(['--config', 'motorised_mounts', '--name', 'newport_tip_tilt', '--bridge'])
         client.assert_called_once_with(host='127.0.0.1', command_port=51941, timeout_ms=500)
         window.assert_called_once_with(client.return_value, 'alignment')
         window.return_value.run.assert_called_once()
-        client.return_value.close.assert_called_once()
+        client.return_value.CloseStage.assert_called_once()
         server.assert_not_called()
 
 

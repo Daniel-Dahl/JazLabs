@@ -11,8 +11,8 @@ from JazLabs.hardware.MotorisedStages.SimulatedStage import SimulatedStage
 
 
 def wait_until(predicate, timeout=2):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
         if predicate():
             return
         time.sleep(0.005)
@@ -26,9 +26,10 @@ class RecordingMount(SimulatedStage):
         self.stops = 0
         self.closed = False
 
-    def MoveTo(self, axis, target, wait=True, timeout=None):
+    def MoveAbs(self, axis, target, wait=True, timeout=None, units=None):
+        result = super().MoveAbs(axis, target, wait=wait, timeout=timeout, units=units)
         self.moves.append((axis, target))
-        return super().MoveTo(axis, target, wait=wait, timeout=timeout)
+        return result
 
     def StopAll(self):
         self.stops += 1
@@ -64,7 +65,7 @@ class MotionTests(unittest.TestCase):
             self.assertFalse(self.server_thread.is_alive())
             self.assertTrue(self.backend.closed)
         finally:
-            self.client.close()
+            self.client.CloseStage()
             self.factory_patch.stop()
 
     def test_tap_sends_one_move_and_waits_for_feedback(self):
@@ -84,21 +85,21 @@ class MotionTests(unittest.TestCase):
         wait_until(lambda: not self.client.request('state')['axes']['X']['commanded'])
         self.assertFalse(self.client.request('state')['stopped'])
         self.assertIsNone(self.client.request('state')['error'])
-        self.assertAlmostEqual(self.backend.GetPosition('X'), 5.21)
+        self.assertAlmostEqual(self.backend.GetStatus('X')['axes']['X']['position'], 5.21)
         time.sleep(.2)
         self.assertEqual(len(self.backend.moves), 2)
 
     def test_held_jog_waits_for_controller_to_finish_active_command(self):
-        original = self.backend.GetAxisStatus
+        original = self.backend.GetStatus
         controller_finished = threading.Event()
 
         def busy_until_controller_finishes(axis):
             status = original(axis)
             if axis == 'X' and self.backend.moves and not controller_finished.is_set():
-                status['moving'] = True
+                status['axes']['X']['moving'] = True
             return status
 
-        self.backend.GetAxisStatus = busy_until_controller_finishes
+        self.backend.GetStatus = busy_until_controller_finishes
         for _ in range(10):
             self.client.request('jog', 'X', .01)
             time.sleep(.04)
@@ -163,13 +164,13 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(self.backend.velocity['X'], 1.5)
 
     def test_feedback_failure_latches_stop_instead_of_repeating(self):
-        original = self.backend.GetAxisStatus
+        original = self.backend.GetStatus
         fail = threading.Event()
         def poll(axis):
             if fail.is_set():
                 raise TimeoutError('unplugged')
             return original(axis)
-        self.backend.GetAxisStatus = poll
+        self.backend.GetStatus = poll
         self.client.request('jog', 'X', .01)
         wait_until(lambda: len(self.backend.moves) > 0)
         fail.set()
@@ -179,15 +180,39 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(len(self.backend.moves), count)
         self.assertFalse(self.client.request('state')['connected'])
 
+    def test_nominal_waits_for_every_axis_and_uses_each_limits_midpoint(self):
+        for axis, spec in self.backend.axes.items():
+            self.backend.homed[axis] = True
+            spec['limits'] = [self.backend.positions[axis], self.backend.positions[axis] + .1]
+        wait_until(lambda: self.client.GetStatus()['axes']['Y']['limits'] == [6, 6.1])
+        self.client.SetNominal()
+        self.assertAlmostEqual(self.client.GetStatus()['axes']['X']['position'], 5.05)
+        self.assertAlmostEqual(self.client.GetStatus()['axes']['Y']['position'], 6.05)
+        self.assertEqual(len(self.backend.moves), 2)
+
+    def test_nominal_rejects_missing_limits_before_any_axis_moves(self):
+        original = self.backend.GetStatus
+        def missing_limits(axis=None):
+            status = original(axis)
+            if 'Y' in status['axes']:
+                status['axes']['Y']['limits'] = [None, None]
+            return status
+        self.backend.GetStatus = missing_limits
+        wait_until(lambda: self.client.GetStatus()['axes']['Y']['limits'] == [None, None])
+        with self.assertRaisesRegex(RuntimeError, 'configure travel limits'):
+            self.client.SetNominal()
+        self.assertFalse(self.backend.moves)
+        self.assertFalse(self.client.GetStatus()['stopped'])
+
     def test_hardware_calls_run_on_the_server_loop_thread(self):
         called_from = []
-        original = self.backend.GetAxisStatus
+        original = self.backend.GetStatus
 
         def record_thread(axis):
             called_from.append(threading.get_ident())
             return original(axis)
 
-        self.backend.GetAxisStatus = record_thread
+        self.backend.GetStatus = record_thread
         self.client.MoveAbs('X', 5.02)
         self.assertTrue(called_from)
         self.assertEqual(set(called_from), {self.server_thread.ident})
@@ -197,17 +222,17 @@ class MotionTests(unittest.TestCase):
 class BlockingDriverTests(unittest.TestCase):
     def test_direct_driver_move_waits_by_default(self):
         stage = SimulatedStage(axes=1)
-        began = time.monotonic()
-        status = stage.MoveTo('X', 5.2)
-        self.assertGreaterEqual(time.monotonic() - began, .15)
+        began = time.perf_counter()
+        status = stage.MoveAbs('X', 5.2)
+        self.assertGreaterEqual(time.perf_counter() - began, .15)
         self.assertFalse(status['moving'])
-        self.assertAlmostEqual(stage.GetPosition('X'), 5.2)
+        self.assertAlmostEqual(stage.GetStatus('X')['axes']['X']['position'], 5.2)
 
     def test_direct_driver_timeout_raises_and_stops(self):
         stage = SimulatedStage(axes=1)
         with self.assertRaises(TimeoutError):
-            stage.MoveTo('X', 7, timeout=.05)
-        self.assertFalse(stage.GetAxisStatus('X')['moving'])
+            stage.MoveAbs('X', 7, timeout=.05)
+        self.assertFalse(stage.GetStatus('X')['axes']['X']['moving'])
 
 
 if __name__ == '__main__':

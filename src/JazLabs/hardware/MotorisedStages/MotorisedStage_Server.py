@@ -22,11 +22,7 @@ SUPPORTED_STAGE_TYPES = (
 def create_motorised_stage(stage_type, stage_kwargs=None, limits=None):
     """Construct the configured hardware driver without opening unused drivers."""
     stage_kwargs = {} if stage_kwargs is None else dict(stage_kwargs)
-    if stage_type == "simulation":
-        from .SimulatedStage import SimulatedStage
-        return SimulatedStage(**stage_kwargs)
-
-    # Every serial driver receives bounds, including when the server narrows
+    # Every driver receives bounds, including when the server narrows
     # configured travel. Direct driver calls therefore enforce the same limits.
     driver_limits = dict(stage_kwargs.get("limits") or {})
     for axis, endpoints in (limits or {}).items():
@@ -40,6 +36,11 @@ def create_motorised_stage(stage_type, stage_kwargs=None, limits=None):
                 raise ValueError("Limits cannot widen the driver's allowed travel")
         driver_limits[axis] = (lower, upper)
     stage_kwargs["limits"] = driver_limits
+
+    if stage_type == "simulation":
+        from .SimulatedStage import SimulatedStage
+
+        return SimulatedStage(**stage_kwargs)
 
     if stage_type == "UMC2Serial":
         from JazLabs.hardware.MotorisedStages.Thorlabs.UMC2SerialStage import UMC2SerialStage
@@ -125,7 +126,7 @@ class MotorisedStageZMQServer:
         try:
             client.request("shutdown")
         finally:
-            client.close()
+            client.CloseStage()
             self.process.join(timeout=3)
         if self.process.is_alive():
             raise RuntimeError("Motor server did not confirm shutdown")
@@ -142,11 +143,12 @@ class MotorisedStageZMQServer:
         socket = context.socket(zmq.REP)
         socket.setsockopt(zmq.LINGER, 0)
         socket.setsockopt(zmq.SNDTIMEO, 500)
-        state = {"connected": False, "name": "Connecting…", "capabilities": [],
+        state = {"connected": False, "name": "Connecting…",
                  "axes": {}, "stopped": False, "stop_pending": False,
                  "error": None, "message": "Connecting…", "sequence": 0,
                  "operations": {}, "stop_reason": None}
         pending_command = None
+        nominal_moves = []
         held_jog = None
         active_axis = None
         active_operation = None
@@ -166,50 +168,16 @@ class MotorisedStageZMQServer:
             else:
                 socket.bind(f"tcp://{self.host}:{self.command_port}")
             driver = create_motorised_stage(self.stage_type, self.stage_kwargs, self.limits)
-            serial_driver = self.stage_type != "simulation"
-            if serial_driver:
-                device_status = driver.GetStatus()
-                properties = {key: value for key, value in device_status.items()
-                              if key not in ("axes", "controller_state", "controller_error")}
-                properties["stage_type"] = self.stage_type
-                state["device_status"] = device_status
-                capabilities = {}
-                for axis, feedback in device_status["axes"].items():
-                    capabilities[axis] = {
-                        "id": axis, "label": feedback["label"], "units": feedback["units"],
-                        "minimum": feedback["limits"][0], "maximum": feedback["limits"][1],
-                        "resolution": feedback["resolution"], "tolerance": feedback["tolerance"],
-                        "step": feedback["step"], **feedback["supports"]}
-                    for key in ("unit_scales", "limits_by_unit", "step_by_unit", "resolution_by_unit",
-                                "independent_mount", "stage", "calibration_note"):
-                        if key in feedback:
-                            capabilities[axis][key] = deepcopy(feedback[key])
-            else:
-                properties = driver.GetProperties()
-                capabilities = {item["id"]: item for item in driver.GetMotionCapabilities()}
-            motion_timeout = properties.get("move_timeout", motion_timeout)
-            axis_names = list(capabilities)
+            device_status = driver.GetStatus()
+            state.update(deepcopy(device_status))
+            state["name"] = getattr(driver, "name", device_status["controller"])
+            axis_names = list(state["axes"])
             if not axis_names:
                 raise ValueError("Motor driver did not report any axes")
-            for axis, endpoints in (self.limits or {}).items():
-                if axis not in capabilities or len(endpoints) != 2:
-                    raise ValueError(f"Invalid travel limits for {axis}")
-                lower, upper = map(float, endpoints)
-                spec = capabilities[axis]
-                if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
-                    raise ValueError("Travel limits must be finite and minimum < maximum")
-                if ((spec["minimum"] is not None and lower < spec["minimum"]) or
-                        (spec["maximum"] is not None and upper > spec["maximum"])):
-                    raise ValueError("Limits cannot widen the driver's allowed travel")
-                spec.update(minimum=lower, maximum=upper)
-                if "unit_scales" in spec:
-                    scales = spec["unit_scales"]
-                    spec["limits_by_unit"] = {
-                        unit: [lower * scales[spec["units"]] / scale,
-                               upper * scales[spec["units"]] / scale]
-                        for unit, scale in scales.items()}
-            state.update(name=getattr(driver, "name", properties.get("stage_type", type(driver).__name__)),
-                         properties=properties, capabilities=list(capabilities.values()))
+            for feedback in state["axes"].values():
+                feedback["updated_at"] = time.perf_counter()
+                feedback["commanded"] = False
+            motion_timeout = device_status.get("move_timeout", motion_timeout)
             if ready_connection is not None:
                 ready_connection.send({"command_port": self.command_port})
                 ready_connection.close()
@@ -218,7 +186,7 @@ class MotorisedStageZMQServer:
             while running:
                 # Read requests before the next hardware poll. There is no
                 # hardware worker, shared-state lock or inter-thread queue.
-                wait_ms = max(0, min(20, int((next_poll_at - time.monotonic()) * 1000)))
+                wait_ms = max(0, min(20, int((next_poll_at - time.perf_counter()) * 1000)))
                 if socket.poll(wait_ms):
                     try:
                         message = socket.recv_json()
@@ -236,22 +204,24 @@ class MotorisedStageZMQServer:
                         elif command == "state":
                             pass
                         else:
-                            if command not in {"absolute", "relative", "home", "jog", "resume", "speed", "enable"}:
+                            if command not in {"absolute", "relative", "home", "nominal", "jog", "resume", "speed", "enable"}:
                                 raise ValueError(f"Unknown motion command {command}")
                             if (state["stopped"] or stop_reason is not None) and command != "resume":
                                 raise RuntimeError("Motion is stopped; resume first")
+                            if nominal_moves:
+                                raise RuntimeError("Wait for the nominal move to finish before another command")
                             if command == "jog":
                                 value = float(value)
                                 if not math.isfinite(value) or value == 0:
                                     raise ValueError("Jog distance must be finite and nonzero")
                                 if held_jog and (axis, value) != held_jog[:2]:
                                     raise RuntimeError("Release the current jog before changing direction")
-                                held_jog = (axis, value, time.monotonic() + 0.35)
+                                held_jog = (axis, value, time.perf_counter() + 0.35)
                             else:
                                 if held_jog:
                                     raise RuntimeError("Release keyboard jog before another command")
                                 if operation_id is not None:
-                                    if command not in ("absolute", "relative", "home") or not isinstance(operation_id, str):
+                                    if command not in ("absolute", "relative", "home", "nominal") or not isinstance(operation_id, str):
                                         raise ValueError("An operation ID must be a string for a movement or homing command")
                                     if operation_id in state["operations"]:
                                         raise ValueError("Duplicate motion operation ID; command was not repeated")
@@ -274,7 +244,7 @@ class MotorisedStageZMQServer:
                         if stop_reason is not None:
                             state["stop_pending"] = True
                         response_state = deepcopy(state)
-                        now = time.monotonic()
+                        now = time.perf_counter()
                         for feedback in response_state["axes"].values():
                             feedback["age"] = now - feedback.pop("updated_at", now)
                         response = {"ok": True, "state": response_state}
@@ -289,6 +259,7 @@ class MotorisedStageZMQServer:
                     # Invalidate pending commands and held keys before stopping.
                     held_jog = None
                     pending_command = None
+                    nominal_moves.clear()
                     for operation in state["operations"].values():
                         if operation["status"] in ("queued", "running"):
                             operation.update(status="stopped", error="Motion interrupted by stop")
@@ -306,46 +277,42 @@ class MotorisedStageZMQServer:
                     stop_reason = None
                 if not running:
                     break
-                if time.monotonic() < next_poll_at:
+                if time.perf_counter() < next_poll_at:
                     continue
                 # Even failed reads are rate limited, allowing network requests
                 # between retries. Read just one axis before returning above.
-                next_poll_at = time.monotonic() + poll_interval / len(axis_names)
+                next_poll_at = time.perf_counter() + poll_interval / len(axis_names)
                 intent_operation = None
                 try:
                     axis = axis_names[next_axis]
                     try:
-                        if serial_driver:
-                            device_status = driver.GetStatus(axis)
-                            feedback = device_status["axes"][axis]
-                            for key, value in device_status.items():
-                                if key != "axes":
-                                    state["device_status"][key] = value
-                            state["device_status"]["axes"][axis] = dict(feedback)
-                        else:
-                            feedback = driver.GetAxisStatus(axis)
+                        device_status = driver.GetStatus(axis)
+                        feedback = device_status["axes"][axis]
+                        for key, value in device_status.items():
+                            if key != "axes":
+                                state[key] = value
                     except Exception as exc:
                         raise OSError(f"Feedback from {axis} failed: {exc}") from exc
                     if not math.isfinite(feedback["position"]):
                         raise RuntimeError(f"Invalid position from {axis}")
-                    feedback["updated_at"] = time.monotonic()
+                    feedback["updated_at"] = time.perf_counter()
                     feedback["commanded"] = axis == active_axis
                     state["axes"][axis] = feedback
                     if feedback["fault"]:
                         raise RuntimeError(f"{axis}: {feedback['fault']}")
                     next_axis = (next_axis + 1) % len(axis_names)
-                    next_poll_at = time.monotonic() + poll_interval / len(axis_names)
-                    now = time.monotonic()
-                    state["connected"] = len(state["axes"]) == len(capabilities)
+                    next_poll_at = time.perf_counter() + poll_interval / len(axis_names)
+                    now = time.perf_counter()
+                    state["connected"] = all(now - item["updated_at"] < 1 for item in state["axes"].values())
                     if not state["connected"]:
                         continue
                     state["sequence"] += 1
                     if active_axis:
                         current = state["axes"][active_axis]
-                        tolerance = capabilities[active_axis].get("tolerance", capabilities[active_axis]["resolution"] * 2)
+                        tolerance = current.get("tolerance", current["resolution"] * 2)
                         complete = current["homed"] if homing else abs(current["position"] - target) <= tolerance
                         if not current["moving"] and not current["homing"] and complete and now - started_at >= 0.15:
-                            if active_operation is not None:
+                            if active_operation is not None and not nominal_moves:
                                 state["operations"][active_operation].update(
                                     status="completed", result=dict(current, commanded=False))
                             active_operation = None
@@ -361,7 +328,9 @@ class MotorisedStageZMQServer:
                     # One in-flight axis is deliberate: hold repetition never
                     # creates hidden queued moves or simultaneous directions.
                     intent = None
-                    if not active_axis and pending_command is not None:
+                    if not active_axis and nominal_moves:
+                        intent = nominal_moves.pop(0)
+                    elif not active_axis and pending_command is not None:
                         intent = pending_command
                         pending_command = None
                     elif not active_axis and not state["stopped"] and held_jog:
@@ -376,54 +345,60 @@ class MotorisedStageZMQServer:
                             continue
                         if active_axis or any(s["moving"] or s["homing"] for s in state["axes"].values()):
                             raise ValueError("Wait for motion to complete")
-                        if axis not in capabilities:
+                        if command == "nominal":
+                            # Validate every endpoint before starting the first axis.
+                            for name, feedback in state["axes"].items():
+                                lower, upper = feedback["limits"]
+                                if lower is None or upper is None:
+                                    raise ValueError(f"{name}: configure travel limits before moving to nominal")
+                            nominal_moves = [("absolute", name, sum(feedback["limits"]) / 2, intent_operation)
+                                             for name, feedback in state["axes"].items()]
+                            command, axis, value, intent_operation = nominal_moves.pop(0)
+                        if axis not in state["axes"]:
                             raise ValueError(f"Unknown axis {axis}")
-                        spec = capabilities[axis]
+                        spec = state["axes"][axis]
                         current = state["axes"][axis]
                         if now - current["updated_at"] > 1:
                             raise ValueError("Position feedback is stale")
                         if command == "enable":
-                            driver.EnableAxis(axis)
+                            driver.EnableAxis(axis, enabled=True if value is None else bool(value))
                             continue
                         if command == "home":
-                            if not spec["home"]:
+                            if not spec["supports"]["home"]:
                                 raise ValueError("This axis has an absolute sensor; no homing")
                             if not current["enabled"]:
                                 raise ValueError("Enable this axis before homing")
                             homing = True
-                            if serial_driver:
-                                driver.HomeAxis(axis, wait=False)
-                            else:
-                                driver.HomeAxis(axis)
+                            driver.HomeAxis(axis, wait=False)
                         elif command in ("absolute", "relative"):
                             if not current["enabled"]:
                                 raise ValueError("Enable this axis before moving")
-                            if spec["home"] and not current["homed"]:
+                            if spec["supports"]["home"] and not current["homed"]:
                                 raise ValueError("Home this axis before moving")
                             value = float(value)
                             if not math.isfinite(value):
                                 raise ValueError("Position must be finite")
                             target = current["position"] + value if command == "relative" else value
                             target = round(target / spec["resolution"]) * spec["resolution"]
-                            if spec["minimum"] is not None and target < spec["minimum"]:
+                            if spec["limits"][0] is not None and target < spec["limits"][0]:
                                 raise ValueError("Target is below the configured travel limit")
-                            if spec["maximum"] is not None and target > spec["maximum"]:
+                            if spec["limits"][1] is not None and target > spec["limits"][1]:
                                 raise ValueError("Target is above the configured travel limit")
                             if abs(current["position"] - target) < spec["resolution"] / 2:
                                 if command == "relative":
                                     raise ValueError("Requested step is smaller than the axis resolution")
-                                if intent_operation is not None:
+                                if intent_operation is not None and not nominal_moves:
                                     state["operations"][intent_operation].update(
                                         status="completed", result=dict(current, commanded=False))
                                 state.update(error=None, message="Ready")
                                 continue
                             homing = False
-                            if serial_driver:
-                                driver.MoveAbs(axis, target, wait=False)
+                            if command == "relative":
+                                driver.MoveRel(axis, target - current["position"], wait=False)
                             else:
-                                driver.MoveTo(axis, target, wait=False)
+                                driver.MoveAbs(axis, target, wait=False)
                         elif command == "speed":
-                            if not spec["speed"]:
+                            if not spec["supports"]["speed"]:
                                 raise ValueError("Speed control is unavailable for this driver")
                             value = float(value)
                             if not math.isfinite(value) or not spec["speed_minimum"] <= value <= spec["speed_maximum"]:
@@ -436,13 +411,14 @@ class MotorisedStageZMQServer:
                         active_operation = intent_operation
                         if active_operation is not None:
                             state["operations"][active_operation]["status"] = "running"
-                        started_at = time.monotonic()
+                        started_at = time.perf_counter()
                         state["axes"][axis]["commanded"] = True
                         state.update(error=None, message=f"{'Homing' if homing else 'Moving'} {axis}")
                 except ValueError as exc:
                     # A rejected intent does not mean the link disappeared. Stop
                     # active motion on a hardware error, then require explicit resume.
                     held_jog = None
+                    nominal_moves.clear()
                     if intent_operation is not None:
                         state["operations"][intent_operation].update(status="failed", error=str(exc))
                     state.update(error=str(exc), message=str(exc))

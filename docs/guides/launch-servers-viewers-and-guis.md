@@ -12,8 +12,10 @@ The exact processes depend on where the hardware is connected:
 - An SLM can use a hardware-facing server on Windows and a bridge/server on
   Linux. Linux clients then use the local bridge and shared-memory image.
 
-Run every long-lived command in its own terminal or tmux window. The examples
-below use `HDStokes` for the camera and `default_lab` for the bridged SLM.
+The examples use `src/JazLabs/launchers/configs/default_lab.py`. Edit its
+connection details for your hardware before launching. Additional instrument
+examples are disabled for bulk launch until configured; an explicit `--name`
+command still selects that entry.
 
 ## Before You Start
 
@@ -49,13 +51,23 @@ Bringing a supported instrument online normally follows the same pattern:
 The camera and SLM examples below show this pattern with two different data
 paths: local camera shared memory and a networked SLM bridge.
 
-The Time Tagger follows the same server/bridge/client model without a
-continuous shared-memory stream. See the dedicated
-[`Time Tagger server, bridge server, and client`](time-tagger-server-bridge-client.md)
-guide for its launch commands and Python client example.
+The sections below also cover motors, Time Taggers, DAC/DAQ controllers,
+optical switches, digital holography, and direct power-meter connections.
 
 Minimal Python clients for the other instrument stacks are indexed in the
 [`Instrument Client Examples`](instrument-client-examples.md) guide.
+
+Jump to an instrument:
+
+- [Camera](#example-1-camera-server-and-clients-on-one-computer)
+- [SLM](#example-2-regular-slm-server-bridge-and-viewer)
+- [Laser](#example-3-laser-server-gui-and-client)
+- [Motors](#example-4-motor-server-bridge-and-control-gui)
+- [Time Tagger](#example-5-time-tagger-server-bridge-and-client)
+- [DAC/DAQ](#example-6-dacdaq-server-bridge-and-voltage-gui)
+- [Optical switches](#example-7-optical-switch-server-and-gui)
+- [Digital holography](#example-8-digital-holography-viewer)
+- [Power meters](#example-9-power-meter-connection)
 
 ## Example 1: Camera Server and Clients on One Computer
 
@@ -73,7 +85,7 @@ Camera server
       `----> Camera control GUI
 ```
 
-The `HDStokes` configuration sets `CAMERA_HOST` to `127.0.0.1`, so the clients
+The `default_lab` configuration sets `CAMERA_HOST` to `127.0.0.1`, so the clients
 connect back to the server on the same computer.
 
 ### 1. Start the camera server
@@ -81,7 +93,7 @@ connect back to the server on the same computer.
 In the first terminal, run:
 
 ```bash
-jazlabs-server-camera --config HDStokes --name cam_slm
+jazlabs-server-camera --config default_lab --name cam_slm
 ```
 
 The server opens the configured camera, creates the frame stream, and listens
@@ -93,7 +105,7 @@ that it is running, then leave this terminal open.
 In a second terminal on the same computer, run:
 
 ```bash
-jazlabs-view-camera --config HDStokes --name cam_slm
+jazlabs-view-camera --config default_lab --name cam_slm
 ```
 
 This client launcher opens two windows:
@@ -124,24 +136,32 @@ To open only one client window, use:
 
 ```bash
 # Live image only
-jazlabs-view-camera --config HDStokes --name cam_slm --no-widget
+jazlabs-view-camera --config default_lab --name cam_slm --no-widget
 
 # Camera controls only
-jazlabs-view-camera --config HDStokes --name cam_slm --no-viewer
+jazlabs-view-camera --config default_lab --name cam_slm --no-viewer
 ```
 
 To open clients for all camera entries that are enabled in the configuration,
 start their servers first and then run:
 
 ```bash
-jazlabs-view-camera --config HDStokes --all
+jazlabs-view-camera --config default_lab --all
+```
+
+For integrated spot-power readout from the same camera, use the optional
+`SPOT_POWER_VIEWERS` example and enter spot centres in its GUI or supply a
+centres file in the config:
+
+```bash
+jazlabs-view-spot-power --config default_lab --name cam_slm_spots
 ```
 
 ### 3. Connect from Python code
 
 Experiment code connects to the same camera server as the viewer and GUI. It
 must use the server's reachable host, command port, and frame-publication port.
-For `cam_slm` in the `HDStokes` configuration, a minimal client is:
+For `cam_slm` in the `default_lab` configuration, a minimal client is:
 
 ```python
 from JazLabs.hardware.Cameras.Camera_Client import CameraClient
@@ -152,8 +172,8 @@ camera_client = None
 try:
     camera_client = CameraClient(
         host="127.0.0.1",
-        command_port=50733,
-        frame_pub_port=50734,
+        command_port=50731,
+        frame_pub_port=50732,
         timeout_ms=60_000,
         client_id="camera_connection_example",
     )
@@ -192,86 +212,84 @@ Always close the client in a `finally` block. Closing a client releases its
 network sockets and shared-memory attachments; it does not shut down the
 camera server or prevent another client from remaining connected.
 
-## Example 2: SLM Server with a Linux Bridge and Viewer
+## Example 2: Regular SLM Server, Bridge, and Viewer
 
-The SLM example spans two computers. The SLM server owns the physical SLM.
-The SLM bridge connects to the server, creates the local SLM
-shared-memory stream, and forwards image and control traffic. The Linux viewer
-reads the current image from that shared memory.
+The standard SLM stack is `SLMStack`. It uses `SLM_SERVER`, `SLM_BRIDGE`, and
+`SLM_VIEWER` in `default_lab.py` and does not require pyMilk. Select the SLM type,
+monitor or board number, and LUT for the attached hardware.
 
-```text
-Physical SLM
-     |
-     v
-SLM server (Windows)
-     |
-     | network: commands, images, acknowledgements
-     v
-SLM bridge (Linux)
-     |
-     +----> Local SLM client and phase-mask procedures
-     |
-     `----> Shared memory ----> Linux SLM viewer
-```
+### 1. Start the hardware server
 
-The order matters: start the hardware-facing server first, the bridge
-second, and the Linux viewer or other clients last. The commands below use the
-`SLM_MILK_SERVER`, `SLM_MILK_BRIDGE`, and `SLM_MILK_SHM_NAME` settings in
-`default_lab.py`. These optional pyMilk settings are commented out by default;
-uncomment them before running the pyMilk commands.
-
-### 1. Start the hardware-facing server on Windows
-
-On the computer physically connected to the SLM, open PowerShell in the
-JazLabs environment and run:
-
-```powershell
-jazlabs-server-slm-milk --config default_lab
-```
-
-Wait until the server has opened the SLM and reports its command, image, and
-acknowledgement ports. Leave the PowerShell window open.
-
-### 2. Start the bridge on Linux
-
-On the Linux computer, run:
+On the computer connected to the SLM:
 
 ```bash
-jazlabs-bridge-slm-milk --config default_lab
+jazlabs-server-slm --config default_lab
 ```
 
-The bridge connects to the SLM server configured by `server_host`, creates
-the stream named by `shm_name`, and exposes a local command port for JazLabs
-SLM clients. Wait until its startup information has been printed before
-opening the viewer.
+The example server listens on command port `5555` and display-publication port
+`5556`. The regular stack supports a local server and clients as well as a
+bridge to another computer.
 
-### 3. Start the client viewer on Linux
+### 2. Start the bridge
 
-In another Linux terminal, run:
+On the control computer, use the reachable address of the SLM computer:
 
 ```bash
-jazlabs-view-slm-milk --config default_lab
+jazlabs-bridge-slm --config default_lab --remote-host 192.168.1.25
 ```
 
-The viewer reads the configured shared-memory stream and displays the image
-currently being sent to the SLM. Apply or update a safe test mask through a
-normal JazLabs SLM client or procedure and confirm that the displayed image
-changes.
+For a same-computer example, omit `--remote-host`: the config uses `127.0.0.1`.
+The bridge connects to server ports `5555`/`5556`, exposes local ports
+`5565`/`5566`, and maintains a local shared-memory image for clients and viewers.
+Distinct local and remote ports allow both processes to run on one computer.
 
-![Linux SLM viewer showing a test mask from shared memory](assets/server-client-viewers/slm-live-feed.png)
+### 3. Open the viewer or connect a client
 
-This window shows what is present in the Linux shared-memory stream. A changing
-viewer confirms that the local client/bridge path is active; also check the
-bridge and SLM-server terminals for display acknowledgements or errors
-when confirming that the physical SLM updated.
+The default viewer connects to the local bridge:
+
+```bash
+jazlabs-view-slm --config default_lab
+```
+
+To view a same-computer server directly, skip the bridge and override the ports:
+
+```bash
+jazlabs-view-slm --config default_lab --command-port 5555 --display-pub-port 5556
+```
+
+Python clients use the bridge's local endpoint:
+
+```python
+from JazLabs.hardware.SLM.SLMStack.SLM_Client import SLMClient
+
+slm = SLMClient(host="127.0.0.1", command_port=5565, display_pub_port=5566)
+try:
+    print(slm.GetProperties())
+finally:
+    slm.close()
+```
+
+See `examples/instrument_clients/slm_client.py` for displaying phase masks.
+A direct connection to a server on another computer does not provide access to
+its local shared memory; run the bridge on the client computer instead.
+
+### Optional: MILK integration
+
+`SLMStackMilk` is an additional transport for workflows that need pyMilk/ImageStreamIO
+shared-memory streams. It is separate from the regular stack above. Uncomment
+and configure the optional `SLM_MILK_*` settings in `default_lab.py`, including
+the hardware computer's `server_host`, then start `jazlabs-server-slm-milk`,
+`jazlabs-bridge-slm-milk`, and `jazlabs-view-slm-milk` in that order, each with
+`--config default_lab`. The bridge/viewer require pyMilk on the control computer.
+Run this stack instead of the regular SLM stack when using its example ports.
 
 ## Example 3: Laser Server, GUI, and Client
 
-Configure a laser entry in `src/JazLabs/launchers/configs/HDStokes.py`. On the
+Configure a laser entry in `src/JazLabs/launchers/configs/default_lab.py`. On the
 computer connected to the laser, start the named server:
 
 ```bash
-jazlabs-server-laser --config HDStokes --name tunable_laser
+jazlabs-server-laser --config default_lab --name tunable_laser
 ```
 
 For clients on another computer, configure the server to bind to `0.0.0.0` and
@@ -280,7 +298,7 @@ the control GUI with the hardware computer's reachable address:
 
 ```bash
 jazlabs-view-laser \
-    --config HDStokes \
+    --config default_lab \
     --name tunable_laser \
     --host 192.168.1.25
 ```
@@ -290,7 +308,7 @@ Python code uses the same address and configured command port:
 ```python
 from JazLabs.hardware.Lasers.Laser_Client import LaserClient
 
-laser = LaserClient(host="192.168.1.25", command_port=50931)
+laser = LaserClient(host="192.168.1.25", command_port=50921)
 laser.set_wavelength_nm(1550.0)
 print(laser.get_power())
 laser.close()
@@ -327,7 +345,7 @@ is not wanted. The widget always uses the client.
 
 ### 1. Configure the mount
 
-The presets in `src/JazLabs/launchers/configs/motorised_mounts.py` use
+The presets in `src/JazLabs/launchers/configs/default_lab.py` use
 `MOTOR_SERVERS`, with one named entry per controller:
 
 | Name | Controller | Axes and displayed units | Server port | Local bridge port |
@@ -407,10 +425,10 @@ configuration or calibration.
 Client examples for a calibrated Thorlabs mount:
 
 ```python
-mount.GetPosition("X", units="mm")
-mount.GetPosition("X", units="counts")
-mount.GetPositions(units="mm")
-mount.GetStatus()  # Per-axis identity, limits, calibration and current feedback.
+status = mount.GetStatus("X")
+status["axes"]["X"]["positions"]["mm"]
+status["axes"]["X"]["positions"]["counts"]
+# mount.MoveRel("X", .01, units="mm")  # Checked relative move; waits by default.
 # mount.MoveAbs("X", 1.0, units="mm")  # Waits for completion by default.
 # mount.MoveAbs("X", 1000, units="counts")
 ```
@@ -426,14 +444,14 @@ The old native-count and millimetre-specific method variants are removed.
 For the tip/tilt mount:
 
 ```bash
-jazlabs-server-motor --config motorised_mounts --name newport_tip_tilt --serial-port COM5
+jazlabs-server-motor --config default_lab --name newport_tip_tilt --serial-port COM5
 ```
 
 For the other hardware presets, in separate terminals as needed:
 
 ```bash
-jazlabs-server-motor --config motorised_mounts --name newport_translation --serial-port COM6
-jazlabs-server-motor --config motorised_mounts --name thorlabs_umc2 --serial-port COM7
+jazlabs-server-motor --config default_lab --name newport_translation --serial-port COM6
+jazlabs-server-motor --config default_lab --name thorlabs_umc2 --serial-port COM7
 ```
 
 Replace the serial port names with the actual ones, or omit `--serial-port`
@@ -451,19 +469,19 @@ has no authentication; do not expose it to an untrusted network.
 With the server running, open another terminal on the same computer:
 
 ```bash
-jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt
+jazlabs-view-motor --config default_lab --name newport_tip_tilt
 ```
 
 The black control GUI offers an **alignment** pad and an **axis console**:
 
 ```bash
-jazlabs-view-motor --config motorised_mounts --name newport_translation --layout console
+jazlabs-view-motor --config default_lab --name newport_translation --layout console
 ```
 
 For a direct connection from a different computer, supply its reachable address:
 
 ```bash
-jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --host 192.168.1.25
+jazlabs-view-motor --config default_lab --name newport_tip_tilt --host 192.168.1.25
 ```
 
 The GUI reports live position, homed/needs homing, homing, moving, disabled,
@@ -472,8 +490,8 @@ Use **Enable axis** if needed before homing or moving an incremental stage.
 
 - Enable **Keyboard control**: A/D jog the first axis, W/S the second, and Q/E
   the third. A tap sends one configured relative step; holding repeats one step
-  at a time after the preceding move completes. Rapid taps while busy retain
-  only the latest pending step instead of accumulating a long movement queue.
+  at a time after the preceding move completes. The server keeps at most one
+  pending step while busy; additional tracked movement requests are rejected.
   Release finishes the current step and cancels further held-key repetition.
   Choose a small step for fine alignment.
 - Absolute targets use the axis's displayed units. Slider dragging previews a
@@ -502,7 +520,7 @@ Start the hardware server first with a reachable bind address. Then, on the
 control computer, start the bridge in a second terminal:
 
 ```bash
-jazlabs-bridge-motor --config motorised_mounts --name newport_tip_tilt --remote-host 192.168.1.25
+jazlabs-bridge-motor --config default_lab --name newport_tip_tilt --remote-host 192.168.1.25
 ```
 
 The preset above forwards local `127.0.0.1:51941` to the hardware server's
@@ -513,7 +531,7 @@ on the same computer. Override ports using `--local-command-port` and
 In another terminal on the control computer:
 
 ```bash
-jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --bridge
+jazlabs-view-motor --config default_lab --name newport_tip_tilt --bridge
 ```
 
 The bridge forwards requests and replies and never imports a hardware driver.
@@ -536,10 +554,11 @@ try:
     print(status)                       # Configuration, limits, support flags and feedback.
     print(status["axes"]["U"]["position"])
     # mount.MoveAbs("U", 0.1)             # Waits for stopped/target feedback by default.
+    # mount.MoveRel("U", 0.01)            # Checked relative move; also waits by default.
     # mount.MoveAbs("U", 0.1, wait=False) # Submit without waiting; poll status yourself.
     # mount.StopAll()
 finally:
-    mount.close()
+    mount.CloseStage()
 ```
 
 The notebook `notebooks/instrument_clients/motorised_mount_client.ipynb` contains
@@ -561,8 +580,11 @@ capabilities and separate position/status getters have been removed. For example
 A direct driver call reads serial feedback; a client call reads the server's
 latest cached feedback, including its age and connection state. Controller state
 and error codes are retained as dictionary fields rather than separate getters.
-The client still offers position-only convenience methods; those reject stale
-or unavailable feedback.
+The client and simulator also use this one getter; separate properties,
+capabilities, position and axis-status getters are removed. Read a position with
+`mount.GetStatus("X")["axes"]["X"]["position"]`; calibrated alternatives are in
+that axis's `positions` dictionary. Connection health and axis `age` remain
+visible in the same status dictionary.
 
 `MoveAbs(axis, target, wait=True, timeout=None)` waits for that specific operation
 to complete and returns its stopped axis status. The default timeout comes from
@@ -572,7 +594,15 @@ unavailable feedback triggers a stop request. The client polls completion, so
 the server remains responsive to a GUI or another client's Stop command. Direct
 Newport/Thorlabs-driver `MoveAbs` calls also wait by default; the server explicitly
 uses `wait=False` when scheduling them. The client uses the same `MoveAbs` name
-for every controller. There is no `MoveTo` alias on the client or Newport/Thorlabs drivers.
+for every controller. There is no `MoveTo` alias on the client, simulator or Newport/Thorlabs drivers.
+
+The motor client follows the camera/SLM pattern: method calls communicate directly
+through ZMQ, with no internal Python thread, command queue or cached status.
+`GetStatus()` requests the server's current snapshot. The widget uses Tkinter
+`after()` callbacks to poll status and refresh held-key jog requests, and calls
+movement methods with `wait=False`. Each network call may hold the callback until
+the configured reply timeout. The widget requests a stop after an established
+connection fails or a command reply is lost, and explicitly stops on close.
 
 The motor server follows the camera server's single-loop structure. The same
 thread receives network requests, reads one axis's feedback at a time and tracks
@@ -583,16 +613,17 @@ return or time out; serial communication is not interrupted by another thread.
 The command-line launcher calls `run_forever()` directly. The optional Python
 `server.start()` method launches a separate process containing that same loop.
 
-With `wait=False`, `MoveAbs` returns an `operation_id` after submission; the
-corresponding record is in `request("state")["operations"]`. Lower-level
-`request("absolute", ...)`, `request("relative", ...)`, and `HomeAxis` still
-acknowledge submission rather than movement completion. Poll status and errors
-when using those asynchronous operations. Direct serial-driver `MoveAbs`/`MoveRel`
-calls wait by default; pass `wait=False` to submit a move and monitor `GetStatus()`
-yourself. Never blindly retry
-a relative move after a communication timeout.
-Closing a synchronous notebook/script client does not stop the server or an
-active move; explicitly request `StopAll()` when that is your intention.
+The client exposes `MoveAbs`, `MoveRel` and `HomeAxis` with `wait=True` by default,
+matching the drivers. With `wait=False`, these return an `operation_id` after
+submission; its completion record is in `GetStatus()["operations"]`. Lower-level
+`request("absolute", ...)`, `request("relative", ...)` and `request("home", ...)`
+acknowledge submission only. Never blindly retry a relative move after a timeout.
+`SetNominal()` schedules each axis's midpoint in sequence and waits by default;
+all travel limits are checked before the first axis moves. `EnableAxis(axis,
+enabled=False)` disables an axis, and omitting `enabled` enables it.
+`CloseStage()` closes the client connection. Closing a synchronous notebook/script
+client does not stop the server or an active move; explicitly request `StopAll()`
+when that is your intention.
 
 Direct Newport-driver use requires explicit limits, for example:
 
@@ -656,23 +687,301 @@ For a hardware-free test, use two terminals:
 
 ```bash
 # Terminal 1
-jazlabs-server-motor --config motorised_mounts --name simulation
+jazlabs-server-motor --config default_lab --name simulation
 
 # Terminal 2
-jazlabs-view-motor --config motorised_mounts --name simulation
+jazlabs-view-motor --config default_lab --name simulation
+```
+
+The simulator uses the same `GetStatus`, `MoveAbs`, `MoveRel`, `HomeAxis`,
+`SetNominal`, `EnableAxis`, `SetSpeed` and `CloseStage` API as the motor system.
+Its unit selector offers counts alongside mm for translation axes or degrees
+for the absolute-sensor mirror. The default simulated calibration is 1000 counts
+per physical unit; set `stage_kwargs.counts_per_unit` to a positive number or a
+per-axis dictionary to exercise other calibrations. These are simulated scales.
+Speed and travel checks also apply to direct driver calls. Disabling an axis
+cancels its current command; enabling it again does not restart that command.
+
+For direct, hardware-free use:
+
+```python
+from JazLabs.hardware.MotorisedStages.SimulatedStage import SimulatedStage
+
+with SimulatedStage(axes=1) as stage:
+    stage.MoveRel("X", 10, units="counts")  # Waits for the 0.01 mm move.
+    print(stage.GetStatus("X")["axes"]["X"]["positions"])
 ```
 
 The three independent module launchers can also be used without console scripts:
 
 ```bash
-python -m JazLabs.launchers.launch_motorised_stage_server --config motorised_mounts --name simulation
-python -m JazLabs.launchers.launch_motorised_stage_bridge --config motorised_mounts --name simulation --remote-host 127.0.0.1
-python -m JazLabs.launchers.launch_motorised_stage_widget --config motorised_mounts --name simulation --bridge
+python -m JazLabs.launchers.launch_motorised_stage_server --config default_lab --name simulation
+python -m JazLabs.launchers.launch_motorised_stage_bridge --config default_lab --name simulation --remote-host 127.0.0.1
+python -m JazLabs.launchers.launch_motorised_stage_widget --config default_lab --name simulation --bridge
 ```
 
 Run each in its own terminal, in the order shown. Reinstall the editable project
 with `pip install -e .` if the new `jazlabs-server-motor`, `jazlabs-bridge-motor`,
 and `jazlabs-view-motor` entry points are not yet available in your environment.
+
+## Example 5: Time Tagger Server, Bridge, and Client
+
+JazLabs operates the Time Tagger through three explicit roles:
+
+```text
+Time Tagger hardware
+        |
+        v
+Time Tagger server on the hardware computer
+        |
+        | ZeroMQ request/reply connection
+        v
+Time Tagger bridge server on the experiment computer
+        |
+        v
+TimeTaggerClient used by scripts, procedures, or the live window
+```
+
+The hardware server is the only process that imports the Swabian Instruments
+`TimeTagger` package or creates the physical Time Tagger object. The bridge
+server forwards commands and measurement results between computers. Client
+code uses the same interface whether it connects to a bridge or directly to a
+server.
+
+Unlike a camera stream, Time Tagger measurements return finite arrays or
+summary values. They are therefore returned with the command reply rather than
+placed in shared memory.
+
+### Configure the Time Tagger
+
+Add an entry to `TIME_TAGGER_SERVERS` in the selected file under
+`src/JazLabs/launchers/configs/`. The `default_lab` configuration includes a
+disabled example:
+
+```python
+TIME_TAGGER_SERVERS = [
+    {
+        "name": "time_tagger",
+        "host": "0.0.0.0",
+        "command_port": 50931,
+        "serial": None,
+        "create_kwargs": {},
+        "poll_timeout_ms": 100,
+        "enabled": False,
+    },
+]
+```
+
+Set `serial` when a computer has multiple Time Taggers. Install the vendor
+drivers and Python package on the hardware computer. They are not required on
+the bridge or client computer.
+
+### 1. Start the hardware server
+
+On the computer physically connected to the Time Tagger, run:
+
+```bash
+jazlabs-server-time-tagger \
+    --config default_lab \
+    --name time_tagger
+```
+
+The server creates the vendor device object and listens on the configured
+command port. Leave it running while measurements are being performed.
+
+### 2. Start the bridge server
+
+On the experiment computer, start a local bridge and give it the reachable IP
+address or host name of the hardware computer:
+
+```bash
+jazlabs-bridge-time-tagger \
+    --config default_lab \
+    --name time_tagger \
+    --remote-host 10.196.0.67
+```
+
+By default, the bridge exposes the same command port on `127.0.0.1`. Use
+`--local-command-port` if that port is already occupied. Use
+`--remote-command-port` when the remote server uses a different port.
+
+### 3. Connect a client
+
+Experiment code connects to the local bridge:
+
+```python
+from JazLabs.hardware.TimeTagger.TimeTagger_Client import TimeTaggerClient
+
+
+time_tagger = TimeTaggerClient(
+    host="127.0.0.1",
+    command_port=50931,
+    timeout_ms=120_000,
+    client_id="coincidence_measurement",
+)
+
+try:
+    time_tagger.SetTriggerLevel(channel=1, voltage=0.5)
+    time_tagger.SetTriggerLevel(channel=2, voltage=0.5)
+
+    result = time_tagger.MeasureCoincidences(
+        channels=[1, 2],
+        coincidence_window=100,
+        counting_time=1.0,
+    )
+    print(result.coincidence_rate)
+    print(result.contrast_CAR)
+finally:
+    time_tagger.close()
+```
+
+The client supports trigger levels, input delays, count rates, binned counts,
+correlations, coincidences, and combined coincidence/correlation measurements.
+Long measurements automatically extend the client receive timeout beyond the
+requested counting time.
+
+Existing helpers in `TimeTaggerFunction.py` accept a `TimeTaggerClient` and
+delegate supported measurements to the server. The runnable wiring example is
+`examples/legacy/example_time_tagger_client.py`.
+
+### Stopping the stack
+
+Close client objects first. Then stop the bridge and hardware server with
+`Ctrl+C` in their terminals. `TimeTaggerClient.ShutdownServer()` is available
+for controlled shutdown from Python, but should only be used by code that owns
+the server lifecycle.
+
+### Troubleshooting
+
+- If the hardware server cannot import `TimeTagger`, install the Swabian
+  Instruments software and its Python package on that computer.
+- If the bridge times out, confirm the remote host, command port, firewall,
+  and hardware-server terminal.
+- If a client times out during a measurement, make sure the bridge timeout is
+  longer than the requested counting time.
+- If the wrong device opens, set its serial number in `TIME_TAGGER_SERVERS` or
+  pass `--serial` to the hardware-server command.
+
+## Example 6: DAC/DAQ Server, Bridge, and Voltage GUI
+
+DAC voltage outputs use the DAQ stack. Configure the `daq` entry in
+`DAQ_SERVERS` in `default_lab.py`: select `ni_daq`, `mcc_daq`, or
+`coremorrow_daq`, the device number, channel count, and voltage limits. Serial
+CoreMorrow controllers also need `serial_port`. Install the selected vendor
+backend on the hardware computer.
+
+Start the server on the hardware computer:
+
+```bash
+jazlabs-server-daq --config default_lab --name daq
+```
+
+It exposes command port `50831` and voltage-publication port `50832`. For a
+remote control computer, bind the server with `--host 0.0.0.0`, then start a
+bridge on the control computer:
+
+```bash
+jazlabs-bridge-daq --config default_lab --name daq --remote-host 192.168.1.25
+```
+
+The bridge uses local ports `50831`/`50832` by default. If testing server and
+bridge on the same computer, choose distinct local ports with
+`--local-command-port` and `--local-voltage-pub-port` and pass them to clients.
+
+Open the voltage GUI on the server computer or on the computer running its bridge:
+
+```bash
+python -m JazLabs.hardware.DAQ_Controller.DAQ_stack.DAQ_Widget
+```
+
+That module uses `127.0.0.1:50831/50832`, matching the default example. For other
+endpoints, construct the window explicitly in Python:
+
+```python
+from JazLabs.hardware.DAQ_Controller.DAQ_stack.DAQ_Widget import DAQControlWindow
+
+window = DAQControlWindow(host="127.0.0.1", command_port=50831, voltage_pub_port=50832)
+window.run()
+```
+
+`examples/instrument_clients/dac_client.py` and its matching notebook demonstrate
+`DAQClient.SetVoltage()` and `GetVoltage()`. Check the example voltage against
+the connected load before running it. There is currently no dedicated
+`jazlabs-view-daq` command.
+
+## Example 7: Optical Switch Server and GUI
+
+`OPTICAL_SWITCH_SERVERS` in `default_lab.py` includes a JDS optical switch named
+`optical_switch` on command port `50841`, and a polarization switch named
+`pol_switch` on `50842`. Set each serial port for your hardware, then run:
+
+```bash
+jazlabs-server-optical-switch --config default_lab --name optical_switch
+```
+
+Open its control GUI:
+
+```bash
+jazlabs-view-optical-switch --config default_lab --name optical_switch
+```
+
+Use `--name pol_switch` with both commands for the polarization switch. For
+network access, start the server with `--host 0.0.0.0` and give the GUI
+`--host <switch-host>`. The GUI and Python client connect directly to the server;
+this stack has no separate bridge launcher.
+
+`examples/instrument_clients/optical_switch_client.py` and its notebook use
+`OpticalSwitchClient.GetChannel()` and `SetChannel()`. Set the requested channel
+for the connected switch before running the example.
+
+## Example 8: Digital Holography Viewer
+
+Digital holography processes frames from a camera client; it does not need a
+separate instrument server. Start the default camera server first:
+
+```bash
+jazlabs-server-camera --config default_lab --name cam_slm
+```
+
+Install the digHolo native library and use a local GUI environment. Set the
+camera pixel size, wavelength, FFT radius, and maximum mode group in
+`DIGITAL_HOLOGRAPHY_CONFIG` in `default_lab.py`, then run from the repository root:
+
+```bash
+python examples/instrument_clients/digital_holography_viewer.py
+```
+
+The example reads the configured camera connection, constructs a `digholoWindow`,
+applies the analysis settings, and auto-aligns. Its constructor launches the live
+viewer. Press Enter in the terminal to close the viewer and camera client.
+For a remote camera, first run the camera bridge on the viewer computer and
+point the example at that bridge's local camera endpoint.
+
+## Example 9: Power Meter Connection
+
+Power meters currently provide direct drivers rather than a server/bridge/GUI
+launcher stack. `POWER_METER_CONFIG` in `default_lab.py` contains example
+settings for the Santec driver. Install PyVISA and the device's VISA backend,
+and replace the resource string with the address reported by your system.
+Run this on the computer connected to the meter:
+
+```python
+from JazLabs.launchers.config import load_config
+from JazLabs.hardware.PowerMeters.Santec.PowerMeter_Santec_lib import PowerMeterObject
+
+settings = load_config("default_lab")["POWER_METER_CONFIG"]
+meter = PowerMeterObject(PWRMeterID=settings["resource"])
+try:
+    meter.SetUnits(settings["units"])
+    print(meter.GetPower())
+finally:
+    del meter  # The current wrapper closes its VISA connection in its destructor.
+```
+
+Thorlabs meter wrappers are under `hardware/PowerMeters/Thorlabs`; their backend
+and wavelength settings differ from Santec. They currently include a legacy
+notebook widget, rather than a launcher GUI. No `jazlabs-server-power-meter` or
+`jazlabs-view-power-meter` command is provided.
 
 ## Launch Order at a Glance
 
@@ -680,31 +989,31 @@ and `jazlabs-view-motor` entry points are not yet available in your environment.
 
 | Order | Computer | Process | Command |
 |---:|---|---|---|
-| 1 | Camera computer | Camera server | `jazlabs-server-camera --config HDStokes --name cam_slm` |
-| 2 | Camera computer | Viewer and control clients | `jazlabs-view-camera --config HDStokes --name cam_slm` |
+| 1 | Camera computer | Camera server | `jazlabs-server-camera --config default_lab --name cam_slm` |
+| 2 | Camera computer | Viewer and control clients | `jazlabs-view-camera --config default_lab --name cam_slm` |
 
 ### Bridged SLM
 
 | Order | Computer | Process | Command |
 |---:|---|---|---|
-| 1 | Windows SLM computer | Hardware-facing server | `jazlabs-server-slm-milk --config default_lab` |
-| 2 | Linux computer | SLM bridge | `jazlabs-bridge-slm-milk --config default_lab` |
-| 3 | Linux computer | Shared-memory viewer client | `jazlabs-view-slm-milk --config default_lab` |
+| 1 | SLM computer | Hardware-facing server | `jazlabs-server-slm --config default_lab` |
+| 2 | Control computer | SLM bridge | `jazlabs-bridge-slm --config default_lab --remote-host <slm-host>` |
+| 3 | Control computer | Shared-memory viewer client | `jazlabs-view-slm --config default_lab` |
 
 ### Networked laser
 
 | Order | Computer | Process | Command |
 |---:|---|---|---|
-| 1 | Laser computer | Laser server | `jazlabs-server-laser --config HDStokes --name tunable_laser` |
-| 2 | Control computer | Laser GUI | `jazlabs-view-laser --config HDStokes --name tunable_laser --host <laser-host>` |
+| 1 | Laser computer | Laser server | `jazlabs-server-laser --config default_lab --name tunable_laser` |
+| 2 | Control computer | Laser GUI | `jazlabs-view-laser --config default_lab --name tunable_laser --host <laser-host>` |
 
 ### Bridged motor mount
 
 | Order | Computer | Process | Command |
 |---:|---|---|---|
-| 1 | Hardware computer | Motor server | `jazlabs-server-motor --config motorised_mounts --name newport_tip_tilt --host 0.0.0.0` |
-| 2 | Control computer | Motor bridge | `jazlabs-bridge-motor --config motorised_mounts --name newport_tip_tilt --remote-host <motor-host>` |
-| 3 | Control computer | Motor GUI | `jazlabs-view-motor --config motorised_mounts --name newport_tip_tilt --bridge` |
+| 1 | Hardware computer | Motor server | `jazlabs-server-motor --config default_lab --name newport_tip_tilt --host 0.0.0.0` |
+| 2 | Control computer | Motor bridge | `jazlabs-bridge-motor --config default_lab --name newport_tip_tilt --remote-host <motor-host>` |
+| 3 | Control computer | Motor GUI | `jazlabs-view-motor --config default_lab --name newport_tip_tilt --bridge` |
 
 ## Stopping the Processes
 
@@ -726,16 +1035,14 @@ before closing the serial port.
 - **The camera window opens but does not update:** confirm that the GUI reports
   `alive: True` and `acquisition: True`, and watch whether the frame counter
   advances.
-- **The SLM bridge cannot reach the server:** verify `server_host`, the
-  three Windows ports, firewall rules, and that the Windows server was started
-  first.
-- **The SLM viewer reports missing shared memory:** wait for the Linux bridge
-  to create the configured stream and confirm that the viewer and bridge use
-  the same `SLM_MILK_SHM_NAME` or `shm_name`.
-- **The SLM viewer changes but the hardware does not:** inspect the Linux
-  bridge and Windows server for acknowledgement or LUT/hardware errors. The
-  viewer alone proves that shared memory changed, not that the SLM accepted the
-  image.
+- **The SLM bridge cannot reach the server:** verify `SLM_BRIDGE.remote_host`, remote ports `5555`/`5556`,
+  firewall rules, and that the hardware server was started first.
+- **The SLM viewer reports missing shared memory:** start the regular bridge on the viewer computer and
+  confirm that the viewer uses its local ports `5565`/`5566`. Shared memory is
+  local to a computer.
+- **The SLM viewer changes but the hardware does not:** inspect the bridge
+  and hardware server for LUT or hardware errors. The viewer alone does not
+  confirm that the physical SLM updated.
 
 - **Motor sliders are unavailable:** set calibrated axis endpoints in `limits`;
   no range is invented for an unknown fitted stage.

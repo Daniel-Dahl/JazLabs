@@ -2,15 +2,19 @@
 
 from JazLabs.hardware.Cameras.Camera_Client import CameraClient
 from JazLabs.hardware.digHolo.digHolo_pylibs.digHolo_Veiwer import digholoWindow
+from JazLabs.launchers.config import get_named_config, load_config
 
 
-HOST = "127.0.0.1"
-COMMAND_PORT = 50731
-FRAME_PORT = 50732
-PIXEL_SIZE_M = 6.9e-6
-WAVELENGTH_M = 1550e-9
-FFT_RADIUS = 0.4
-MAX_MODE_GROUP = 3
+config = load_config("default_lab")
+settings = config["DIGITAL_HOLOGRAPHY_CONFIG"]
+camera_settings = get_named_config(config, "CAMERA_SERVERS", settings["camera_name"])
+HOST = config["CAMERA_HOST"]
+COMMAND_PORT = camera_settings["command_port"]
+FRAME_PORT = camera_settings["frame_pub_port"]
+PIXEL_SIZE_M = settings["pixel_size_m"]
+WAVELENGTH_M = settings["wavelength_m"]
+FFT_RADIUS = settings["fft_radius"]
+MAX_MODE_GROUP = settings["max_mode_group"]
 
 
 camera = CameraClient(

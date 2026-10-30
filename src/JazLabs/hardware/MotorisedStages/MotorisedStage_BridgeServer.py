@@ -59,7 +59,7 @@ class MotorisedStageZMQBridgeServer:
                         remote_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
                         remote_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
                         remote_socket.connect(f"tcp://{self.remote_host}:{self.remote_command_port}")
-                        started = time.monotonic()
+                        started = time.perf_counter()
                         remote_socket.send_json(message)
                         response = remote_socket.recv_json()
                         if not isinstance(response, dict):
@@ -67,7 +67,7 @@ class MotorisedStageZMQBridgeServer:
                         state = response.get("state")
                         if response.get("ok") and isinstance(state, dict):
                             # Relaying must not make old position feedback look fresh.
-                            elapsed = time.monotonic() - started
+                            elapsed = time.perf_counter() - started
                             for axis in state.get("axes", {}).values():
                                 axis["age"] = axis.get("age", 0) + elapsed
                             state["bridge"] = {"host": self.local_host, "command_port": self.local_command_port,

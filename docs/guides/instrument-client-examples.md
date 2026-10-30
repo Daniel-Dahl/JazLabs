@@ -31,6 +31,9 @@ Hosts and ports must match the running server. Values that move or change
 physical hardware—such as mount position, wavelength, switch port, and
 voltage—must be checked for the actual setup before execution.
 
+The connection examples match `default_lab.py`. Digital holography reads its
+camera connection and analysis settings from that config directly.
+
 For the SLM example, place the mask file at:
 
 ```text

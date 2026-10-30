@@ -15,10 +15,11 @@ def main():
 
         # Uncomment individual examples after choosing a suitable position in the stage's units.
         # mount.MoveAbs(AXIS, 0.1)  # Waits until the move finishes; raises on failure.
-        # mount.HomeAxis(AXIS)  # Starts homing if the axis needs it; check GetStatus().
+        # mount.MoveRel(AXIS, 0.01)  # Checked relative move; waits by default.
+        # mount.HomeAxis(AXIS)  # Waits until homing finishes.
         # mount.StopAll()
     finally:
-        mount.close()
+        mount.CloseStage()
 
 
 if __name__ == "__main__":

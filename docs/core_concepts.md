@@ -47,8 +47,15 @@ connection settings and per-axis configuration, capabilities and live feedback
 in one dictionary. Supplying an axis reads only that axis; omitting it reads all
 axes. The server consumes that same dictionary. Raw protocol decoding remains
 private, and duplicate property, capability, position and raw-status getters are
-removed from these wrappers. The client also exposes `GetStatus` for the cached
-server feedback, with age and connection information.
+removed from these wrappers. The client also exposes `GetStatus` for the
+server feedback, with age and connection information. It is the sole public
+status getter on the client and simulator as well as the serial drivers. The
+server forwards this dictionary directly, adding operation and connection
+feedback rather than constructing separate properties/capabilities layouts.
+`MoveAbs`, `MoveRel` and `HomeAxis` wait by default on both clients and drivers;
+the server explicitly uses nonblocking driver calls to keep serving requests.
+`CloseStage` closes the selected driver or client connection. The motor client,
+server, bridge, widget and simulator all use `time.perf_counter()` for intervals.
 
 Each Thorlabs controller has a self-contained driver file: BSC203, KDC101,
 KST201 or UMC2. Its serial `write`/`query`, packet decoding, calibration and motion
@@ -60,10 +67,20 @@ contains both request writing and reply parsing. UMC2's
 method of the same name selects the supplied profiles and checks calibration,
 mount compatibility and travel limits before connecting.
 
-The widget sees only the motor client's commands and cached state. Start server
+The motor client is synchronous and owns no Python thread, queue, events or
+status cache. `GetStatus()` always sends a ZMQ request. The widget calls movement
+methods with `wait=False` and uses Tkinter `after()` callbacks for status polling
+and held-key jog refreshes. A ZMQ call can hold a GUI callback until its bounded
+reply timeout. Communication-failure recovery and explicit stop-on-GUI-close
+belong to the widget; closing a script client only disconnects it.
+
+The widget sees only the motor client's commands and server feedback. Start server
 and widget separately, even for a local simulator demo. A bridge
 may forward a remote server to local clients; it never owns a hardware driver.
-The simulator is simply another driver.
+The simulator is simply another driver. It exposes the same per-axis status,
+counts/physical-unit conversions, checked moves, speed limits and context-manager
+lifetime as the hardware drivers. Its calibration is explicitly simulated;
+`CloseStage()` stops its motion and closes that simulated connection.
 
 ## digHolo
 
