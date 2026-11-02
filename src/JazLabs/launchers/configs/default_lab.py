@@ -358,3 +358,21 @@ POWER_METER_CONFIG = {
     "resource": "GPIB0::1::INSTR",
     "units": "mW",
 }
+
+# uhubctl is an OS executable, installed only on the hub-connected computer.
+USB_HUB_SERVERS = [
+    {
+        "name": "usb_hub",
+        "host": "127.0.0.1",
+        "client_host": "127.0.0.1",
+        "command_port": 50951,
+        "local_host": "127.0.0.1",
+        "local_command_port": 51951,
+        "remote_host": None,
+        "binary": None,  # Discover uhubctl on PATH, or set its absolute path.
+        "command_timeout": 25.0,  # Per uhubctl subprocess; a write can run three.
+        "bridge_timeout_ms": 90000,
+        "timeout_ms": 100000,
+        "enabled": False,
+    },
+]

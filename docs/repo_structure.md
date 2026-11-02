@@ -32,6 +32,7 @@ docs/
 |-- repo_structure.md
 `-- guides/
     |-- camera-dark-frames.md
+    |-- usb-hub.md
     |-- instrument-client-examples.md
     |-- launch-servers-viewers-and-guis.md
     `-- intensity-based-slm-centre-alignment.md
@@ -87,6 +88,7 @@ hardware/
 |-- OpticalSwitch/      # Optical switch stack and JDS drivers
 |-- OSA/                # Optical spectrum analyzer utilities/manuals
 |-- Oscilloscope/       # Oscilloscope helper libraries
+|-- USBHub/             # uhubctl driver, client, server, bridge and widget
 |-- PowerMeters/        # Thorlabs and Santec power meter utilities
 |-- SLM/                # SLM stacks, viewers, phase masks, and vendor backends
 |-- TimeTagger/         # Time Tagger server, bridge, client, and measurements

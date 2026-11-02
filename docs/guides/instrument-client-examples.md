@@ -19,6 +19,7 @@ before using them.
 | SLM and phase masks | Connect an `SLMClient`, pass it into `PhaseMaskObject`, load a `.mat` mask set, and display every mode |
 | Camera | Change exposure, acquire continuous and software-triggered frames, return to continuous mode, change ROI, and restore the full frame |
 | Motorised mount | Select a named server/bridge config, read axis feedback, and optionally home or move with completion checks |
+| USB hub | Read topology/status and optionally switch a verified endpoint through a client |
 | Tunable laser | Connect, change wavelength, read wavelength, and read power |
 | Optical switch | Connect, read the selected port, select another port, and read it back |
 | DAC/DAQ | Connect, set one channel voltage, and read it back |

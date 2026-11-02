@@ -184,6 +184,20 @@ def optical_switch_tasks(config_name, config, switch_name=None):
             )
 
 
+def usb_hub_tasks(config_name, config, hub_name=None):
+    hubs = config.get("USB_HUB_SERVERS", [])
+    if hub_name is not None:
+        hubs = [hub for hub in hubs if hub.get("name") == hub_name]
+        if not hubs:
+            raise ValueError(f"No USB hub named {hub_name!r}")
+    python = os.environ.get("JAZLABS_USB_HUB_SERVER_PYTHON", sys.executable)
+    for hub in hubs:
+        if hub.get("enabled", False):
+            yield (hub["name"], module_command(
+                "JazLabs.launchers.launch_usb_hub_server",
+                [("--config", config_name), ("--name", hub["name"])], python))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Start JazLabs servers in tmux.")
     parser.add_argument(
@@ -197,6 +211,7 @@ def build_parser():
             "slm-milk-server",
             "daq",
             "optical-switch",
+            "usb-hub",
         ),
         help="Server group to start.",
     )
@@ -224,7 +239,7 @@ def main(argv=None):
 
     if args.target == "all" and args.name is not None:
         raise SystemExit(
-            "--name can only be used with camera, daq, or optical-switch."
+            "--name can only be used with camera, daq, optical-switch, or usb-hub."
         )
 
     tasks = []
@@ -261,6 +276,10 @@ def main(argv=None):
     if args.target in ("all", "optical-switch"):
         switch_name = args.name if args.target == "optical-switch" else None
         tasks.extend(optical_switch_tasks(args.config, config, switch_name))
+
+    if args.target in ("all", "usb-hub"):
+        hub_name = args.name if args.target == "usb-hub" else None
+        tasks.extend(usb_hub_tasks(args.config, config, hub_name))
 
     if not tasks:
         raise SystemExit("No enabled server tasks matched the request.")

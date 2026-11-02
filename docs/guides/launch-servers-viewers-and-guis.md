@@ -68,6 +68,7 @@ Jump to an instrument:
 - [Optical switches](#example-7-optical-switch-server-and-gui)
 - [Digital holography](#example-8-digital-holography-viewer)
 - [Power meters](#example-9-power-meter-connection)
+- [USB hubs](#example-10-usb-hub-server-bridge-and-widget)
 
 ## Example 1: Camera Server and Clients on One Computer
 
@@ -982,6 +983,42 @@ Thorlabs meter wrappers are under `hardware/PowerMeters/Thorlabs`; their backend
 and wavelength settings differ from Santec. They currently include a legacy
 notebook widget, rather than a launcher GUI. No `jazlabs-server-power-meter` or
 `jazlabs-view-power-meter` command is provided.
+
+## Example 10: USB Hub Server, Bridge, and Widget
+
+The `usb_hub` example in `USB_HUB_SERVERS` in `default_lab.py` controls an
+RSH-A10 through the installed uhubctl executable. Install uhubctl and configure
+USB permissions on the hub computer, then start the server and GUI in separate
+terminals:
+
+```bash
+jazlabs-server-usb-hub --config default_lab --name usb_hub
+jazlabs-view-usb-hub --config default_lab --name usb_hub
+```
+
+The hardware server owns USB access; the GUI uses a synchronous client. It has no worker thread and can
+pause while a request completes or times out. Configure the executable with
+`binary` or `--uhubctl` if it is not on PATH.
+
+For a remote control computer, start the hardware server with `--host 0.0.0.0`
+on the trusted lab network, then run these on the control computer:
+
+```bash
+jazlabs-bridge-usb-hub --config default_lab --name usb_hub --remote-host 192.168.1.25
+jazlabs-view-usb-hub --config default_lab --name usb_hub --bridge
+```
+
+The local bridge port is 51951; the hardware-server port is 50951. Replace the
+IP with the hardware computer's address. Ports and timeouts are set in the
+default config. Keep the client timeout longer than the bridge timeout.
+The bridge and widget do not import a USB driver or invoke uhubctl.
+
+Refresh, select a root and map physical sockets to detected endpoints before
+arming the controls. Mappings are session-only and reset on owner restart or
+root change. Closing the widget/server leaves port power states unchanged.
+See [USB hub setup and physical socket mapping](usb-hub.md) for installation,
+the mapping procedure, direct-driver/client examples, and troubleshooting.
+Reinstall with `pip install -e .` to register the three new console commands.
 
 ## Launch Order at a Glance
 

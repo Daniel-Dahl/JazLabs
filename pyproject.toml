@@ -58,6 +58,9 @@ all-pip = [
 ]
 
 [project.scripts]
+jazlabs-server-usb-hub = "JazLabs.launchers.launch_usb_hub_server:main"
+jazlabs-bridge-usb-hub = "JazLabs.launchers.launch_usb_hub_bridge:main"
+jazlabs-view-usb-hub = "JazLabs.launchers.launch_usb_hub_widget:main"
 jazlabs-server-motor = "JazLabs.launchers.launch_motorised_stage_server:main"
 jazlabs-bridge-motor = "JazLabs.launchers.launch_motorised_stage_bridge:main"
 jazlabs-view-motor = "JazLabs.launchers.launch_motorised_stage_widget:main"
