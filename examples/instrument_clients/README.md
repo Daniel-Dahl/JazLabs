@@ -4,11 +4,15 @@ These examples are intentionally short. Start the corresponding JazLabs server,
 edit the connection settings and requested hardware value near the top of the
 file, then run the script.
 
+Connection defaults match `default_lab.py`. The digital holography example
+reads its camera connection and analysis settings from that config directly.
+
 - `slm_client.py`: connect, create a phase-mask object, load a `.mat` mask set,
   and display each mode.
 - `camera_client.py`: exposure, frames, software/continuous triggering, and a
   temporary ROI that is reset to full frame.
 - `motorised_mount_client.py`: read and move a mount axis.
+- `usb_hub_client.py`: read topology/status and optionally switch a mapped endpoint.
 - `laser_client.py`: change wavelength and read power.
 - `optical_switch_client.py`: read and select a port.
 - `dac_client.py`: set and read one output voltage.

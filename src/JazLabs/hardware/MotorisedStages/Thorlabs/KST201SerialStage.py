@@ -1,18 +1,19 @@
 """
+
+Use one caller at a time for this driver/serial port.
 Serial (APT protocol) control for a Thorlabs KST201 stepper controller.
 
 The default actuator profile is the ZFS13B. Native APT positions are Trinamic
-microsteps; convenience methods are supplied for positions in millimetres.
+microsteps; MoveAbs/MoveRel use mm by default and accept units="counts".
 """
 
 from dataclasses import dataclass
+import math
 import struct
 import time
 import warnings
 
 import serial
-
-from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
 
 __all__ = [
     "ActuatorProfile",
@@ -95,7 +96,7 @@ _ACTUATORS = {"ZFS13B": ZFS13B_ACTUATOR}
 _MOUNTS = {"PY004/M": PY004_M_MOUNT, "PY004": PY004_M_MOUNT}
 
 
-class KST201SerialStage(APTSerialMotion):
+class KST201SerialStage:
     """
     Control one ZFS13B actuator on a KST201 controller using APT messages.
 
@@ -118,10 +119,11 @@ class KST201SerialStage(APTSerialMotion):
 
     Notes
     -----
-    - ``MoveAbs`` and ``MoveRel`` use native controller microsteps.
-    - ``MoveAbsMM`` and ``MoveRelMM`` use millimetres of actuator motion.
+    - ``MoveAbs`` and ``MoveRel`` use mm unless units="counts" is specified.
     - One KST201 drives one actuator. A two-axis mount uses two controllers.
     """
+
+    controller = "KST201Serial"
 
     def __init__(
         self,
@@ -136,47 +138,20 @@ class KST201SerialStage(APTSerialMotion):
         baudrate: int = 115200,
         timeout: float = 0.25,
         move_timeout: float = 30.0,
+        limits=None,
     ) -> None:
         self.port = port
         self.baudrate = int(baudrate)
         self.timeout = float(timeout)
         self.move_timeout = float(move_timeout)
-        if self.move_timeout <= 0:
-            raise ValueError("move_timeout must be positive.")
-        self.actuator = self._resolve_actuator(actuator)
-        self.mount = self._resolve_mount(mount)
-        self.mount_axis = self._resolve_mount_axis(mount_axis)
-        self.channel = 1
+        # Select the configured actuator/mount and validate calibration and limits.
+        if any(not math.isfinite(value) or value <= 0 for value in (self.timeout, self.move_timeout)):
+            raise ValueError("timeout and move_timeout must be positive and finite")
+        self._identify_stage_parameters(actuator, mount, mount_axis,
+            minimum_mm, maximum_mm, safety_margin_mm, limits)
 
-        self.source = 0x01
-        self.destination = 0x50
-
-        self.MGMSG_HW_NO_FLASH_PROGRAMMING = 0x0018
-        self.MGMSG_MOT_REQ_POSCOUNTER = 0x0411
-        self.MGMSG_MOT_GET_POSCOUNTER = 0x0412
-        self.MGMSG_MOT_REQ_STATUSBITS = 0x0429
-        self.MGMSG_MOT_GET_STATUSBITS = 0x042A
-        self.MGMSG_MOT_MOVE_HOME = 0x0443
-        self.MGMSG_MOT_MOVE_RELATIVE = 0x0448
-        self.MGMSG_MOT_MOVE_ABSOLUTE = 0x0453
-        self.MGMSG_MOT_MOVE_COMPLETED = 0x0464
-        self.MGMSG_MOT_SET_TSTACTUATORTYPE = 0x04FE
-
-        self.minimum_mm, self.maximum_mm = self._build_motion_limits(
-            minimum_mm, maximum_mm, safety_margin_mm
-        )
-        self.minimum_counts = self.actuator.mm_to_counts(self.minimum_mm)
-        self.maximum_counts = self.actuator.mm_to_counts(self.maximum_mm)
-
-        if self.mount is not None and minimum_mm is None and maximum_mm is None:
-            warnings.warn(
-                f"{self.mount.name} selected without calibrated actuator limits. "
-                "Moves are restricted to the ZFS13B travel with the requested "
-                "safety margin, but this cannot guarantee protection of the mount.",
-                UserWarning,
-                stacklevel=2,
-            )
-
+        # Open the single motor channel after its configuration has been checked.
+        self._received = bytearray()
         self.serial = serial.Serial(
             port=self.port,
             baudrate=self.baudrate,
@@ -187,244 +162,398 @@ class KST201SerialStage(APTSerialMotion):
             stopbits=serial.STOPBITS_ONE,
         )
 
-        self._send_short(self.MGMSG_HW_NO_FLASH_PROGRAMMING, 0x00)
-        time.sleep(0.05)
-
-        if configure_actuator:
-            self.ConfigureActuator()
-
-        self.GetPositions()
-
-        self._configure_motion(
-            {self.mount_axis or "X": self.destination}, units="mm",
-            counts_per_unit=self.actuator.microsteps_per_mm,
-            limits={self.mount_axis or "X": (self.minimum_mm, self.maximum_mm)},
-        )
-
-    def __del__(self):
         try:
-            self.CloseStage()
+            self.serial.timeout = min(float(self.serial.timeout or .05), .05)
+            self.write(0x0018, 0x50, 0)  # Disable flash programming.
+            time.sleep(.05)  # Let the controller settle after startup configuration.
+
+            # Tell the controller which actuator is fitted when configuration is enabled.
+            if configure_actuator:
+                self.write(0x04FE, 0x50, self.actuator.actuator_type_id)
         except Exception:
-            pass
+            self.CloseStage()
+            raise
 
-    @staticmethod
-    def _resolve_actuator(actuator: str | ActuatorProfile) -> ActuatorProfile:
+    def write(self, message, destination, param1=1, param2=0, payload=None):
+        """Send an APT command to a controller/bay using its binary header."""
+        if payload is None:
+            packet = struct.pack("<HBBBB", message, param1, param2, destination, 1)
+        else:
+            # The destination's high bit marks a message carrying a payload.
+            packet = struct.pack("<HHBB", message, len(payload), destination | 0x80, 1) + payload
+        # Send the assembled bytes to the controller.
+        self.serial.write(packet)
+
+    def query(self, message, response, destination, timeout=.5):
+        """Send an APT request and read its complete reply from the selected bay."""
+        self.write(message, destination)
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            # Read the six-byte header before checking for an optional payload.
+            if len(self._received) >= 6:
+                header = bytes(self._received[:6])
+                payload_length = struct.unpack_from("<H", header, 2)[0] if header[4] & 0x80 else 0
+                if payload_length > 4096:
+                    raise RuntimeError("Invalid APT payload length")
+
+                # Decode only complete packets; keep partial replies buffered.
+                if len(self._received) >= 6 + payload_length:
+                    payload = bytes(self._received[6:6 + payload_length])
+                    del self._received[:6 + payload_length]
+                    reply_id = struct.unpack_from("<H", header)[0]
+                    if reply_id in (0x0080, 0x0081):
+                        raise RuntimeError(f"APT controller error: {header.hex()} {payload.hex()}")
+
+                    # Match the expected reply, its source bay and motor channel.
+                    if reply_id == response and header[5] == destination:
+                        if len(payload) < 2 or struct.unpack_from("<H", payload)[0] != 1:
+                            raise RuntimeError("Unexpected APT channel")
+                        return payload
+                    continue
+
+            # Serial reads can return fragments; append them until a packet is complete.
+            self._received.extend(self.serial.read(max(1, min(4096, self.serial.in_waiting))))
+        raise TimeoutError(f"No APT 0x{response:04X} response from 0x{destination:02X}")
+
+    def _identify_stage_parameters(self, actuator, mount, mount_axis,
+                                   minimum_mm, maximum_mm, safety_margin_mm, limits):
+        """Use the supplied profiles to identify calibration and allowed travel.
+
+        Unlike UMC2, this driver selects a configured actuator; it does not query
+        the attached motor for an automatically detected stage description.
+        """
+        # Resolve an actuator name or accept a supplied actuator profile.
         if isinstance(actuator, ActuatorProfile):
-            return actuator
-        key = str(actuator).strip().upper()
-        try:
-            return _ACTUATORS[key]
-        except KeyError as exc:
-            raise ValueError(f"Unknown KST201 actuator '{actuator}'. Supported: ZFS13B.") from exc
+            self.actuator = actuator
+        else:
+            key = str(actuator).strip().upper()
+            if key not in _ACTUATORS:
+                raise ValueError(f"Unknown KST201 actuator '{actuator}'. Supported: ZFS13B.")
+            self.actuator = _ACTUATORS[key]
 
-    @staticmethod
-    def _resolve_mount(mount: str | MountProfile | None) -> MountProfile | None:
+        # The optional mount describes the assembly driven by the linear actuator.
         if mount is None or isinstance(mount, MountProfile):
-            return mount
-        key = str(mount).strip().upper()
-        try:
-            return _MOUNTS[key]
-        except KeyError as exc:
-            raise ValueError(f"Unknown KST201 mount '{mount}'. Supported: PY004/M.") from exc
+            self.mount = mount
+        else:
+            key = str(mount).strip().upper()
+            if key not in _MOUNTS:
+                raise ValueError(f"Unknown KST201 mount '{mount}'. Supported: PY004/M.")
+            self.mount = _MOUNTS[key]
 
-    def _resolve_mount_axis(self, mount_axis: str | None) -> str | None:
+        # A mount must support the actuator and name one of its documented axes.
+        self.mount_axis = None
         if self.mount is None:
             if mount_axis is not None:
                 raise ValueError("mount_axis can only be specified when mount is specified.")
-            return None
-        if self.actuator.name not in self.mount.supported_actuators:
-            raise ValueError(f"{self.actuator.name} is not listed for mount {self.mount.name}.")
-        if mount_axis is None:
-            raise ValueError("Specify mount_axis='PITCH' or mount_axis='YAW' for PY004/M.")
-        axis = str(mount_axis).strip().upper()
-        self.mount.angle_range_deg(axis)
-        return axis
+        else:
+            if self.actuator.name not in self.mount.supported_actuators:
+                raise ValueError(f"{self.actuator.name} is not listed for mount {self.mount.name}.")
+            if mount_axis is None:
+                raise ValueError("Specify mount_axis='PITCH' or mount_axis='YAW' for PY004/M.")
+            self.mount_axis = str(mount_axis).strip().upper()
+            self.mount.angle_range_deg(self.mount_axis)
+        axis = self.mount_axis or "X"
 
-    def _build_motion_limits(
-        self,
-        minimum_mm: float | None,
-        maximum_mm: float | None,
-        safety_margin_mm: float,
-    ) -> tuple[float, float]:
+        # Check the actuator's conversion from millimetres to controller counts.
+        scale = float(self.actuator.microsteps_per_mm)
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError("Actuator microsteps_per_mm must be positive and finite")
+
+        # Start with actuator travel or calibrated endpoints for the installed mount.
         margin = float(safety_margin_mm)
-        if margin < 0:
+        if not math.isfinite(margin) or margin < 0:
             raise ValueError("safety_margin_mm must be non-negative.")
         lower = 0.0 if minimum_mm is None else float(minimum_mm)
         upper = self.actuator.travel_mm if maximum_mm is None else float(maximum_mm)
-        if lower < 0 or upper > self.actuator.travel_mm or lower >= upper:
+        if not all(math.isfinite(v) for v in (lower, upper)) or lower < 0 or upper > self.actuator.travel_mm or lower >= upper:
             raise ValueError(
                 f"Motion endpoints must satisfy 0 <= minimum_mm < maximum_mm <= "
                 f"{self.actuator.travel_mm:g} for {self.actuator.name}."
             )
+
+        # Keep ordinary moves inside both endpoints by the requested safety margin.
         lower += margin
         upper -= margin
         if lower >= upper:
             raise ValueError("safety_margin_mm leaves no usable actuator travel.")
-        return (lower, upper)
+        self.minimum_mm, self.maximum_mm = lower, upper
+        self.minimum_counts = self.actuator.mm_to_counts(lower)
+        self.maximum_counts = self.actuator.mm_to_counts(upper)
 
-    def _check_axis(self, axis) -> None:
-        valid = {0, 1, "0", "1", "X", "x", "U", "u"}
-        if self.mount_axis is not None:
-            valid.update({self.mount_axis, self.mount_axis.lower()})
-        if axis not in valid:
-            extra = f", '{self.mount_axis}'" if self.mount_axis else ""
-            raise ValueError(f"Invalid KST201 axis. Use one of: 0, 1, 'X', 'U'{extra}.")
+        # Additional limits may narrow this allowed travel, but cannot widen it.
+        if set(limits or {}) - {axis}:
+            raise ValueError(f"Travel limit key must be {axis}")
+        lower, upper = (limits or {}).get(axis, (lower, upper))
+        if any(value is None or not math.isfinite(value) for value in (lower, upper)) or lower >= upper:
+            raise ValueError(f"Invalid travel limits for {axis}")
+        if lower < self.minimum_mm or upper > self.maximum_mm:
+            raise ValueError("Limits cannot widen the driver's allowed travel")
+        self._limits = {axis: (lower, upper)}
 
-    def _check_target_counts(self, value: int | float) -> int:
-        target = int(round(value))
-        if not self.minimum_counts <= target <= self.maximum_counts:
-            target_mm = self.actuator.counts_to_mm(target)
-            raise ValueError(
-                f"Target {target} microsteps ({target_mm:.6f} mm) is outside "
-                f"the allowed range {self.minimum_counts}..{self.maximum_counts} "
-                f"microsteps ({self.minimum_mm:g}..{self.maximum_mm:g} mm)."
-            )
-        return target
-
-    def _send_short(self, msg_id: int, param1: int, param2: int = 0) -> None:
-        msg = struct.pack(
-            "<HBBBB",
-            msg_id,
-            int(param1),
-            int(param2),
-            self.destination,
-            self.source,
-        )
-        self.serial.write(msg)
-
-    def _send_data(self, msg_id: int, payload: bytes) -> None:
-        header = struct.pack(
-            "<HHBB",
-            msg_id,
-            len(payload),
-            self.destination | 0x80,
-            self.source,
-        )
-        self.serial.write(header + payload)
-
-    def _read_exact(self, nbytes: int) -> bytes:
-        data = self.serial.read(nbytes)
-        if len(data) != nbytes:
-            raise TimeoutError(f"Timed out reading {nbytes} bytes (got {len(data)})")
-        return data
-
-    def _read_packet(self) -> tuple[int, bytes]:
-        header = self._read_exact(6)
-        msg_id = struct.unpack("<H", header[:2])[0]
-        if (header[4] & 0x80) == 0:
-            return (msg_id, b"")
-        payload_len = struct.unpack("<H", header[2:4])[0]
-        return (msg_id, self._read_exact(payload_len))
-
-    def _wait_for_payload(self, response_id: int, timeout_s: float = 2.0) -> bytes:
-        t0 = time.time()
-        while time.time() - t0 < timeout_s:
-            try:
-                msg_id, payload = self._read_packet()
-            except TimeoutError:
-                continue
-            if msg_id == response_id:
-                return payload
-        raise TimeoutError(f"Timeout waiting for APT response 0x{response_id:04X}")
-
-    def _wait_move_completed(self, timeout_s: float | None = None) -> None:
-        timeout_s = self.move_timeout if timeout_s is None else float(timeout_s)
-        t0 = time.time()
-        while time.time() - t0 < timeout_s:
-            try:
-                msg_id, payload = self._read_packet()
-            except TimeoutError:
-                continue
-            if msg_id == self.MGMSG_MOT_MOVE_COMPLETED:
-                if len(payload) < 2 or struct.unpack("<H", payload[:2])[0] == self.channel:
-                    return
-        raise TimeoutError(f"Timeout waiting {timeout_s:g} s for KST201 move complete")
-
-    def ConfigureActuator(self) -> None:
-        """Tell the KST201 to use its built-in configuration for this actuator."""
-        self._send_short(self.MGMSG_MOT_SET_TSTACTUATORTYPE, self.actuator.actuator_type_id)
-
-    def GetProperties(self) -> dict:
-        angle_range = None
-        if self.mount is not None and self.mount_axis is not None:
-            angle_range = self.mount.angle_range_deg(self.mount_axis)
-        return {
-            "stage_type": "KST201Serial",
-            "port": self.port,
-            "baudrate": self.baudrate,
-            "timeout": self.timeout,
-            "move_timeout": self.move_timeout,
-            "channel": self.channel,
-            "units": "controller_microsteps",
-            "actuator": self.actuator.name,
-            "microsteps_per_mm": self.actuator.microsteps_per_mm,
+        # Save the channel address, mm/counts calibration and descriptive metadata.
+        self._axis_destinations = {axis: 0x50}
+        self._axis_profiles = {axis: {"label": axis, "units": "mm",
+            "counts_per_unit": scale, "unit_scales": {"counts": 1., "mm": scale}}}
+        self._controller_settings = {
+            "actuator": self.actuator.name, "microsteps_per_mm": self.actuator.microsteps_per_mm,
             "actuator_travel_mm": self.actuator.travel_mm,
-            "allowed_position_mm": (self.minimum_mm, self.maximum_mm),
-            "allowed_position_counts": (self.minimum_counts, self.maximum_counts),
             "mount": None if self.mount is None else self.mount.name,
             "mount_axis": self.mount_axis,
-            "mount_angle_range_deg": angle_range,
-            "mount_note": None if self.mount is None else self.mount.note,
-        }
+            "mount_angle_range_deg": None if self.mount is None else self.mount.angle_range_deg(axis),
+            "mount_note": None if self.mount is None else self.mount.note}
+        if self.mount is not None and minimum_mm is None and maximum_mm is None:
+            warnings.warn(
+                f"{self.mount.name} selected without calibrated actuator limits. "
+                "Moves are restricted to the ZFS13B travel with the requested "
+                "safety margin, but this cannot guarantee protection of the mount.",
+                UserWarning,
+                stacklevel=3,
+            )
 
-    def GetPositions(self) -> list[float]:
-        self._send_short(self.MGMSG_MOT_REQ_POSCOUNTER, self.channel)
-        payload = self._wait_for_payload(self.MGMSG_MOT_GET_POSCOUNTER)
-        if len(payload) < 6:
-            raise RuntimeError("KST201 returned an invalid position response.")
-        channel, position = struct.unpack("<Hi", payload[:6])
-        if channel != self.channel:
-            raise RuntimeError(f"KST201 returned position for unexpected channel {channel}.")
-        return [float(position)]
+    def GetStatus(self, axis=None):
+        """Read configuration and live feedback into one dictionary.
 
-    def GetPositionsMM(self) -> list[float]:
-        return [self.actuator.counts_to_mm(position) for position in self.GetPositions()]
+        Positions and limits use the axis's default units. The positions and
+        limits_by_unit dictionaries also include every calibrated alternative.
+        """
+        # Select one axis, or read every configured axis when none is specified.
+        axes = list(self._axis_destinations) if axis is None else [axis]
+        if any(name not in self._axis_destinations for name in axes):
+            raise ValueError(f"Unknown axis {axis!r}; choose from {list(self._axis_destinations)}")
+        result = {"controller": self.controller, "port": self.port,
+                  "baudrate": self.baudrate, "timeout": self.timeout,
+                  "move_timeout": self.move_timeout,
+                  **self._controller_settings, "axes": {}}
+        for name in axes:
+            destination = self._axis_destinations[name]
+            # Read the native position counts, then the motor status flags.
+            payload = self.query(0x0411, 0x0412, destination)
+            if len(payload) != 6:
+                raise RuntimeError("Invalid APT position packet")
+            position = struct.unpack_from("<i", payload, 2)[0]
+            payload = self.query(0x0429, 0x042A, destination)
+            if len(payload) != 6:
+                raise RuntimeError("Invalid APT status packet")
+            bits = struct.unpack_from("<I", payload, 2)[0]
+            profile = self._axis_profiles[name]
+            scale = profile["counts_per_unit"]
+            lower, upper = self._limits[name]
+            step = 100 if profile["units"] == "counts" else .01
 
-    def MoveAbs(self, axis, value, wait: bool = False) -> None:
-        self._check_axis(axis)
-        target = self._check_target_counts(value)
-        self._send_data(self.MGMSG_MOT_MOVE_ABSOLUTE, struct.pack("<Hi", self.channel, target))
-        if wait:
-            self._wait_move_completed()
+            # Convert the position into every calibrated unit before assembling feedback.
+            positions = {unit: position / unit_scale for unit, unit_scale in profile["unit_scales"].items()}
+            fault_mask = 0x40000000 | 0x00020000 | 0x00040000 | 0x00080000 | 0x02000000 | 0x08000000
+            # Include active-command and initialising flags after direction flags clear.
+            busy_bits = 0xF0 | 0x800 | 0x20000000
 
-    def MoveAbsMM(self, axis, value_mm: float, wait: bool = False) -> None:
-        self.MoveAbs(axis, self.actuator.mm_to_counts(value_mm), wait=wait)
+            # Return configuration and decoded feedback together for this axis.
+            result["axes"][name] = {
+                "label": profile["label"], "units": profile["units"],
+                "limits": [lower, upper], "resolution": 1 / scale, "tolerance": 2 / scale,
+                "step": step, "unit_scales": dict(profile["unit_scales"]),
+                "step_by_unit": {unit: step * scale / unit_scale for unit, unit_scale in profile["unit_scales"].items()},
+                "resolution_by_unit": {unit: 1 / unit_scale for unit, unit_scale in profile["unit_scales"].items()},
+                "limits_by_unit": {
+                    unit: [None if lower is None else lower * scale / unit_scale,
+                           None if upper is None else upper * scale / unit_scale]
+                    for unit, unit_scale in profile["unit_scales"].items()},
+                "supports": {"home": True, "stop": True, "speed": False},
+                "position": positions[profile["units"]], "positions": positions,
+                "controller_status_bits": bits, "moving": bool(bits & busy_bits),
+                "homing": bool(bits & 0x200), "homed": bool(bits & 0x400),
+                "enabled": bool(bits & 0x80000000),
+                "cw_hardware_limit": bool(bits & 1), "ccw_hardware_limit": bool(bits & 2),
+                "fault": f"APT fault 0x{bits:08X}" if bits & fault_mask else None, "speed": None}
+        return result
 
-    def MoveRel(self, axis, value, wait: bool = False) -> None:
-        self._check_axis(axis)
-        delta = int(round(value))
-        current = int(round(self.GetPositions()[0]))
-        self._check_target_counts(current + delta)
-        self._send_data(self.MGMSG_MOT_MOVE_RELATIVE, struct.pack("<Hi", self.channel, delta))
-        if wait:
-            self._wait_move_completed()
+    def MoveAbs(self, axis, target, wait=True, timeout=None, units=None):
+        """Move within driver limits; wait for stopped, in-tolerance feedback by default.
 
-    def MoveRelMM(self, axis, value_mm: float, wait: bool = False) -> None:
-        self.MoveRel(axis, self.actuator.mm_to_counts(value_mm), wait=wait)
+        Omit units to use the axis's configured units, or specify 'counts'/'mm'.
+        Nonblocking moves have the same checks before sending the command.
+        """
+        # Check the wait timeout before preparing or sending a move.
+        timeout = self.move_timeout if timeout is None else float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
 
-    def GetStatusBits(self) -> dict:
-        self._send_short(self.MGMSG_MOT_REQ_STATUSBITS, self.channel)
-        payload = self._wait_for_payload(self.MGMSG_MOT_GET_STATUSBITS)
-        if len(payload) < 6:
-            raise RuntimeError("KST201 returned invalid status bits.")
-        channel, bits = struct.unpack("<HI", payload[:6])
-        if channel != self.channel:
-            raise RuntimeError(f"KST201 returned status for unexpected channel {channel}.")
-        return {
-            "raw": bits,
-            "cw_hardware_limit": bool(bits & 0x00000001),
-            "ccw_hardware_limit": bool(bits & 0x00000002),
-            "homing": bool(bits & 0x00000200),
-            "homed": bool(bits & 0x00000400),
-        }
+        # Validate the target and convert the requested units into this mount's default units.
+        profile = self._axis_profiles[axis]
+        scale = profile["counts_per_unit"]
+        target = float(target)
+        if not math.isfinite(target):
+            raise ValueError("Target must be finite")
+        requested_units = profile["units"] if units is None else units
+        if requested_units == "counts" and target != int(target):
+            raise ValueError("Counts must be integers")
+        target = self.ConvertPosition(axis, target, requested_units, profile["units"])
 
-    def HomeAll(self) -> None:
-        self._send_short(self.MGMSG_MOT_MOVE_HOME, self.channel)
+        # Both travel endpoints must be known before any ordinary move is allowed.
+        lower, upper = self._limits[axis]
+        if lower is None or upper is None:
+            raise ValueError(f"{axis}: configure travel limits before moving")
 
-    def SetNominal(self, wait: bool = False) -> None:
-        midpoint_mm = (self.minimum_mm + self.maximum_mm) / 2.0
-        self.MoveAbsMM(self.mount_axis or "X", midpoint_mm, wait=wait)
+        # Check the requested target against the allowed travel.
+        if not lower <= target <= upper:
+            raise ValueError("Target is outside the configured actuator travel")
 
-    def CloseStage(self) -> None:
-        if self.serial is not None and self.serial.is_open:
+        # Round to a controller count, then check the actual destination and integer range.
+        counts = round(target * scale)
+        rounded_target = counts / scale
+        if not lower <= rounded_target <= upper:
+            raise ValueError("Rounded target is outside the configured actuator travel")
+        if not -(2**31) <= counts < 2**31:
+            raise ValueError("Target exceeds signed 32-bit controller counts")
+
+        # Read fresh feedback: the mount must be stopped, enabled, homed and fault-free.
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["fault"]:
+            raise RuntimeError(status["fault"])
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before issuing another move")
+        if not status["enabled"] or not status["homed"]:
+            raise RuntimeError("Enable and home this axis before moving")
+
+        # Pack channel 1 and its target count into the command payload.
+        payload = struct.pack("<Hi", 1, counts)
+        try:
+            # This write sends the absolute-move command to the selected bay.
+            self.write(0x0453, self._axis_destinations[axis], payload=payload)
+
+            # Nonblocking callers take over monitoring once the command has been sent.
+            if not wait:
+                return None
+
+            # Blocking callers poll feedback until stopped at the rounded target or timed out.
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                status = self.GetStatus(axis)["axes"][axis]
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before the target was reached")
+                if not status["homed"] and not status["homing"]:
+                    raise RuntimeError("Axis lost its home reference during the move")
+
+                # A stopped motor is successful only when its position is within two counts.
+                if (not status["moving"] and not status["homing"]
+                        and abs(status["position"] - rounded_target) <= 2 / scale):
+                    return status
+            raise TimeoutError(f"{axis} did not finish its move within {timeout:g} s")
+
+        # Request a stop on both mounts if sending or monitoring the move fails.
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop failed: {stop_exc}") from exc
+            raise
+
+    def MoveRel(self, axis, distance, wait=True, timeout=None, units=None):
+        """Compute an absolute destination so relative moves obey the same limits."""
+        # Validate the increment and express it in this mount's default units.
+        profile = self._axis_profiles[axis]
+        requested_units = profile["units"] if units is None else units
+        distance = float(distance)
+        if requested_units == "counts" and (not math.isfinite(distance) or distance != int(distance)):
+            raise ValueError("Counts must be finite integers")
+        distance = self.ConvertPosition(axis, distance, requested_units, profile["units"])
+
+        # Read a stopped position so the relative destination has a stable starting point.
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before issuing another move")
+
+        # Use the absolute-move checks for the resulting destination, including travel limits.
+        return self.MoveAbs(axis, status["position"] + distance, wait=wait, timeout=timeout)
+
+    def SetNominal(self, wait=True, timeout=None):
+        """Move each axis halfway between its allowed travel endpoints."""
+        # Check every mount's limits before starting any nominal move.
+        for axis, (lower, upper) in self._limits.items():
+            if lower is None or upper is None:
+                raise ValueError(f"{axis}: configure travel limits before moving to nominal")
+
+        # Move each mount to its travel midpoint, rounded to a whole controller count.
+        for axis, (lower, upper) in self._limits.items():
+            scale = self._axis_profiles[axis]["counts_per_unit"]
+            midpoint = round((lower + upper) / 2 * scale) / scale
+            self.MoveAbs(axis, midpoint, wait=wait, timeout=timeout)
+
+    def HomeAxis(self, axis, wait=True, timeout=None):
+        """Home one axis and wait for stopped, homed feedback by default."""
+        # Validate the timeout and check the mount is enabled, stopped and fault-free.
+        timeout = self.move_timeout if timeout is None else float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        status = self.GetStatus(axis)["axes"][axis]
+        if status["fault"]:
+            raise RuntimeError(status["fault"])
+        if status["moving"] or status["homing"]:
+            raise RuntimeError("Wait for this axis to stop before homing")
+        if not status["enabled"]:
+            raise RuntimeError("Enable this axis before homing")
+
+        # Send the home command; ordinary-move travel limits do not constrain homing.
+        try:
+            self.write(0x0443, self._axis_destinations[axis])
+            if not wait:
+                return None
+
+            # Wait for the controller to report a stopped mount with a home reference.
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                status = self.GetStatus(axis)["axes"][axis]
+                if status["fault"]:
+                    raise RuntimeError(status["fault"])
+                if not status["enabled"]:
+                    raise RuntimeError("Axis disabled before homing finished")
+                if status["homed"] and not status["moving"] and not status["homing"]:
+                    return status
+            raise TimeoutError(f"{axis} did not finish homing within {timeout:g} s")
+
+        # Request a stop on both mounts if sending or monitoring homing fails.
+        except Exception as exc:
+            try:
+                self.StopAll()
+            except Exception as stop_exc:
+                raise RuntimeError(f"{exc}; stop failed: {stop_exc}") from exc
+            raise
+
+    def EnableAxis(self, axis, enabled=True):
+        # APT uses state 1 to enable the motor output and state 2 to disable it.
+        self.write(0x0210, self._axis_destinations[axis], 1, 1 if enabled else 2)
+
+    def StopAll(self):
+        # Attempt an immediate stop on both bays, even if one write fails.
+        failures = []
+        for destination in self._axis_destinations.values():
+            try:
+                self.write(0x0465, destination, 1, 1)
+            except Exception as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    def ConvertPosition(self, axis, value, from_units, to_units):
+        """Convert using this channel's calibration; never assume a counts/mm ratio."""
+        # Only allow units for which this mount has a calibration.
+        scales = self._axis_profiles[axis]["unit_scales"]
+        if from_units not in scales or to_units not in scales:
+            raise ValueError(f"{axis}: units unavailable; choose from {list(scales)}")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("Position must be finite")
+
+        # Convert to native counts first, then from counts to the requested units.
+        return value * scales[from_units] / scales[to_units]
+
+    def CloseStage(self):
+        if self.serial.is_open:
             self.serial.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.CloseStage()

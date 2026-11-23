@@ -1,10 +1,16 @@
 """New motor console: capability-driven layouts and leased hold-to-jog.
 
 Start the configured server before launching this widget. All I/O belongs to the
-motor client; Tk only submits intents and draws the client's cached state.
+motor client; Tk callbacks send commands and poll the server directly.
 """
+import logging
 import math
 import time
+
+
+from .MotorisedStage_Client import MotorCommandRejected
+
+logger = logging.getLogger(__name__)
 
 
 class MotorisedStageControlWindow:
@@ -41,6 +47,8 @@ class MotorisedStageControlWindow:
         self.message = tk.StringVar(value="Connecting…")
         self.keyboard_hint = tk.StringVar(value="Keyboard off · Escape stops all axes")
         self.local_error = None
+        self.has_connected = False
+        self.stop_pending_reason = None
         self._configure_style()
         self._build_shell()
         self.root.bind("<KeyPress>", self.key_pressed)
@@ -48,7 +56,6 @@ class MotorisedStageControlWindow:
         self.root.bind("<FocusOut>", self.focus_left)
         self.root.bind("<FocusIn>", self.focus_entered)
         self.root.bind("<Unmap>", self.window_hidden)
-        self.client.start()
         self.tick()
 
     def _configure_style(self):
@@ -353,11 +360,38 @@ class MotorisedStageControlWindow:
         return f"{value:.{decimals}f}"
 
     def send(self, command, axis=None, value=None):
+        """Send input immediately; movement calls acknowledge without waiting for travel."""
         try:
-            self.client.submit(command, axis, value)
+            if command == "absolute":
+                self.client.MoveAbs(axis, value, wait=False)
+            elif command == "relative":
+                self.client.MoveRel(axis, value, wait=False)
+            elif command == "home":
+                self.client.HomeAxis(axis, wait=False)
+            elif command == "enable":
+                self.client.EnableAxis(axis)
+            elif command == "speed":
+                self.client.SetSpeed(axis, value)
+            elif command == "stop":
+                self.state = self.client.StopAll(reason=self.stop_pending_reason)
+                self.stop_pending_reason = None
+            else:
+                # Jog leases, release and resume are server coordination commands.
+                self.client.request(command, axis, value)
             self.local_error = None
-        except Exception as exc:
+        except (MotorCommandRejected, ValueError) as exc:
+            # A rejection did not start this command; leave other clients' moves alone.
             self.local_error = str(exc)
+            self.release_jog(disarm=True)
+            self.message.set(str(exc))
+            return False
+        except Exception as exc:
+            # The outcome is unknown after a lost reply. Disarm input now and
+            # retry a stop before the next status poll, without retrying the move.
+            self.stop_pending_reason = self.stop_pending_reason or f"GUI {command} request failed: {exc}"
+            self.local_error = str(exc)
+            self.state.update(connected=False, error=str(exc), stop_pending=True)
+            self.release_jog(disarm=True, notify_server=False)
             self.message.set(str(exc))
             return False
         return True
@@ -455,7 +489,7 @@ class MotorisedStageControlWindow:
         if self.jog_once(axis, sign):
             self.held_key, self.held_axis = key, axis
             self.held_distance = self.controller_value(axis, sign * float(self.axis_steps.get(axis, self.step).get()))
-            self.held_started = time.monotonic()
+            self.held_started = time.perf_counter()
         return "break"
 
     def key_released(self, event):
@@ -467,13 +501,13 @@ class MotorisedStageControlWindow:
             self.release_after_id = self.root.after(25, self.release_jog)
             return "break"
 
-    def release_jog(self, disarm=False):
+    def release_jog(self, disarm=False, notify_server=True):
         if self.release_after_id:
             self.root.after_cancel(self.release_after_id)
             self.release_after_id = None
         was_held = self.held_key is not None
         self.held_key = self.held_axis = self.held_distance = None
-        if was_held:
+        if was_held and notify_server:
             self.send("release_jog")
         if disarm:
             self.keyboard.set(False)
@@ -501,7 +535,7 @@ class MotorisedStageControlWindow:
             self.release_jog(disarm=True)
 
     def stop(self):
-        self.release_jog(disarm=True)
+        self.release_jog(disarm=True, notify_server=False)
         self.send("stop")
         self.message.set("Stop requested…")
 
@@ -576,39 +610,71 @@ class MotorisedStageControlWindow:
     def tick(self):
         if self.closed:
             return
-        self.state = self.client.get_state()
-        capabilities = {axis["id"]: axis for axis in self.state.get("capabilities", [])}
+        was_connected = self.state["connected"]
+        try:
+            # A failed command or established connection must be stopped before
+            # accepting new input. Initial connection polls cannot have moved hardware.
+            if self.stop_pending_reason is not None:
+                self.state = self.client.StopAll(reason=self.stop_pending_reason)
+                self.stop_pending_reason = None
+            self.state = self.client.GetStatus()
+            if self.state["connected"]:
+                self.has_connected = True
+                if not was_connected:
+                    self.local_error = None
+            if self.has_connected and (not self.state["connected"] or
+                    any(axis.get("age", 999) >= 1 for axis in self.state["axes"].values())):
+                raise RuntimeError(self.state.get("error") or "Motor feedback is unavailable or stale")
+        except Exception as exc:
+            if self.has_connected and self.stop_pending_reason is None:
+                self.stop_pending_reason = f"GUI feedback request failed: {exc}"
+            self.local_error = str(exc)
+            self.state.update(connected=False, error=str(exc),
+                stop_pending=self.stop_pending_reason is not None,
+                message="Motion service unavailable" if self.has_connected else "Waiting for motor server")
+            self.release_jog(disarm=True, notify_server=False)
+        # Layout depends on configuration, not the changing live position fields.
+        capabilities = {}
+        for axis, feedback in self.state["axes"].items():
+            spec = {key: value for key, value in feedback.items() if key in (
+                "label", "units", "resolution", "tolerance", "step", "unit_scales",
+                "limits_by_unit", "step_by_unit", "resolution_by_unit", "independent_mount",
+                "stage", "calibration_note", "speed_minimum", "speed_maximum", "speed_units")}
+            spec.update(id=axis, minimum=feedback["limits"][0], maximum=feedback["limits"][1],
+                        **feedback["supports"])
+            capabilities[axis] = spec
         if capabilities != self.capabilities:
             self.capabilities = capabilities
             if capabilities:
                 self.step.set(str(next(iter(capabilities.values()))["step"]))
             self.rebuild_layout()
         self.draw_state()
-        if self.held_key and not self.release_after_id and time.monotonic() - self.held_started >= 0.35:
+        if self.held_key and not self.release_after_id and time.perf_counter() - self.held_started >= 0.35:
             self.send("jog", self.held_axis, self.held_distance)
         self.after_id = self.root.after(80, self.tick)
 
     def close(self):
         if self.closed:
             return
-        self.release_jog(disarm=True)
+        self.release_jog(disarm=True, notify_server=False)
+        # Closing a GUI explicitly stops motion; closing a script client only disconnects.
+        if self.has_connected or self.stop_pending_reason is not None:
+            try:
+                self.client.StopAll(reason=self.stop_pending_reason)
+            except Exception as exc:
+                logger.warning("Motor stop was not confirmed while closing the GUI: %s", exc)
         self.closed = True
         for callback in (self.after_id, self.focus_after_id, self.release_after_id):
             if callback:
                 self.root.after_cancel(callback)
-        self.client.close()
+        self.client.CloseStage()
         self.root.destroy()
 
     def run(self):
         try:
             self.root.mainloop()
         finally:
-            self.client.close()
-            # Keep the process alive long enough for the hardware owner to send
-            # stop and close the port after the window has been destroyed.
-            self.client.thread.join(timeout=3)
-            if self.client.thread.is_alive():
-                raise RuntimeError("Motion connection did not close within 3 seconds; stop is unconfirmed")
+            self.close()
 
 
 if __name__ == "__main__":

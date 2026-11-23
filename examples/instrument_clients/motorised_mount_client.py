@@ -9,16 +9,17 @@ AXIS = "U"  # Tip/tilt: U or V; translation: X; UMC2: X or Y
 def main():
     mount = MotorisedStageClient(host=HOST, command_port=COMMAND_PORT)
     try:
-        print(mount.GetPositions())
-        print(mount.GetPosition(AXIS))
-        print(mount.GetAxisStatus(AXIS))
+        status = mount.GetStatus()
+        print(status)
+        print(status["axes"][AXIS]["position"])
 
         # Uncomment individual examples after choosing a suitable position in the stage's units.
-        # mount.MoveTo(AXIS, 0.1)  # Waits until the move finishes; raises on failure.
-        # mount.HomeAxis(AXIS)  # Starts homing if the axis needs it; check GetAxisStatus().
+        # mount.MoveAbs(AXIS, 0.1)  # Waits until the move finishes; raises on failure.
+        # mount.MoveRel(AXIS, 0.01)  # Checked relative move; waits by default.
+        # mount.HomeAxis(AXIS)  # Waits until homing finishes.
         # mount.StopAll()
     finally:
-        mount.close()
+        mount.CloseStage()
 
 
 if __name__ == "__main__":

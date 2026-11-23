@@ -1,7 +1,7 @@
 """Serial-only motor setups for the motor server, bridge, widget and notebook.
 
-Replace each hardware port with its OS serial port. Limits are deliberately
-unset until calibrated for the installed mechanism. The simulation needs no
+Replace each hardware port with its OS serial port. Verify the example driver
+limits against the installed mechanism before moving. The simulation needs no
 serial hardware and can be used to exercise the same client/server path.
 """
 
@@ -15,8 +15,11 @@ MOTOR_SERVERS = [
         "local_command_port": 51941,
         "remote_host": None,  # Hardware computer address for bridge use.
         "stage_type": "CONEXAGAPSerial",
-        "stage_kwargs": {"port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0},
-        "limits": {"U": [-0.7600, 0.7600], "V": [-0.7600, 0.7600]},  # Add calibrated U/V limits in degrees to enable sliders.
+        "stage_kwargs": {
+            "port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0,
+            "limits": {"U": [-0.7600, 0.7600], "V": [-0.7600, 0.7600]},
+        },  # Calibrate U/V limits in degrees for the installed mount.
+        "limits": {},  # Optional narrower server limits.
         "default_axis": "U",  # U = yaw, V = pitch.
         "relative_step": 0.005,
         "expected_units": "deg",
@@ -33,8 +36,9 @@ MOTOR_SERVERS = [
         "stage_kwargs": {
             "port": None, "address": 1, "timeout": 0.5, "move_timeout": 30.0,
             "units": "mm",  # Label only: verify that this matches the fitted AGP stage.
+            "limits": {"X": [0, 27]},  # Calibrate endpoints in the fitted stage's units.
         },
-        "limits": {"X": [0, 27]},  # Add calibrated X endpoints in the stage's configured units.
+        "limits": {},  # Optional narrower server limits.
         "default_axis": "X",
         "relative_step": 0.1,
         "expected_units": "mm",

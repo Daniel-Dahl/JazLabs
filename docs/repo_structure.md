@@ -32,8 +32,8 @@ docs/
 |-- repo_structure.md
 `-- guides/
     |-- camera-dark-frames.md
+    |-- usb-hub.md
     |-- instrument-client-examples.md
-    |-- time-tagger-server-bridge-client.md
     |-- launch-servers-viewers-and-guis.md
     `-- intensity-based-slm-centre-alignment.md
 ```
@@ -47,8 +47,8 @@ The same folder contains guides for
 [`capturing camera dark frames`](guides/camera-dark-frames.md) and
 [`performing intensity-based SLM centre alignment`](guides/intensity-based-slm-centre-alignment.md).
 The
-[`Time Tagger server, bridge server, and client`](guides/time-tagger-server-bridge-client.md)
-guide documents the networked Time Tagger stack.
+[launch guide](guides/launch-servers-viewers-and-guis.md#example-5-time-tagger-server-bridge-and-client)
+also documents the networked Time Tagger stack.
 Add future operator procedures here as well.
 
 ## Package Source
@@ -88,6 +88,7 @@ hardware/
 |-- OpticalSwitch/      # Optical switch stack and JDS drivers
 |-- OSA/                # Optical spectrum analyzer utilities/manuals
 |-- Oscilloscope/       # Oscilloscope helper libraries
+|-- USBHub/             # uhubctl driver, client, server, bridge and widget
 |-- PowerMeters/        # Thorlabs and Santec power meter utilities
 |-- SLM/                # SLM stacks, viewers, phase masks, and vendor backends
 |-- TimeTagger/         # Time Tagger server, bridge, client, and measurements
@@ -241,10 +242,9 @@ when launching a camera or SLM server and connecting the corresponding viewer
 or control GUI. The folder also contains the
 [`camera dark-frame`](guides/camera-dark-frames.md) and
 [`intensity-based SLM centre-alignment`](guides/intensity-based-slm-centre-alignment.md)
-procedures, plus the
-[`Time Tagger server, bridge server, and client`](guides/time-tagger-server-bridge-client.md)
-guide. Keep future calibration and operator procedures in the same folder so
-they are easy to find.
+procedures. Time Tagger launch instructions are included in the launch guide.
+Keep future calibration and operator procedures in the same folder so they are
+easy to find.
 
 ## Data And Calibration Directories
 

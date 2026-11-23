@@ -4,7 +4,7 @@ from JazLabs.hardware.OpticalSwitch.OpticalSwitch_Client import OpticalSwitchCli
 
 
 HOST = "127.0.0.1"
-COMMAND_PORT = 50831
+COMMAND_PORT = 50841
 NEW_PORT = 2
 
 

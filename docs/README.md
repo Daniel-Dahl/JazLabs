@@ -9,4 +9,6 @@
   covers the long-running processes and launch order.
 - [`guides/instrument-client-examples.md`](guides/instrument-client-examples.md)
   indexes the minimal scripts and matching notebooks.
+- [`guides/usb-hub.md`](guides/usb-hub.md) covers uhubctl setup and physical
+  socket mapping.
 - The remaining files in `guides/` describe individual procedures.

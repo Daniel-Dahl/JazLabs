@@ -66,15 +66,17 @@ class AlignmentObj:
         for stage_idx in stage_align_obj_idx:
             stage_props = properties_to_align[stage_idx]
             stage_steps = initial_step_sizes[stage_idx]
+            if stage_props.get("AlignYAW", False) or stage_props.get("AlignPITCH", False):
+                mirror_status = self.stage_objs[stage_idx].GetStatus()
 
             if stage_props.get("AlignYAW", False):
                 active_axes.append(("mirror", stage_idx, "U"))
-                initial_physical.append(self.stage_objs[stage_idx].GetPositions()["U"])
+                initial_physical.append(mirror_status["axes"]["U"]["position"])
                 step_array.append(stage_steps["d_YAW"])
 
             if stage_props.get("AlignPITCH", False):
                 active_axes.append(("mirror", stage_idx, "V"))
-                initial_physical.append(self.stage_objs[stage_idx].GetPositions()["V"])
+                initial_physical.append(mirror_status["axes"]["V"]["position"])
                 step_array.append(stage_steps["d_PITCH"])
 
             if stage_props.get("AlignFOCUS", False):
@@ -87,7 +89,8 @@ class AlignmentObj:
                         "AlignFOCUS requires an explicit d_FOCUS in the AGP stage's configured units."
                     )
                 active_axes.append(("focus", stage_idx, "X"))
-                initial_physical.append(self.stage_obj_trans[stage_idx].GetPositions()[0])
+                focus_status = self.stage_obj_trans[stage_idx].GetStatus("X")
+                initial_physical.append(focus_status["axes"]["X"]["position"])
                 step_array.append(stage_steps["d_FOCUS"])
 
         if not active_axes:

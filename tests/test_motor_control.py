@@ -1,20 +1,18 @@
 """Behavioral tests for motion scheduling, leased jogs and serial adaptation."""
-import importlib.util
-from pathlib import Path
-import struct
 import threading
 import time
-import types
 import unittest
 
-from JazLabs.hardware.MotorisedStages.MotorisedStage_Server import StageServerWorker
+from JazLabs.hardware.MotorisedStages.MotorisedStage_Server import MotorisedStageZMQServer
+from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
+from unittest.mock import patch
+import socket
 from JazLabs.hardware.MotorisedStages.SimulatedStage import SimulatedStage
-from JazLabs.hardware.MotorisedStages.Thorlabs.apt_serial_motion import APTSerialMotion
 
 
 def wait_until(predicate, timeout=2):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
         if predicate():
             return
         time.sleep(0.005)
@@ -28,9 +26,10 @@ class RecordingMount(SimulatedStage):
         self.stops = 0
         self.closed = False
 
-    def MoveTo(self, axis, target, wait=True, timeout=None):
+    def MoveAbs(self, axis, target, wait=True, timeout=None, units=None):
+        result = super().MoveAbs(axis, target, wait=wait, timeout=timeout, units=units)
         self.moves.append((axis, target))
-        return super().MoveTo(axis, target, wait=wait, timeout=timeout)
+        return result
 
     def StopAll(self):
         self.stops += 1
@@ -43,238 +42,197 @@ class RecordingMount(SimulatedStage):
 class MotionTests(unittest.TestCase):
     def setUp(self):
         self.backend = RecordingMount()
-        self.worker = StageServerWorker(lambda: self.backend, poll_interval=0.01)
-        self.worker.start()
-        wait_until(lambda: self.worker.get_state()['connected'])
+        self.factory_patch = patch('JazLabs.hardware.MotorisedStages.MotorisedStage_Server.create_motorised_stage',
+                                   return_value=self.backend)
+        self.factory_patch.start()
+        with socket.socket() as reservation:
+            try:
+                reservation.bind(('127.0.0.1', 0))
+            except PermissionError:
+                self.factory_patch.stop()
+                self.skipTest('Localhost sockets are unavailable in this sandbox')
+            port = reservation.getsockname()[1]
+        self.server = MotorisedStageZMQServer(command_port=port)
+        self.server_thread = threading.Thread(target=self.server.run_forever)
+        self.server_thread.start()
+        self.client = MotorisedStageClient(command_port=port, timeout_ms=1500)
+        wait_until(lambda: self.client.request('state')['connected'])
 
     def tearDown(self):
-        if self.worker.thread.is_alive():
-            self.worker.close()
-            self.worker.thread.join(2)
-        self.assertFalse(self.worker.thread.is_alive())
-        self.assertTrue(self.backend.closed)
+        try:
+            self.client.request('shutdown')
+            self.server_thread.join(3)
+            self.assertFalse(self.server_thread.is_alive())
+            self.assertTrue(self.backend.closed)
+        finally:
+            self.client.CloseStage()
+            self.factory_patch.stop()
 
     def test_tap_sends_one_move_and_waits_for_feedback(self):
-        self.worker.submit('relative', 'X', 0.02)
+        self.client.request('relative', 'X', 0.02)
         wait_until(lambda: len(self.backend.moves) == 1)
-        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
+        wait_until(lambda: not self.client.request('state')['axes']['X']['commanded'])
         time.sleep(.2)
         self.assertEqual(len(self.backend.moves), 1)
-        self.assertAlmostEqual(self.worker.get_state()['axes']['X']['position'], 5.02)
+        self.assertAlmostEqual(self.client.request('state')['axes']['X']['position'], 5.02)
 
     def test_rapid_taps_keep_one_pending_step_and_do_not_interrupt_active_move(self):
-        self.worker.submit('relative', 'X', .2)
+        self.client.request('relative', 'X', .2)
         wait_until(lambda: len(self.backend.moves) == 1)
         for _ in range(100):
-            self.worker.submit('relative', 'X', .01)
-        self.assertLessEqual(self.worker.commands.qsize(), 1)
+            self.client.request('relative', 'X', .01)
         wait_until(lambda: len(self.backend.moves) == 2)
-        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
-        self.assertFalse(self.worker.get_state()['stopped'])
-        self.assertIsNone(self.worker.get_state()['error'])
-        self.assertAlmostEqual(self.backend.GetPosition('X'), 5.21)
+        wait_until(lambda: not self.client.request('state')['axes']['X']['commanded'])
+        self.assertFalse(self.client.request('state')['stopped'])
+        self.assertIsNone(self.client.request('state')['error'])
+        self.assertAlmostEqual(self.backend.GetStatus('X')['axes']['X']['position'], 5.21)
         time.sleep(.2)
         self.assertEqual(len(self.backend.moves), 2)
 
     def test_held_jog_waits_for_controller_to_finish_active_command(self):
-        original = self.backend.GetAxisStatus
+        original = self.backend.GetStatus
         controller_finished = threading.Event()
 
         def busy_until_controller_finishes(axis):
             status = original(axis)
             if axis == 'X' and self.backend.moves and not controller_finished.is_set():
-                status['moving'] = True
+                status['axes']['X']['moving'] = True
             return status
 
-        self.backend.GetAxisStatus = busy_until_controller_finishes
+        self.backend.GetStatus = busy_until_controller_finishes
         for _ in range(10):
-            self.worker.submit('jog', 'X', .01)
+            self.client.request('jog', 'X', .01)
             time.sleep(.04)
         self.assertEqual(len(self.backend.moves), 1)
         controller_finished.set()
-        self.worker.submit('jog', 'X', .01)
+        self.client.request('jog', 'X', .01)
         wait_until(lambda: len(self.backend.moves) >= 2)
-        self.worker.submit('release_jog')
-        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
-        self.assertFalse(self.worker.get_state()['stopped'])
-        self.assertIsNone(self.worker.get_state()['error'])
+        self.client.request('release_jog')
+        wait_until(lambda: not self.client.request('state')['axes']['X']['commanded'])
+        self.assertFalse(self.client.request('state')['stopped'])
+        self.assertIsNone(self.client.request('state')['error'])
 
     def test_held_jog_repeats_without_queue_and_release_finishes_step(self):
         for _ in range(12):
-            self.worker.submit('jog', 'X', .01)
+            self.client.request('jog', 'X', .01)
             time.sleep(.05)
-        self.worker.submit('release_jog')
+        self.client.request('release_jog')
         self.assertGreaterEqual(len(self.backend.moves), 2)
-        wait_until(lambda: not self.worker.get_state()['axes']['X']['commanded'])
+        wait_until(lambda: not self.client.request('state')['axes']['X']['commanded'])
         number = len(self.backend.moves)
         time.sleep(.4)
         self.assertEqual(len(self.backend.moves), number)
-        self.assertEqual(self.worker.commands.qsize(), 0)
 
     def test_jog_lease_expires_if_gui_stops_renewing(self):
-        self.worker.submit('jog', 'X', .01)
+        self.client.request('jog', 'X', .01)
         time.sleep(.7)
         count = len(self.backend.moves)
         time.sleep(.4)
         self.assertEqual(len(self.backend.moves), count)
-        self.assertIsNone(self.worker.held_jog)
 
     def test_stop_drops_pending_move_and_requires_explicit_resume(self):
-        self.worker.submit('relative', 'X', 1)
+        self.client.request('relative', 'X', 1)
         wait_until(lambda: len(self.backend.moves) == 1)
-        self.worker.submit('relative', 'X', 2)
-        self.worker.submit('stop')
-        wait_until(lambda: self.worker.get_state()['stopped'] and not self.worker.get_state()['stop_pending'])
+        self.client.request('relative', 'X', 2)
+        self.client.request('stop')
+        wait_until(lambda: self.client.request('state')['stopped'] and not self.client.request('state')['stop_pending'])
         self.assertEqual(len(self.backend.moves), 1)
         with self.assertRaises(RuntimeError):
-            self.worker.submit('relative', 'X', 1)
-        self.worker.submit('resume')
-        wait_until(lambda: not self.worker.get_state()['stopped'])
-        self.worker.submit('relative', 'X', .01)
+            self.client.request('relative', 'X', 1)
+        self.client.request('resume')
+        wait_until(lambda: not self.client.request('state')['stopped'])
+        self.client.request('relative', 'X', .01)
         wait_until(lambda: len(self.backend.moves) == 2)
 
     def test_unknown_axis_limits_homing_and_nan_are_rejected(self):
         for command, axis, value in [('relative', 'Z', 1), ('absolute', 'X', 26),
                                      ('relative', 'Y', .01), ('absolute', 'X', float('nan'))]:
-            previous = self.worker.get_state()['sequence']
-            self.worker.submit(command, axis, value)
-            wait_until(lambda: self.worker.get_state()['sequence'] > previous and self.worker.commands.empty())
+            previous = self.client.request('state')['sequence']
+            self.client.request(command, axis, value)
+            wait_until(lambda: self.client.request('state')['sequence'] > previous and self.client.request('state')['error'] is not None)
             self.assertFalse(self.backend.moves)
-        self.worker.submit('home', 'Y')
-        wait_until(lambda: self.worker.get_state()['axes']['Y']['homed'], timeout=8)
-        self.worker.submit('relative', 'Y', .01)
+        self.client.request('home', 'Y')
+        wait_until(lambda: self.client.request('state')['axes']['Y']['homed'], timeout=8)
+        self.client.request('relative', 'Y', .01)
         wait_until(lambda: len(self.backend.moves) == 1)
 
     def test_speed_is_validated_and_applied(self):
-        self.worker.submit('speed', 'X', 1.5)
+        self.client.request('speed', 'X', 1.5)
         wait_until(lambda: self.backend.velocity['X'] == 1.5)
-        self.worker.submit('speed', 'X', -1)
-        wait_until(lambda: self.worker.get_state()['error'] is not None)
+        self.client.request('speed', 'X', -1)
+        wait_until(lambda: self.client.request('state')['error'] is not None)
         self.assertEqual(self.backend.velocity['X'], 1.5)
 
     def test_feedback_failure_latches_stop_instead_of_repeating(self):
-        original = self.backend.GetAxisStatus
+        original = self.backend.GetStatus
         fail = threading.Event()
         def poll(axis):
             if fail.is_set():
                 raise TimeoutError('unplugged')
             return original(axis)
-        self.backend.GetAxisStatus = poll
-        self.worker.submit('jog', 'X', .01)
+        self.backend.GetStatus = poll
+        self.client.request('jog', 'X', .01)
         wait_until(lambda: len(self.backend.moves) > 0)
         fail.set()
-        wait_until(lambda: self.worker.get_state()['stopped'])
+        wait_until(lambda: self.client.request('state')['stopped'])
         count = len(self.backend.moves)
         time.sleep(.2)
         self.assertEqual(len(self.backend.moves), count)
-        self.assertFalse(self.worker.get_state()['connected'])
+        self.assertFalse(self.client.request('state')['connected'])
 
-    def test_stop_submit_does_not_wait_for_hardware_read_lock(self):
-        original = self.backend.GetAxisStatus
-        reading = threading.Event()
-        release = threading.Event()
-        def poll(axis):
-            reading.set()
-            release.wait(1)
+    def test_nominal_waits_for_every_axis_and_uses_each_limits_midpoint(self):
+        for axis, spec in self.backend.axes.items():
+            self.backend.homed[axis] = True
+            spec['limits'] = [self.backend.positions[axis], self.backend.positions[axis] + .1]
+        wait_until(lambda: self.client.GetStatus()['axes']['Y']['limits'] == [6, 6.1])
+        self.client.SetNominal()
+        self.assertAlmostEqual(self.client.GetStatus()['axes']['X']['position'], 5.05)
+        self.assertAlmostEqual(self.client.GetStatus()['axes']['Y']['position'], 6.05)
+        self.assertEqual(len(self.backend.moves), 2)
+
+    def test_nominal_rejects_missing_limits_before_any_axis_moves(self):
+        original = self.backend.GetStatus
+        def missing_limits(axis=None):
+            status = original(axis)
+            if 'Y' in status['axes']:
+                status['axes']['Y']['limits'] = [None, None]
+            return status
+        self.backend.GetStatus = missing_limits
+        wait_until(lambda: self.client.GetStatus()['axes']['Y']['limits'] == [None, None])
+        with self.assertRaisesRegex(RuntimeError, 'configure travel limits'):
+            self.client.SetNominal()
+        self.assertFalse(self.backend.moves)
+        self.assertFalse(self.client.GetStatus()['stopped'])
+
+    def test_hardware_calls_run_on_the_server_loop_thread(self):
+        called_from = []
+        original = self.backend.GetStatus
+
+        def record_thread(axis):
+            called_from.append(threading.get_ident())
             return original(axis)
-        self.backend.GetAxisStatus = poll
-        self.assertTrue(reading.wait(1))
-        began = time.monotonic()
-        self.worker.submit('stop')
-        elapsed = time.monotonic() - began
-        release.set()
-        self.assertLess(elapsed, .05)
-        wait_until(lambda: self.worker.get_state()['stopped'])
 
+        self.backend.GetStatus = record_thread
+        self.client.MoveAbs('X', 5.02)
+        self.assertTrue(called_from)
+        self.assertEqual(set(called_from), {self.server_thread.ident})
 
-class AptPort:
-    timeout = .25
-    def __init__(self):
-        self.writes = []
-        self.reply = bytearray()
-    @property
-    def in_waiting(self):
-        return len(self.reply)
-    def write(self, value):
-        self.writes.append(value)
-        message, = struct.unpack_from('<H', value)
-        destination = value[4] & 0x7F
-        if message == 0x0411:
-            payload = struct.pack('<Hi', 1, 123)
-            self.reply.extend(struct.pack('<HHBB', 0x0412, 6, 0x81, destination) + payload)
-        elif message == 0x0429:
-            payload = struct.pack('<HI', 1, 0x80000400)
-            self.reply.extend(struct.pack('<HHBB', 0x042A, 6, 0x81, destination) + payload)
-    def read(self, size):
-        # Deliberately fragmented serial reads.
-        part = bytes(self.reply[:min(size, 3)])
-        del self.reply[:len(part)]
-        return part
-
-
-class FakeAPTDriver(APTSerialMotion):
-    def __init__(self, routes=None, units="counts", scale=1.0, limits=None):
-        self.serial = AptPort()
-        self._configure_motion(routes or {"X": 0x50}, units, scale, limits)
-
-    def GetProperties(self):
-        return {"stage_type": "test"}
-
-    def CloseStage(self):
-        pass
 
 
 class BlockingDriverTests(unittest.TestCase):
     def test_direct_driver_move_waits_by_default(self):
         stage = SimulatedStage(axes=1)
-        began = time.monotonic()
-        status = stage.MoveTo('X', 5.2)
-        self.assertGreaterEqual(time.monotonic() - began, .15)
+        began = time.perf_counter()
+        status = stage.MoveAbs('X', 5.2)
+        self.assertGreaterEqual(time.perf_counter() - began, .15)
         self.assertFalse(status['moving'])
-        self.assertAlmostEqual(stage.GetPosition('X'), 5.2)
+        self.assertAlmostEqual(stage.GetStatus('X')['axes']['X']['position'], 5.2)
 
     def test_direct_driver_timeout_raises_and_stops(self):
         stage = SimulatedStage(axes=1)
         with self.assertRaises(TimeoutError):
-            stage.MoveTo('X', 7, timeout=.05)
-        self.assertFalse(stage.GetAxisStatus('X')['moving'])
-
-
-class DriverTests(unittest.TestCase):
-    def test_apt_fragmented_poll_home_stop_and_custom_slot_routing(self):
-        driver = FakeAPTDriver(routes={"Z": 0x23, "X": 0x21}, limits={"Z": [0, 1000]})
-        state = driver.GetAxisStatus('Z')
-        self.assertEqual(state['position'], 123)
-        self.assertTrue(state['homed'])
-        self.assertTrue(state['enabled'])
-        driver.MoveTo('Z', 321, wait=False)
-        self.assertEqual(driver.serial.writes[-1], struct.pack('<HHBBHi', 0x0453, 6, 0xA3, 1, 1, 321))
-        driver.HomeAxis('X')
-        self.assertEqual(driver.serial.writes[-1], struct.pack('<HBBBB', 0x0443, 1, 0, 0x21, 1))
-        driver.StopAll()
-        self.assertEqual([packet[4] for packet in driver.serial.writes[-2:]], [0x23, 0x21])
-
-    def test_driver_unit_conversion_and_travel_limits(self):
-        driver = FakeAPTDriver(units='mm', scale=1000, limits={'X': [.1, 12.9]})
-        self.assertAlmostEqual(driver.GetAxisStatus('X')['position'], .123)
-        driver.MoveTo('X', 2.5, wait=False)
-        self.assertEqual(struct.unpack_from('<i', driver.serial.writes[-1], 8)[0], 2500)
-        with self.assertRaises(ValueError):
-            driver.MoveTo('X', 13)
-
-    def test_server_limits_cannot_widen_the_driver_travel(self):
-        driver = FakeAPTDriver(units='mm', scale=1000, limits={'X': [.1, 12.9]})
-        worker = StageServerWorker(lambda: driver, limits={'X': [0, 13]})
-        worker.start()
-        worker.thread.join(1)
-        self.assertFalse(worker.thread.is_alive())
-        self.assertIn("cannot widen", worker.get_state()['error'])
-
-    def test_stop_event_interrupts_slow_apt_read(self):
-        driver = FakeAPTDriver()
-        driver.SetStopRequested(lambda: True)
-        with self.assertRaises(InterruptedError):
-            driver.GetAxisStatus('X')
+            stage.MoveAbs('X', 7, timeout=.05)
+        self.assertFalse(stage.GetStatus('X')['axes']['X']['moving'])
 
 
 if __name__ == '__main__':

@@ -28,9 +28,9 @@ class NewportAlignmentTests(unittest.TestCase):
             spec.loader.exec_module(self.module)
         self.mirror_moves = []
         self.focus_moves = []
-        mirror = types.SimpleNamespace(GetPositions=lambda: {'U': .1, 'V': -.2},
+        mirror = types.SimpleNamespace(GetStatus=lambda: {'axes': {'U': {'position': .1}, 'V': {'position': -.2}}},
                          MoveAbs=lambda axis, value, wait: self.mirror_moves.append((axis, value, wait)))
-        focus = types.SimpleNamespace(GetPositions=lambda: [1.2345],
+        focus = types.SimpleNamespace(GetStatus=lambda axis: {'axes': {'X': {'position': 1.2345}}},
                          MoveAbs=lambda axis, value, wait: self.focus_moves.append((axis, value, wait)))
         self.alignment = self.module.AlignmentObj([mirror], pwr_objs=[types.SimpleNamespace(GetPower=lambda: 1)],
                                                   stage_obj_trans=[focus])

@@ -1,13 +1,12 @@
 """Open a motor widget using its client; never start a server or open a driver."""
 import argparse
-import multiprocessing as mp
 
 from JazLabs.launchers.config import get_named_config, load_config
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Open a configured JazLabs motor control GUI.")
-    parser.add_argument("--config", default="motorised_mounts")
+    parser.add_argument("--config", default="default_lab")
     parser.add_argument("--name", "--motor", dest="name", required=True)
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
@@ -28,7 +27,6 @@ def main(argv=None):
         port = args.command_port if args.command_port is not None else motor["command_port"]
     if host in ("0.0.0.0", "::"):
         raise ValueError("A widget must connect to a reachable host, not a wildcard bind address")
-    mp.freeze_support()
     from JazLabs.hardware.MotorisedStages.MotorisedStage_Client import MotorisedStageClient
     from JazLabs.hardware.MotorisedStages.MotorisedStage_Widget import MotorisedStageControlWindow
     client = MotorisedStageClient(host=host, command_port=port, timeout_ms=args.timeout_ms)
@@ -36,9 +34,7 @@ def main(argv=None):
     try:
         MotorisedStageControlWindow(client, args.layout).run()
     finally:
-        client.close()
-        if client.thread.is_alive():
-            client.thread.join(timeout=3)
+        client.CloseStage()
 
 
 if __name__ == "__main__":

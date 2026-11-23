@@ -7,7 +7,7 @@ from JazLabs.launchers.config import get_named_config, load_config, merge_overri
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Run one configured JazLabs laser server.")
-    parser.add_argument("--config", default="HDStokes")
+    parser.add_argument("--config", default="default_lab")
     parser.add_argument("--name", "--laser", dest="name", required=True)
     parser.add_argument("--host", default=None)
     parser.add_argument("--command-port", type=int, default=None)
