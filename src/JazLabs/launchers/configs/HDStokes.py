@@ -4,7 +4,7 @@ from pathlib import Path
 TMUX_SESSION = "jazlabs_servers"
 
 CAMERA_HOST = "127.0.0.1"
-
+JAZLABS_ROOT = Path(__file__).resolve().parents[4]
 HDSTOKES_WORKSPACE = Path(__file__).resolve().parents[5]
 
 CAMERA_SERVERS = [
@@ -139,3 +139,61 @@ DAQ_SERVERS = [
         "enabled": True,
     },
 ]
+JAZLABS_ROOT = Path(__file__).resolve().parents[4]
+
+SLM_CENTER_ALIGNMENT_CONFIG = {
+    # Camera measurement window, determined with the camera viewer.
+    "x_beam_center_on_camera": 64,
+    "y_beam_center_on_camera": 64,
+    "x_beam_window_width": 30,
+    "y_beam_window_width": 30,
+
+    # Alignment settings.
+    "slm_channel": "Red",
+    "polarisation": "H",
+    "stripe_width": 15,
+    "mask_size": [600, 600],
+    "coarse_step_count": 100,
+    "coarse_starting_sweep_point": 0,
+    "beam_radius_scan_initial_radius": 1,
+    "beam_radius_scan_final_radius": 150,
+    "beam_radius_scan_step": 1,
+    "average_frame_count": 1,
+    "coarse_metric_type": "POWERMinusHalfRef",
+    "fine_metric_type": "POWERMinusHalfRef",
+    "beam_radius_metric_type": "POWER",
+
+    # Camera and SLM bridge connections.
+    "camera_host": CAMERA_HOST,
+    "camera_command_port": CAMERA_SERVERS[1]["command_port"],
+    "camera_frame_port": CAMERA_SERVERS[1]["frame_pub_port"],
+    "camera_timeout_ms": 60000,
+    "camera_client_id": "slm_center_alignment",
+    "slm_host": SLM_SERVER["viewer_host"],
+    "slm_command_port": SLM_SERVER["command_port"],
+    "slm_display_port": SLM_SERVER["display_pub_port"],
+    "slm_timeout_ms": SLM_SERVER["timeout_ms"],
+
+    # SLM properties.
+    "slm_pixel_size": 17e-6,
+    "slm_wavelength": 1550e-9,
+    "slm_refresh_time": 40e-3,
+    "load_lut_from_file": False,
+    "slm_lut_file": (
+        JAZLABS_ROOT
+        / "calibrations"
+        / "SLM"
+        / "CustomLutFiles"
+        / "SLM_PhaseCalibration_New_2.lut"
+    ),
+
+    # Saved mask properties, plots, and optional radius estimate.
+    "mask_properties_filename": "SLM_CenterAlignment",
+    "save_mask_properties": True,
+    "load_saved_properties_after_alignment": True,
+    "run_beam_radius_scan": False,
+    "save_plots": True,
+    "show_plots": True,
+    "plot_file_format": "png",
+    "output_directory": JAZLABS_ROOT / "data" / "SLM" / "CenterAlignment",
+}

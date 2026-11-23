@@ -373,7 +373,7 @@ class digholoObject():
         
         if len(Camdims)==2:
             self.digholoProperties["batchCount"]=1
-            self.digholoProperties["maxMG"]=1
+            # self.digholoProperties["maxMG"]=1
             frameBuffer = adjust_array_dimensions(frameBuffer)
             Camdims=frameBuffer.shape
             
@@ -443,7 +443,7 @@ class digholoObject():
         
         if len(Camdims)==2:
             self.digholoProperties["batchCount"]=1
-            self.digholoProperties["maxMG"]=1
+            # self.digholoProperties["maxMG"]=1
             frameBuffer = adjust_array_dimensions(frameBuffer)
             Camdims=frameBuffer.shape
             
@@ -530,7 +530,7 @@ class digholoObject():
         #         self.digholoProperties["AvgCount"]=AvgCount
         if len(Camdims)==2:
             self.digholoProperties["batchCount"]=1
-            self.digholoProperties["maxMG"]=1
+            # self.digholoProperties["maxMG"]=1
             frameBuffer = adjust_array_dimensions(frameBuffer)
             Camdims=frameBuffer.shape
             print(Camdims)
@@ -563,9 +563,9 @@ class digholoObject():
         batchCount_c = ctypes.c_int(int(self.digholoProperties["batchCount"]))
         polCount_c = ctypes.c_int(self.digholoProperties["polCount"])
         modeCount_c= ctypes.c_int()
-        
         CoefptrOut = ctypes.POINTER(ctypes.c_float)()
         CoefptrOut=digH_hpy.digHoloProcessBatch(self.handleIdx,ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c))
+        
         coefs = np.ctypeslib.as_array(CoefptrOut,shape=(batchCount_c.value,2*modeCount_c.value*polCount_c.value))# NOTE the 2 is to account for complex values
         self.coefs = coefs[:,0::2]+1j*coefs[:,1::2]
         

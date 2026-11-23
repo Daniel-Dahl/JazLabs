@@ -1,6 +1,7 @@
 import argparse
 import inspect
 import multiprocessing as mp
+import os
 import time
 from multiprocessing import resource_tracker, shared_memory
 
@@ -24,7 +25,8 @@ def _attach_shared_memory(name):
         return shared_memory.SharedMemory(name=name, track=False)
 
     attached_shared_memory = shared_memory.SharedMemory(name=name)
-    resource_tracker.unregister(attached_shared_memory._name, "shared_memory")
+    if os.name != "nt":
+        resource_tracker.unregister(attached_shared_memory._name, "shared_memory")
     return attached_shared_memory
 
 
